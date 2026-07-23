@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="wf-title wf-desc">
+  <title id="wf-title">BBDown 工作原理</title>
+  <desc id="wf-desc">BBDown 工作流程图：从粘贴链接到选择接口、多线程下载、自动混流输出。</desc>
+  <defs>
+    <linearGradient id="wf-bg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#FFF9FB"/>
+    </linearGradient>
+    <linearGradient id="card-pink" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#FFF0F4"/>
+    </linearGradient>
+    <linearGradient id="card-blue" x1="0%" y1="0%" x2="0%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#EEFAFE"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="360" rx="24" fill="url(#wf-bg)"/>
+  <text x="600" y="54" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="32" font-weight="800" fill="#1D1D1F">一条命令背后的故事</text>
+  <text x="600" y="88" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="18" fill="#8A8A8E">粘贴链接 → 解析 → 下载 → 混流，自动化完成</text>
+
+  <g transform="translate(70, 120)">
+    <rect width="240" height="190" rx="18" fill="url(#card-pink)" stroke="#FCE3EB" stroke-width="2"/>
+    <circle cx="120" cy="48" r="28" fill="#FB7299"/>
+    <text x="120" y="57" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="20" font-weight="700" fill="#FFFFFF">URL</text>
+    <text x="120" y="104" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="22" font-weight="700" fill="#1D1D1F">粘贴链接</text>
+    <text x="120" y="136" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" fill="#6C6C70">BV / av / ep / ss</text>
+    <text x="120" y="160" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" fill="#6C6C70">视频、番剧、课程</text>
+  </g>
+
+  <path d="M334 215h42l-12 10l12-10l-12-10" fill="none" stroke="#D1D1D6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g transform="translate(400, 120)">
+    <rect width="240" height="190" rx="18" fill="url(#card-blue)" stroke="#D4F0FA" stroke-width="2"/>
+    <circle cx="120" cy="48" r="28" fill="#23ADE5"/>
+    <path d="M108 48l24 0m-12-12l12 12-12 12" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="120" y="104" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="22" font-weight="700" fill="#1D1D1F">选择接口</text>
+    <text x="120" y="136" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" fill="#6C6C70">Web · TV · App</text>
+    <text x="120" y="160" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" fill="#6C6C70">国际版 / 番剧 / 课程</text>
+  </g>
+
+  <path d="M664 215h42l-12 10l12-10l-12-10" fill="none" stroke="#D1D1D6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g transform="translate(730, 120)">
+    <rect width="240" height="190" rx="18" fill="url(#card-pink)" stroke="#FCE3EB" stroke-width="2"/>
+    <circle cx="120" cy="48" r="28" fill="#FB7299"/>
+    <path d="M120 36v24m-12-12l12 12 12-12" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="120" y="104" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="22" font-weight="700" fill="#1D1D1F">多线程下载</text>
+    <text x="120" y="136" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" fill="#6C6C70">音视频 / 弹幕 / 字幕</text>
+    <text x="120" y="160" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" fill="#6C6C70">自动重试与断点续传</text>
+  </g>
+
+  <path d="M994 215h42l-12 10l12-10l-12-10" fill="none" stroke="#D1D1D6" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+
+  <g transform="translate(1060, 120)">
+    <rect width="240" height="190" rx="18" fill="url(#card-blue)" stroke="#D4F0FA" stroke-width="2"/>
+    <circle cx="120" cy="48" r="28" fill="#23ADE5"/>
+    <path d="M108 48l10 10 24-22" fill="none" stroke="#FFFFFF" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"/>
+    <text x="120" y="104" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="22" font-weight="700" fill="#1D1D1F">自动混流</text>
+    <text x="120" y="136" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" fill="#6C6C70">ffmpeg / mp4box</text>
+    <text x="120" y="160" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="16" fill="#6C6C70">MP4 + 字幕 + 章节</text>
+  </g>
+</svg>

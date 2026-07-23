@@ -1,0 +1,64 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="360" viewBox="0 0 1200 360" role="img" aria-labelledby="hero-title hero-desc">
+  <title id="hero-title">BBDown - 命令行式哔哩哔哩下载器</title>
+  <desc id="hero-desc">BBDown 项目头图：明亮背景下的项目名称、定位与命令行下载演示窗口。</desc>
+  <defs>
+    <linearGradient id="bg-gradient" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFFFFF"/>
+      <stop offset="100%" stop-color="#FFF5F7"/>
+    </linearGradient>
+    <linearGradient id="pink-blob" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#FFE6EE"/>
+      <stop offset="100%" stop-color="#FFD4E3"/>
+    </linearGradient>
+    <linearGradient id="blue-blob" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#E6F7FD"/>
+      <stop offset="100%" stop-color="#D4F0FA"/>
+    </linearGradient>
+  </defs>
+
+  <rect width="1200" height="360" rx="28" fill="url(#bg-gradient)"/>
+  <circle cx="980" cy="80" r="160" fill="url(#pink-blob)" opacity="0.6"/>
+  <circle cx="220" cy="320" r="130" fill="url(#blue-blob)" opacity="0.5"/>
+
+  <text x="56" y="70" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="17" font-weight="600" letter-spacing="1" fill="#8A8A8E">CROSS-PLATFORM CLI TOOL</text>
+  <text x="56" y="146" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="74" font-weight="800" fill="#1D1D1F">BBDown</text>
+  <text x="56" y="196" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="28" font-weight="500" fill="#3A3A3C">命令行式哔哩哔哩下载器 · Bilibili Downloader</text>
+
+  <g transform="translate(56, 226)">
+    <rect x="0" y="0" width="80" height="36" rx="18" fill="#FB7299"/>
+    <text x="40" y="25" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#FFFFFF">8K</text>
+
+    <rect x="92" y="0" width="78" height="36" rx="18" fill="#23ADE5"/>
+    <text x="131" y="25" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#FFFFFF">HDR</text>
+
+    <rect x="182" y="0" width="134" height="36" rx="18" fill="#FB7299"/>
+    <text x="249" y="25" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#FFFFFF">杜比视界</text>
+
+    <rect x="328" y="0" width="134" height="36" rx="18" fill="#23ADE5"/>
+    <text x="395" y="25" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#FFFFFF">杜比全景声</text>
+
+    <rect x="476" y="0" width="120" height="36" rx="18" fill="#1D1D1F"/>
+    <text x="536" y="25" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="15" font-weight="700" fill="#FFFFFF">Widevine</text>
+  </g>
+
+  <g transform="translate(652, 54)">
+    <rect x="0" y="0" width="494" height="252" rx="20" fill="#FFFFFF" stroke="#E5E5EA" stroke-width="2"/>
+    <rect x="0" y="0" width="494" height="42" rx="20" fill="#F2F2F7"/>
+    <rect x="0" y="20" width="494" height="22" fill="#F2F2F7"/>
+    <circle cx="26" cy="21" r="6" fill="#FF5F57"/>
+    <circle cx="46" cy="21" r="6" fill="#FFBD2E"/>
+    <circle cx="66" cy="21" r="6" fill="#28C840"/>
+    <text x="247" y="26" text-anchor="middle" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="13" font-weight="600" fill="#6C6C70">BBDown</text>
+
+    <text x="24" y="80" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="17" font-weight="600" fill="#1D1D1F"><tspan fill="#FB7299">$</tspan> BBDown -tv "https://b23.tv/BV1qt4y1X7TW"</text>
+    <text x="24" y="116" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6C6C70">解析接口：TV   清晰度：1080P 高码率</text>
+    <text x="24" y="148" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6C6C70">[下载] video.m4s    8.2 MB/s  ████████░░  86%</text>
+    <text x="24" y="180" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#6C6C70">[下载] audio.m4s    6.5 MB/s  █████████░  92%</text>
+    <text x="24" y="212" font-family="ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="15" fill="#34C759">[混流] 输出 output.mp4  ✓</text>
+  </g>
+
+  <g transform="translate(1110, 256)">
+    <rect x="0" y="0" width="70" height="44" rx="10" fill="#FB7299"/>
+    <text x="35" y="29" text-anchor="middle" font-family="-apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif" font-size="12" font-weight="700" fill="#FFFFFF">.mp4</text>
+  </g>
+</svg>
