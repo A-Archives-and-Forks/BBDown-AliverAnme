@@ -5,8 +5,8 @@ namespace BBDown.Tests;
 public class BilibiliBvConverterTests
 {
     [Theory]
-    [InlineData(170001, "BV1bK411x7ct")]
-    [InlineData(455017605, "BV1HK411a7na")]
+    [InlineData(170001, "BV17x411w7KC")]
+    [InlineData(455017605, "BV1Q541167Qg")]
     [InlineData(882584971, "BV1mK4y1C7Bz")]
     public void Encode_ReturnsExpectedBv(long aid, string expectedBv)
     {
@@ -15,8 +15,8 @@ public class BilibiliBvConverterTests
     }
 
     [Theory]
-    [InlineData("bK411x7ct", 170001)]
-    [InlineData("HK411a7na", 455017605)]
+    [InlineData("7x411w7KC", 170001)]
+    [InlineData("Q541167Qg", 455017605)]
     [InlineData("mK4y1C7Bz", 882584971)]
     public void Decode_ReturnsExpectedAid(string bvSuffix, long expectedAid)
     {

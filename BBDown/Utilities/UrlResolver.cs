@@ -17,17 +17,19 @@ public static partial class UrlResolver
         var avid = input;
         if (input.StartsWith("http"))
         {
+            var lowerInput = input.ToLowerInvariant();
             if (input.Contains("b23.tv"))
             {
                 string tmp = await HTTPUtil.GetWebLocationAsync(input);
                 if (tmp == input) throw new InvalidOperationException("无限重定向");
                 input = tmp;
+                lowerInput = input.ToLowerInvariant();
             }
-            if (input.Contains("video/av"))
+            if (lowerInput.Contains("video/av"))
             {
                 avid = AvRegex().Match(input).Groups[1].Value;
             }
-            else if (input.ToLowerInvariant().Contains("video/bv"))
+            else if (lowerInput.Contains("video/bv"))
             {
                 avid = DecodeBv(BVRegex().Match(input).Groups[1].Value);
             }
@@ -236,7 +238,7 @@ public static partial class UrlResolver
         return jDoc.RootElement.GetPropertySafe("result").GetPropertySafe("media").GetPropertySafe("new_ep").GetValueAsStringSafe("id");
     }
 
-    [GeneratedRegex("av(\\d+)")]
+    [GeneratedRegex("[Aa][Vv](\\d+)")]
     private static partial Regex AvRegex();
 
     [GeneratedRegex("[Bb][Vv]1(\\w+)")]
