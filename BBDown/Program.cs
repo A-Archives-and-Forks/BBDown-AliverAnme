@@ -78,7 +78,8 @@ partial class Program
         Console.Write("遇到问题请首先到以下地址查阅有无相关信息：\r\nhttps://github.com/AliverAnme/BBDown/issues\r\n");
         Console.WriteLine();
 
-        var mergedArgs = BBDownConfigParser.MergeWithConfig(args).ToArray();
+        var normalizedArgs = NormalizeCliArgs(args);
+        var mergedArgs = BBDownConfigParser.MergeWithConfig(normalizedArgs).ToArray();
 
         if (mergedArgs.Contains("--debug"))
         {
@@ -113,6 +114,17 @@ partial class Program
         });
 
         return await app.RunAsync(mergedArgs);
+    }
+
+    internal static string[] NormalizeCliArgs(string[] args)
+    {
+        return args.Select(arg => arg switch
+        {
+            "-help" => "--help",
+            "-?" => "--help",
+            "-version" => "--version",
+            _ => arg
+        }).ToArray();
     }
 
     internal static void StartServer(string? listenUrl, int maxConcurrent = 3)
