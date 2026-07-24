@@ -2,6 +2,17 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.5] - 2026-07-25
+
+### 修复
+
+- 修复 Native AOT 产物启动时 Spectre.Console.Cli 无法获取默认命令 settings 类型导致崩溃的问题。
+- 兼容 `-help`、`-?`、`-version` 等单横线常见参数写法，避免 `-help` 被解析为短选项簇并误报 `encoding-priority` 缺值。
+- 修复 `Av` 大小写视频 URL 解析问题。
+- 优化区域限制等播放限制的错误提示，明确展示 `limit_play_reason` 与 `play_detail`。
+- 修正 BV 转换与 SS URL 解析相关测试样例。
+- 统一 GitHub issues 链接为小写仓库路径。
+
 ## [1.6.4] - 2026-05-29
 
 ### 新增
