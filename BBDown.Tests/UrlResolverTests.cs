@@ -54,8 +54,8 @@ public class UrlResolverTests
     [Fact]
     public async Task ResolveAsync_SsUrl_ReturnsEpFormat()
     {
-        // SS ID requires network call; just verify format starts with ep:
-        var result = await UrlResolver.ResolveAsync("https://www.bilibili.com/bangumi/play/ss12345");
+        // SS ID requires a network call; use a currently valid public season.
+        var result = await UrlResolver.ResolveAsync("https://www.bilibili.com/bangumi/play/ss41410");
         Assert.StartsWith("ep:", result);
     }
 

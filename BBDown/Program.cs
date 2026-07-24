@@ -11,6 +11,7 @@ using System.Text.RegularExpressions;
 using BBDown.Core;
 using BBDown.Core.Util;
 using System.Text.Json.Serialization;
+using System.Diagnostics.CodeAnalysis;
 using BBDown.Core.Entity;
 using BBDown.Core.DRM;
 using System.Diagnostics;
@@ -58,6 +59,13 @@ partial class Program
         Environment.Exit(0);
     }
 
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DefaultCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoginCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoginTVCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ServeCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(MyOption))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoginSettings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ServeSettings))]
     public static async Task<int> Main(params string[] args)
     {
         Console.CancelKeyPress += Console_CancelKeyPress;
