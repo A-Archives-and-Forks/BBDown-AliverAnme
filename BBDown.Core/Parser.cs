@@ -160,6 +160,7 @@ public static partial class Parser
 
         var respJson = JsonDocument.Parse(parsedResult.WebJsonString);
         var data = respJson.RootElement;
+        ThrowIfPlayLimited(data);
         // 根据API版本自动定位数据节点
         JsonElement root;
         if (data.TryGetProperty("result", out var resultElem))
@@ -468,6 +469,31 @@ public static partial class Parser
 
         respJson.Dispose();
         return parsedResult;
+    }
+
+    internal static void ThrowIfPlayLimited(JsonElement root)
+    {
+        if (!root.TryGetProperty("result", out var result))
+            return;
+
+        if (!result.TryGetProperty("play_check", out var playCheck))
+            return;
+
+        var reason = playCheck.GetValueAsStringSafe("limit_play_reason");
+        var detail = playCheck.GetValueAsStringSafe("play_detail");
+        if (string.IsNullOrWhiteSpace(reason) && string.IsNullOrWhiteSpace(detail))
+            return;
+
+        var message = reason switch
+        {
+            "AREA_LIMIT" => "当前番剧/视频存在区域限制，接口返回不可播放",
+            "PAY_LIMIT" => "当前番剧/视频存在付费限制，接口返回不可播放",
+            "VIP_LIMIT" => "当前番剧/视频需要大会员权限，接口返回不可播放",
+            "TIME_LOCK" => "当前番剧/视频尚未到可播放时间，接口返回不可播放",
+            _ => "当前番剧/视频存在播放限制，接口返回不可播放"
+        };
+
+        throw new InvalidOperationException($"{message} (limit_play_reason={reason}, play_detail={detail})");
     }
 
     /// <summary>

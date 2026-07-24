@@ -121,7 +121,7 @@ BBDown login
 BBDown logintv
 ```
 
-*PS: 如果登录报错 `The type initializer for 'Gdip' threw an exception`，请参考 [#37](https://github.com/AliverAnme/BBDown/issues/37) 解决。*
+*PS: 如果登录报错 `The type initializer for 'Gdip' threw an exception`，请参考 [#37](https://github.com/aliveranme/BBDown/issues/37) 解决。*
 
 手动加载网页 Cookie：
 ```bash
@@ -139,7 +139,7 @@ BBDown -tv -token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
 
 ---
 
-> 根据 [#123](https://github.com/AliverAnme/BBDown/issues/123#issuecomment-877583825)，可以填写 TV 登录产生的 `access_token` 来给 APP 接口使用。可复制 `BBDownTV.data` 到 `BBDownApp.data` 使程序自动读取。
+> 根据 [#123](https://github.com/aliveranme/BBDown/issues/123#issuecomment-877583825)，可以填写 TV 登录产生的 `access_token` 来给 APP 接口使用。可复制 `BBDownTV.data` 到 `BBDownApp.data` 使程序自动读取。
 
 目前程序无法自动获取鉴权信息，推荐通过抓包来获取。在请求 Header 中寻找键为 `authorization` 的项，其值形如 `identify_v1 5227************1`，其中的 `5227************1` 就是 token（access_key）。
 
