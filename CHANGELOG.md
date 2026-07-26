@@ -2,6 +2,50 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+## [1.6.6] - 2026-07-27
+
+### 新增
+
+- **充电专属（试看）视频检测**：解析 UPower 接口时识别充电专属预览片段，默认跳过并提示；新增 `--allow-preview` 选项允许保存试看内容。
+- 支持下载 UP 主全部投稿列表（`space` 下载模式）。
+- 测试覆盖扩展：新增 DRM 私钥解析、选项绑定等回归测试。
+
+### 安全
+
+- 日志与控制台输出中对 Cookie、Token 等凭据进行脱敏处理。
+- APP API gRPC 请求中的 Authorization 头在日志中脱敏。
+- Widevine 解密私钥导入支持 PKCS#1 / PKCS#8 DER 格式；`mp4decrypt` 失败时显式抛异常，避免静默失败。
+
+### 变更
+
+- Release CI 流程：所有平台构建任务前必须先通过测试套件。
+- Docker 构建目标切换到 .NET 10，并仅还原应用项目以加速构建。
+
+### 修复
+
+- 路径解析：从 `AppContext.BaseDirectory` 解析 `APP_DIR`，修复不同启动方式下的工作目录错误。
+- 登录状态：区分“从未登录”与“Cookie 已过期”。
+- 下载链路：消除静默失败、校验数值选项、正确传播单 P 失败状态。
+- 分段下载：`MergeFLV` 仅合并本分段的片段并校验 ffmpeg 退出码。
+- Fetcher：修复分页死锁、悬空 `JsonElement` 与循环中的静默中断。
+- 配置解析：正确识别 `--opt=value` 形式的 `--config-file` 与命令行选项。
+- aria2c：通过 `stdin input-file` 而非命令行传递 Cookie，避免特殊字符被 Shell 截断。
+- 交互式选集：使用 `>=` 正确限制 track/quality 索引。
+- Archive：仅当某 aid 的所有分 P 都成功后才记录该 aid。
+- 字幕：保留超过 24 小时的时长，并防止空白行错误拆分 cue。
+- 弹幕：对 ASS 输出中的控制字符进行转义。
+- 选项默认值：让 `default-on` 标记真正默认为 `true`。
+- 分 P 选择：支持混合 `-p` 语法，并拒绝完全匹配不到任何页面的选择。
+- API 服务器：HTTP 响应完成后仍保持下载任务存活。
+
+### 文档
+
+- README 增加“更多常用选项”参考表。
+- README 添加充电专属视频处理说明。
+- 修复 CLI 示例与 README 资源链接。
+
 ## [1.6.5] - 2026-07-25
 
 ### 修复
@@ -113,8 +157,11 @@
 
 ---
 
-[未发布]: https://github.com/AliverAnme/BBDown/compare/v1.6.3...HEAD
-[1.6.3]: https://github.com/AliverAnme/BBDown/releases/tag/v1.6.3
-[1.6.2]: https://github.com/AliverAnme/BBDown/releases/tag/v1.6.2
-[1.6.1]: https://github.com/AliverAnme/BBDown/releases/tag/v1.6.1
+[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.6.6...HEAD
+[1.6.6]: https://github.com/AliverAnme/BBDown/compare/v1.6.5...v1.6.6
+[1.6.5]: https://github.com/AliverAnme/BBDown/compare/v1.6.4...v1.6.5
+[1.6.4]: https://github.com/AliverAnme/BBDown/compare/v1.6.3...v1.6.4
+[1.6.3]: https://github.com/AliverAnme/BBDown/compare/v1.6.2...v1.6.3
+[1.6.2]: https://github.com/AliverAnme/BBDown/compare/v1.6.1...v1.6.2
+[1.6.1]: https://github.com/AliverAnme/BBDown/compare/v1.6.0...v1.6.1
 [1.6.0]: https://github.com/AliverAnme/BBDown/releases/tag/v1.6.0
