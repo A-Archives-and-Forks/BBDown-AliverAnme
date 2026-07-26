@@ -108,4 +108,52 @@ public class SensitiveDataMaskerTests
     {
         Assert.Equal(string.Empty, SensitiveDataMasker.MaskHeaders(null));
     }
+
+    [Fact]
+    public void MaskHeaders_KeepsAuthorizationScheme()
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, "https://example.com");
+        request.Headers.TryAddWithoutValidation("Authorization", "identify_v1 SECRETAPPTOKEN9876");
+
+        var rendered = SensitiveDataMasker.MaskHeaders(request.Headers);
+
+        // 方案名不是秘密，保留它才能看出用的是哪种鉴权
+        Assert.Contains("identify_v1 ", rendered);
+        Assert.DoesNotContain("SECRETAPPTOKEN9876", rendered);
+    }
+
+    [Fact]
+    public void MaskHeaderMap_MasksGrpcAuthorizationHeader()
+    {
+        // gRPC 侧的 header 是手工组装的字典，不经过 HttpHeaders
+        var headers = new Dictionary<string, string>
+        {
+            ["Host"] = "grpc.biliapi.net",
+            ["authorization"] = "identify_v1 SECRETAPPTOKEN9876",
+            ["grpc-encoding"] = "gzip",
+        };
+
+        var masked = SensitiveDataMasker.MaskHeaderMap(headers);
+
+        Assert.Equal("identify_v1 SECR***9876", masked["authorization"]);
+        Assert.Equal("grpc.biliapi.net", masked["Host"]);
+        Assert.Equal("gzip", masked["grpc-encoding"]);
+    }
+
+    [Fact]
+    public void MaskHeaderMap_IsCaseInsensitiveOnHeaderName()
+    {
+        // AppHelper 用的是小写 "authorization"
+        var masked = SensitiveDataMasker.MaskHeaderMap(
+            new Dictionary<string, string> { ["AUTHORIZATION"] = "Bearer abcdefghijklmnop" });
+
+        Assert.DoesNotContain("abcdefghijklmnop", masked["AUTHORIZATION"]);
+        Assert.StartsWith("Bearer ", masked["AUTHORIZATION"]);
+    }
+
+    [Fact]
+    public void MaskHeaderMap_Null_ReturnsEmpty()
+    {
+        Assert.Empty(SensitiveDataMasker.MaskHeaderMap(null));
+    }
 }

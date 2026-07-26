@@ -105,6 +105,21 @@ public static class SensitiveDataMasker
     }
 
     /// <summary>
+    /// 脱敏 <c>&lt;scheme&gt; &lt;credentials&gt;</c> 形式的认证头，保留方案名。
+    /// 方案名（如 <c>identify_v1</c>、<c>Bearer</c>）本身不是秘密，
+    /// 保留它才能在排查时看出用的是哪种鉴权。
+    /// </summary>
+    private static string MaskAuthorization(string? value)
+    {
+        if (string.IsNullOrEmpty(value)) return value ?? string.Empty;
+
+        var separator = value.IndexOf(' ');
+        if (separator <= 0) return MaskValue(value);
+
+        return string.Concat(value[..(separator + 1)], MaskValue(value[(separator + 1)..]));
+    }
+
+    /// <summary>
     /// 把请求头渲染成脱敏后的字符串，供 <see cref="Logger.LogDebug"/> 使用。
     /// 直接记录 <see cref="HttpHeaders"/> 会把 Cookie 原文写进日志文件。
     /// </summary>
@@ -119,10 +134,30 @@ public static class SensitiveDataMasker
             builder.Append(key).Append(": ");
             builder.Append(
                 CookieHeaders.Contains(key) ? MaskCookie(joined)
-                : OpaqueSecretHeaders.Contains(key) ? MaskValue(joined)
+                : OpaqueSecretHeaders.Contains(key) ? MaskAuthorization(joined)
                 : joined);
             builder.AppendLine();
         }
         return builder.ToString();
+    }
+
+    /// <summary>
+    /// 按同一套规则脱敏以字典形式手工组装的请求头。
+    /// gRPC 侧的 header 不经由 <see cref="HttpHeaders"/>，
+    /// 但同样带有 authorization 之类的凭据。
+    /// </summary>
+    public static Dictionary<string, string> MaskHeaderMap(IReadOnlyDictionary<string, string>? headers)
+    {
+        var masked = new Dictionary<string, string>();
+        if (headers is null) return masked;
+
+        foreach (var (key, value) in headers)
+        {
+            masked[key] =
+                CookieHeaders.Contains(key) ? MaskCookie(value)
+                : OpaqueSecretHeaders.Contains(key) ? MaskAuthorization(value)
+                : value;
+        }
+        return masked;
     }
 }
