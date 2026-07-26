@@ -26,7 +26,12 @@ partial class Program
     public static string SinglePageDefaultSavePath { get; set; } = "<videoTitle>";
     public static string MultiPageDefaultSavePath { get; set; } = "<videoTitle>/[P<pageNumberWithZero>]<pageTitle>";
 
-    public static readonly string APP_DIR = Path.GetDirectoryName(Environment.ProcessPath)!;
+    // 用 AppContext.BaseDirectory 而非 Environment.ProcessPath：
+    // 以 `dotnet BBDown.dll` / `dotnet run` 启动时，进程可执行文件是 dotnet 宿主本身，
+    // ProcessPath 会把 APP_DIR 指到 .NET 安装目录，导致 BBDown.data 等凭据
+    // 被写入/读取自错误位置——表现为刚登录完却仍提示"尚未登录"。
+    // BaseDirectory 在 apphost、dotnet 宿主与 NativeAOT 单文件下都指向程序集所在目录。
+    public static readonly string APP_DIR = AppContext.BaseDirectory.TrimEnd(Path.DirectorySeparatorChar);
 
     private static string FormatTimeStamp(long ts, string format)
     {
