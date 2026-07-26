@@ -45,6 +45,16 @@ internal partial class Program
 
         var failedPages = new List<int>();
 
+        // 存档以 aid 为粒度，而一个多P稿件的所有分P共享同一个 aid。
+        // 若下完第一个分P就写入存档，同稿件余下的分P会在下一次循环里被
+        // CheckAidFromFile 判定为"已下载"而全部跳过——收藏夹、合集、UP 主投稿
+        // 这类含多P稿件的列表尤其容易踩到。因此必须等一个 aid 的分P全部成功
+        // 之后再写入。
+        var remainingPagesByAid = pagesInfo
+            .GroupBy(p => p.aid)
+            .ToDictionary(g => g.Key, g => g.Count());
+        var failedAids = new HashSet<string>();
+
         foreach (Page p in pagesInfo)
         {
             if (pagesInfo.Count > 1 && delay > 0)
@@ -54,30 +64,31 @@ internal partial class Program
             }
             Logger.Log($"开始解析P{p.index}: {p.aid}... ({pagesInfo.IndexOf(p) + 1} of {pagesInfo.Count})");
 
-            if (myOption.SaveArchivesToFile)
+            if (myOption.SaveArchivesToFile && CheckAidFromFile(p.aid))
             {
-                if (CheckAidFromFile(p.aid))
-                {
-
-                    Logger.Log($"aid: {p.aid}已下载过, 跳过下载...");
-                    continue;
-                }
+                Logger.Log($"aid: {p.aid}已下载过, 跳过下载...");
+                remainingPagesByAid[p.aid]--;
+                continue;
             }
 
             var succeeded = await DownloadPageAsync(p, myOption, vInfo, pagesInfo, encodingPriority, dfnPriority, firstEncoding,
                 downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, apiType, relatedTask, cancellationToken);
 
-            if (!succeeded)
-            {
-                // 记录后继续处理其余分P，但绝不能把失败的分P写进已下载存档，
-                // 否则下次带 --save-archives-to-file 运行会直接跳过它
-                failedPages.Add(p.index);
-                continue;
-            }
-
             if (myOption.SaveArchivesToFile)
             {
-                SaveAidToFile(p.aid);
+                remainingPagesByAid[p.aid]--;
+                // 只要该稿件有任何一个分P失败就不入档，否则下次运行会跳过尚未下全的稿件
+                if (!succeeded) failedAids.Add(p.aid);
+                if (remainingPagesByAid[p.aid] == 0 && !failedAids.Contains(p.aid))
+                {
+                    SaveAidToFile(p.aid);
+                }
+            }
+
+            if (!succeeded)
+            {
+                // 记录后继续处理其余分P
+                failedPages.Add(p.index);
             }
         }
 
