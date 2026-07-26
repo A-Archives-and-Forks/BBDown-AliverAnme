@@ -1,4 +1,5 @@
 ﻿using System;
+using System.Buffers;
 using BBDown.Core.Util;
 using BBDown.Core;
 using System.Collections.Generic;
@@ -8,7 +9,6 @@ using System.Net.Http;
 using System.Net;
 using System.Threading.Tasks;
 using static BBDown.Core.Entity.Entity;
-using System.Collections.Concurrent;
 
 namespace BBDown;
 
@@ -59,16 +59,25 @@ internal static class BBDownDownloadUtil
         long writeStartPosition = fileStream.Position;
 
         const int blockSize = 1048576 / 4;
-        var buffer = new byte[blockSize];
-
-        while (downloadedBytes < totalBytes)
+        // 256KB 超过 85000 字节的大对象堆阈值，直接 new 会让每个分片、每次重试
+        // 都在 LOH 上留下一块并触发 Gen2 回收（Gen2 会暂停全部线程）。
+        // Rent 返回的数组可能大于请求值，因此读写都必须显式限定长度。
+        var buffer = ArrayPool<byte>.Shared.Rent(blockSize);
+        try
         {
-            var recevied = await stream.ReadAsync(buffer, token);
-            if (recevied == 0) break;
-            await fileStream.WriteAsync(buffer.AsMemory(0, recevied), token);
-            await fileStream.FlushAsync(token);
-            downloadedBytes += recevied;
-            onProgress(id, downloadedBytes - fromPosition, totalBytes);
+            while (downloadedBytes < totalBytes)
+            {
+                var recevied = await stream.ReadAsync(buffer.AsMemory(0, blockSize), token);
+                if (recevied == 0) break;
+                await fileStream.WriteAsync(buffer.AsMemory(0, recevied), token);
+                await fileStream.FlushAsync(token);
+                downloadedBytes += recevied;
+                onProgress(id, downloadedBytes - fromPosition, totalBytes);
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
 
         if (response.Content.Headers.ContentLength != null)
@@ -261,8 +270,12 @@ internal static class BBDownDownloadUtil
         List<Clip> allClips = GetAllClips(url, fileSize);
         int total = allClips.Count;
         Logger.LogDebug("分段数量：{0}", total);
-        ConcurrentDictionary<int, long> clipProgress = new();
-        foreach (var i in allClips) clipProgress[i.index] = 0;
+        // 分片进度按下标存放并维护一个原子累计值。
+        // 此前每次回调都要对 ConcurrentDictionary.Values 求两次和，
+        // 而 Values 每次访问都会复制出一份快照 —— 回调频率是每分片每 256KB 一次，
+        // 10GB 的下载会触发约 4 万次 O(分片数) 的遍历。
+        var clipProgress = new long[total];
+        long downloadedTotal = 0;
 
         using var progress = new ProgressBar(config.RelatedTask);
         progress.Report(0);
@@ -277,8 +290,11 @@ internal static class BBDownDownloadUtil
             {
                 await RangeDownloadToTmpAsync(clip.index, url, tmp, clip.from, clip.to == -1 ? null : clip.to, (index, downloaded, _) =>
                 {
-                    clipProgress[index] = downloaded;
-                    progress.Report(fileSize > 0 ? (double)clipProgress.Values.Sum() / fileSize : 0, clipProgress.Values.Sum());
+                    // 同一分片的回调只在它自己的任务里串行发生，
+                    // 因此这里只需保证跨分片累加的原子性
+                    var previous = Interlocked.Exchange(ref clipProgress[index], downloaded);
+                    var current = Interlocked.Add(ref downloadedTotal, downloaded - previous);
+                    progress.Report(fileSize > 0 ? (double)current / fileSize : 0, current);
                 }, true, _);
                 break;
             }
