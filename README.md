@@ -24,7 +24,8 @@
 
 ![核心功能](assets/readme/section-features.svg)
 
-- 普通视频、番剧、课程、合集 / 列表 / 收藏夹 / 个人空间解析
+- 普通视频、番剧、课程、合集 / 列表 / 收藏夹解析
+- UP 主全部投稿批量下载（需登录）
 - 多分 P 自动下载，支持自由选择清晰度、编码与分 P 范围
 - 下载外挂字幕并转换为 `srt` / `ass` 格式
 - 自动混流：合并音频 + 视频 + 字幕 + 章节信息（需 ffmpeg 或 mp4box）
@@ -126,6 +127,21 @@ BBDown -p 1-3,7,9-11 "https://www.bilibili.com/video/BV1Y7411d7Ys"
 # 番剧全集
 BBDown -p ALL "https://www.bilibili.com/bangumi/play/ss33073"
 ```
+
+下载 UP 主的全部投稿（需登录）：
+```bash
+# 先登录，该接口不接受未登录请求
+BBDown login
+
+# 解析整个空间，每个投稿的每个分 P 会依次编号
+BBDown "https://space.bilibili.com/21241234"
+
+# 配合 -p 只取其中一部分
+BBDown -p 1-20 "https://space.bilibili.com/21241234"
+```
+
+> 投稿列表接口不返回 cid，程序需逐个请求视频详情来展开分 P，
+> 投稿较多时解析阶段会花费一些时间。
 
 ### 登录与鉴权
 
