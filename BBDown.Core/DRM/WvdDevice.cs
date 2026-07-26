@@ -96,15 +96,7 @@ public class WvdDevice : IDisposable
     private static WvdDevice Create(byte[] privateKeyBytes, byte[] clientIdBytes)
     {
         var rsa = RSA.Create();
-        var pemString = System.Text.Encoding.ASCII.GetString(privateKeyBytes);
-
-        // 如果 PEM 头尾不完整，尝试补全
-        if (!pemString.Contains("-----BEGIN"))
-        {
-            pemString = "-----BEGIN RSA PRIVATE KEY-----\n" + pemString + "\n-----END RSA PRIVATE KEY-----";
-        }
-
-        rsa.ImportFromPem(pemString);
+        ImportPrivateKey(rsa, privateKeyBytes);
 
         // 尝试解析 protobuf，兼容非 protobuf 的原始 client_id
         ClientIdentification clientId;
@@ -123,5 +115,43 @@ public class WvdDevice : IDisposable
         }
 
         return new WvdDevice(clientIdBytes, rsa, clientId);
+    }
+
+    /// <summary>
+    /// 从 .wvd 中的私钥字节导入 RSA 密钥。
+    /// 规范的 pywidevine device（Device.dumps）把私钥存为 PKCS#1 DER 二进制，
+    /// 原实现只用 ASCII 解码 + ImportFromPem，DER 里 &gt;=0x80 的字节会被解成 '?'，
+    /// 导致所有标准 .wvd 文件加载失败（仅仓库内置的非规范 PEM-in-WVD 能用）。
+    /// 这里优先按 DER 解析（PKCS#1、再 PKCS#8），失败才回退到 PEM 文本。
+    /// </summary>
+    internal static void ImportPrivateKey(RSA rsa, byte[] privateKeyBytes)
+    {
+        // 先判断是不是 PEM 文本：PEM 以 ASCII '-----BEGIN' 开头
+        var looksPem = privateKeyBytes.Length > 10
+            && System.Text.Encoding.ASCII.GetString(privateKeyBytes, 0, 10) == "-----BEGIN";
+        if (looksPem)
+        {
+            rsa.ImportFromPem(System.Text.Encoding.ASCII.GetString(privateKeyBytes));
+            return;
+        }
+
+        // 二进制：优先 PKCS#1（pywidevine 用的格式），再试 PKCS#8
+        try
+        {
+            rsa.ImportRSAPrivateKey(privateKeyBytes, out _);
+            return;
+        }
+        catch (CryptographicException) { /* 不是 PKCS#1，继续尝试 */ }
+
+        try
+        {
+            rsa.ImportPkcs8PrivateKey(privateKeyBytes, out _);
+            return;
+        }
+        catch (CryptographicException) { /* 不是 PKCS#8，继续尝试 */ }
+
+        // 最后兜底：可能是缺头尾的 PEM 主体，补全后再试
+        var body = System.Text.Encoding.ASCII.GetString(privateKeyBytes);
+        rsa.ImportFromPem("-----BEGIN RSA PRIVATE KEY-----\n" + body + "\n-----END RSA PRIVATE KEY-----");
     }
 }
