@@ -324,8 +324,15 @@ public static partial class BBDownUtil
 
             if (code == -101)
             {
-                Logger.LogDebug("Cookie 已过期或无效 (code=-101)");
-                return (false, true);
+                // nav 对"从未登录"和"cookie 已失效"都返回 -101，接口本身无法区分。
+                // 以本地是否真的持有 cookie 来判断，否则从未登录过的新用户
+                // 会被告知"Cookie 已过期，请重新扫码"——而调用方那条
+                // "你尚未登录"的分支将永远无法触发。
+                bool hasCookie = !string.IsNullOrEmpty(cookie);
+                Logger.LogDebug(hasCookie
+                    ? "Cookie 已过期或无效 (code=-101)"
+                    : "尚未登录 (code=-101，本地无 Cookie)");
+                return (false, hasCookie);
             }
             var is_login = json.GetPropertySafe("data").GetPropertySafe("isLogin").GetBoolean();
             return (is_login, false);
