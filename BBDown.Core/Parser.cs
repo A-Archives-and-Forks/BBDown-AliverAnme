@@ -191,6 +191,8 @@ public static partial class Parser
             else if (root.TryGetProperty("timelength", out var tlElem))
                 pDur = tlElem.GetInt32() / 1000;
 
+            parsedResult.ActualDurationSec = pDur;
+
             // DRM metadata
             if (root.TryGetProperty("is_drm", out var isDrmElem))
                 parsedResult.IsDrm = isDrmElem.GetBoolean();
@@ -427,6 +429,10 @@ public static partial class Parser
                     .Select(node => node.ToString())
                     .Where(_qn => !string.IsNullOrEmpty(_qn)));
             }
+
+            // 分段累加出的长度才是本次真正能拿到的内容长度；
+            // 充电试看片段正是在这里与 timelength 声称的完整时长产生分歧。
+            parsedResult.ActualDurationSec = (int)length / 1000;
 
             Video v = new()
             {

@@ -37,6 +37,13 @@ public partial class NormalInfoFetcher : IFetcher
         // 互动视频 1:是 0:否
         var isSteinGate = data.TryGetProperty("rights", out var rights) && rights.TryGetProperty("is_stein_gate", out var sg) ? sg.GetInt16() : (short)0;
 
+        // UP主充电专属视频。未充电时 playurl 依然返回 code=0，
+        // 只是把完整流换成试看片段，因此必须靠这里的权限字段判断，
+        // 否则会把几分钟的试看片段当作完整视频下载完毕。
+        bool isUpowerExclusive = data.GetBooleanSafe("is_upower_exclusive");
+        bool isUpowerPreview = data.GetBooleanSafe("is_upower_preview");
+        bool isUpowerPlay = data.GetBooleanSafe("is_upower_play");
+
         // 分p信息
         List<Page> pagesInfo = new();
         var pages = data.EnumerateArraySafe("pages").ToList();
@@ -125,7 +132,10 @@ public partial class NormalInfoFetcher : IFetcher
             PubTime = pubTime,
             PagesInfo = pagesInfo,
             IsBangumi = bangumi,
-            IsSteinGate = isSteinGate == 1
+            IsSteinGate = isSteinGate == 1,
+            IsUpowerExclusive = isUpowerExclusive,
+            IsUpowerPreview = isUpowerPreview,
+            IsUpowerPlay = isUpowerPlay
         };
 
         return info;
