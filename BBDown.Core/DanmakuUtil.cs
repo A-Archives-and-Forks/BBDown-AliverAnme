@@ -110,10 +110,40 @@ public static class DanmakuUtil
             {
                 effect += $"\\c&{danmaku.Color}&";
             }
-            sb.AppendLine($"Dialogue: 2,{danmaku.StartTime},{danmaku.EndTime},BBDOWN_Style,,0000,0000,0000,,{{{effect}}}{danmaku.Content}");
+            sb.AppendLine($"Dialogue: 2,{danmaku.StartTime},{danmaku.EndTime},BBDOWN_Style,,0000,0000,0000,,{{{effect}}}{EscapeAssText(danmaku.Content)}");
         }
 
         await File.WriteAllTextAsync(outputPath, sb.ToString(), Encoding.UTF8);
+    }
+
+    /// <summary>
+    /// 中和弹幕正文里的 ASS 控制字符。
+    /// 弹幕内容由其他用户提供：花括号在 ASS 中界定样式覆盖标签块，
+    /// 一条 <c>{\c&amp;HFF0000&amp;}</c> 就能改掉后续渲染；换行则会让正文
+    /// 后半段脱离 Dialogue 行，变成解析器无法识别的孤立行。
+    /// 花括号替换为全角字符以保留可读性，换行折叠为 ASS 自身的 \N。
+    /// </summary>
+    private static string EscapeAssText(string content)
+    {
+        if (string.IsNullOrEmpty(content)) return content;
+
+        var sb = new StringBuilder(content.Length);
+        for (var i = 0; i < content.Length; i++)
+        {
+            switch (content[i])
+            {
+                case '{': sb.Append('｛'); break;
+                case '}': sb.Append('｝'); break;
+                case '\r':
+                    // 吃掉 \r\n 中的 \n，避免产生两个 \N
+                    if (i + 1 < content.Length && content[i + 1] == '\n') i++;
+                    sb.Append("\\N");
+                    break;
+                case '\n': sb.Append("\\N"); break;
+                default: sb.Append(content[i]); break;
+            }
+        }
+        return sb.ToString();
     }
 
     protected class PositionController
@@ -192,9 +222,11 @@ public static class DanmakuUtil
                 int colorD = int.Parse(attrs[3]);
                 Color = string.Format("{0:X6}", colorD);
             }
-            catch (FormatException e)
+            // 与上方时间解析保持一致：超范围的颜色值同样只应降级为默认色，
+            // 而不是让整个弹幕文件的生成失败。用 LogDebug 避免大量异常弹幕刷屏。
+            catch (Exception e) when (e is FormatException or OverflowException)
             {
-                Logger.Log(e.Message);
+                Logger.LogDebug("弹幕颜色解析失败: {0}", e.Message);
             }
             Timestamp = attrs[4];
             Content = content;
