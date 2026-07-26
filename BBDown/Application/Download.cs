@@ -476,18 +476,21 @@ internal partial class Program
                     return true;
                 }
                 var pad = string.Empty.PadRight(clips.Count.ToString().Length, '0');
+                var segFiles = new List<string>();
                 for (int i = 0; i < clips.Count; i++)
                 {
                     var link = clips[i];
                     videoPath = $"{p.aid}/{p.aid}.P{p.index}.{p.cid}.{i.ToString(pad)}.mp4";
                     Logger.Log($"开始下载P{p.index}视频, 片段({(i + 1).ToString(pad)}/{clips.Count})...");
                     await DownloadTrackAsync(link, videoPath, downloadConfig, video: true);
+                    segFiles.Add(videoPath);
                 }
                 Logger.Log($"下载P{p.index}完毕");
                 Logger.Log("开始合并分段...");
-                var files = BBDownUtil.GetFiles(Path.GetDirectoryName(videoPath)!, ".mp4");
+                // 传入本次下载的精确分段列表，而非扫描整个目录（GetFiles(".mp4") 会连同
+                // 同 aid 其它分P 的成品一起捞进来，多P FLV 视频会被拼串味）
                 videoPath = $"{p.aid}/{p.aid}.P{p.index}.{p.cid}.mp4";
-                BBDownMuxer.MergeFLV(files, videoPath);
+                BBDownMuxer.MergeFLV(segFiles.ToArray(), videoPath);
                 if (myOption.SkipMux) return true;
                 Logger.Log($"开始混流视频{(subtitleInfo.Any() ? "和字幕" : "")}...");
                 if (myOption.AudioOnly)

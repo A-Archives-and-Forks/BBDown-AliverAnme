@@ -223,21 +223,40 @@ static partial class BBDownMuxer
         if (files.Length == 0) return;
         if (files.Length == 1)
         {
-            File.Move(files[0], outPath);
+            File.Move(files[0], outPath, true);
         }
         else
         {
+            // 只处理本次传入的分段派生出的 .ts，不再扫描整个目录：
+            // 目录里可能有同一 aid 其它分P 已完成的 .ts / 成品，扫目录会把它们
+            // 一并拼进本P 输出，产出串味的损坏文件。
+            var tsFiles = new List<string>();
             foreach (var file in files)
             {
                 var tmpFile = Path.Combine(Path.GetDirectoryName(file)!, Path.GetFileNameWithoutExtension(file) + ".ts");
                 var arguments = $"-loglevel warning -y -i \"{file}\" -map 0 -c copy -f mpegts -bsf:v h264_mp4toannexb \"{tmpFile}\"";
                 Logger.LogDebug("ffmpeg命令: {0}", arguments);
-                RunExe(FFMPEG, arguments);
+                int code = RunExe(FFMPEG, arguments);
+                // 校验退出码与产物：原实现丢弃退出码却无条件删除源分段，
+                // ffmpeg 失败时源已删、.ts 为空，合并出缺段文件且不可恢复。
+                if (code != 0 || !File.Exists(tmpFile) || new FileInfo(tmpFile).Length == 0)
+                {
+                    foreach (var ts in tsFiles) TryDelete(ts);
+                    TryDelete(tmpFile);
+                    throw new InvalidOperationException(
+                        $"FLV 分段转封装失败 (ffmpeg code={code})：{Path.GetFileName(file)}，已保留源分段以便重试");
+                }
+                tsFiles.Add(tmpFile);
                 File.Delete(file);
             }
-            var f = BBDownUtil.GetFiles(Path.GetDirectoryName(files[0])!, ".ts");
-            BBDownUtil.CombineMultipleFilesIntoSingleFile(f, outPath);
-            foreach (var s in f) File.Delete(s);
+            BBDownUtil.CombineMultipleFilesIntoSingleFile(tsFiles.ToArray(), outPath);
+            foreach (var s in tsFiles) TryDelete(s);
         }
+    }
+
+    private static void TryDelete(string path)
+    {
+        try { if (File.Exists(path)) File.Delete(path); }
+        catch (IOException) { /* 清理失败不影响主流程 */ }
     }
 }
