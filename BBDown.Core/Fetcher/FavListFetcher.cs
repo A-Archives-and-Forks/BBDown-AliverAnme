@@ -18,7 +18,8 @@ public class FavListFetcher : IFetcher
         id = id[6..];
         var parts = id.Split(':', 2);
         var favId = parts[0];
-        var mid = parts.Length > 1 ? parts[1] : throw new ArgumentException("收藏夹ID格式错误，期望 favlist:mid");
+        // UrlResolver 产出的形式是 favId:{fid}:{mid}，此处已剥掉 "favId:" 前缀
+        var mid = parts.Length > 1 ? parts[1] : throw new ArgumentException("收藏夹ID格式错误，期望 favId:收藏夹ID:用户ID");
         //查找默认收藏夹
         if (favId == "")
         {
