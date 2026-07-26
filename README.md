@@ -78,6 +78,40 @@ BBDown --help
 | | `--thread-segment-size` | 多线程下载分片大小（MB，默认 20） |
 | | `--config-file` | 指定配置文件路径 |
 
+### 更多常用选项
+
+下载内容控制：
+
+| 长选项 | 说明 |
+|--------|------|
+| `--video-only` / `--audio-only` | 仅下载视频 / 音频轨 |
+| `--sub-only` | 仅下载字幕 |
+| `--cover-only` | 仅下载封面 |
+| `--show-all` | 显示全部可用音视频流 |
+| `--save-archives-to-file` | 记录已下载 aid，重复运行时自动跳过 |
+
+外部工具与网络：
+
+| 长选项 | 说明 |
+|--------|------|
+| `--multi-thread` | 多线程下载（默认开启，`--multi-thread false` 关闭） |
+| `--use-aria2c` | 改用 aria2c 下载 |
+| `--aria2c-path` / `--aria2c-args` | 指定 aria2c 路径 / 额外参数 |
+| `--ffmpeg-path` / `--mp4box-path` | 指定混流工具路径 |
+| `--use-mp4box` | 使用 mp4box 混流 |
+| `--work-dir` | 指定下载工作目录 |
+| `--insecure` | 跳过 SSL 证书校验 |
+
+跳过与排障：
+
+| 长选项 | 说明 |
+|--------|------|
+| `--skip-mux` | 跳过混流，保留原始音视频文件 |
+| `--skip-subtitle` / `--skip-cover` / `--skip-ai` | 跳过字幕 / 封面 / AI 字幕 |
+| `--debug` | 输出调试日志（排障时附上） |
+
+> DRM 解密相关选项（`--decrypt-drm` / `--key` / `--kid` / `--wvd-path` 等）见下方 [Widevine DRM 解密](#widevine-drm-解密)。完整选项请执行 `BBDown --help`。
+
 ### 子命令
 
 | 命令 | 说明 |
