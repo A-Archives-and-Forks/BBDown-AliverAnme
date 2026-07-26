@@ -66,12 +66,11 @@ internal static class BBDownLoginUtil
                 {
                     using var successDoc = JsonDocument.Parse(w);
                     string cc = successDoc.RootElement.GetPropertySafe("data").GetStringSafe("url")!;
-                    Logger.Log("登录成功: SESSDATA=" + BBDownUtil.GetQueryString("SESSDATA", cc));
+                    Logger.Log("登录成功: SESSDATA=" + SensitiveDataMasker.MaskValue(BBDownUtil.GetQueryString("SESSDATA", cc)));
                     //导出cookie, 转义英文逗号 否则部分场景会出问题
                     var cookiePath = Path.Combine(Program.APP_DIR, "BBDown.data");
                     await File.WriteAllTextAsync(cookiePath, cc[(cc.IndexOf('?') + 1)..].Replace("&", ";").Replace(",", "%2C"));
                     SetOwnerOnlyPermission(cookiePath);
-                    try { File.Delete("qrcode.png"); } catch (IOException) { /* file may be locked by viewer */ }
                     break;
                 }
             }
@@ -79,6 +78,10 @@ internal static class BBDownLoginUtil
         catch (Exception e) when (e is HttpRequestException or JsonException or InvalidOperationException)
         {
             Logger.LogError(e.Message);
+        }
+        finally
+        {
+            CleanUpQrCodeFile();
         }
     }
 
@@ -127,12 +130,11 @@ internal static class BBDownLoginUtil
                 {
                     using var successDoc2 = JsonDocument.Parse(web);
                     string cc = successDoc2.RootElement.GetPropertySafe("data").GetStringSafe("access_token")!;
-                    Logger.Log("登录成功: AccessToken=" + cc);
+                    Logger.Log("登录成功: AccessToken=" + SensitiveDataMasker.MaskValue(cc));
                     //导出cookie
                     var tvTokenPath = Path.Combine(Program.APP_DIR, "BBDownTV.data");
                     await File.WriteAllTextAsync(tvTokenPath, "access_token=" + cc);
                     SetOwnerOnlyPermission(tvTokenPath);
-                    try { File.Delete("qrcode.png"); } catch (IOException) { /* file may be locked by viewer */ }
                     break;
                 }
             }
@@ -141,6 +143,21 @@ internal static class BBDownLoginUtil
         {
             Logger.LogError(e.Message);
         }
+        finally
+        {
+            CleanUpQrCodeFile();
+        }
+    }
+
+    /// <summary>
+    /// 删除临时二维码文件。二维码过期、扫码中断或请求异常时同样需要清理，
+    /// 否则含登录地址的图片会一直留在工作目录。
+    /// </summary>
+    private static void CleanUpQrCodeFile()
+    {
+        try { File.Delete("qrcode.png"); }
+        catch (IOException) { /* 文件可能正被看图程序占用 */ }
+        catch (UnauthorizedAccessException) { /* 权限不足，留待用户手动清理 */ }
     }
 
     private static void SetOwnerOnlyPermission(string path)
