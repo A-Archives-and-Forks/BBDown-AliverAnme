@@ -57,6 +57,9 @@ public class MyOption : CommandSettings
 
     [CommandOption("--multi-thread")]
     [Description("使用多线程下载(默认开启)")]
+    // Spectre.Console.Cli 在 flag 未出现于命令行时会把 bool 写回 default(false)，
+    // 覆盖属性初始化器；必须用 [DefaultValue] 才能让"默认开启"真正生效。
+    [DefaultValue(true)]
     public bool MultiThread { get; set; } = true;
 
     [CommandOption("--simply-mux")]
@@ -125,6 +128,7 @@ public class MyOption : CommandSettings
 
     [CommandOption("--force-http")]
     [Description("下载音视频时强制使用HTTP协议替换HTTPS(默认开启)")]
+    [DefaultValue(true)]
     public bool ForceHttp { get; set; } = true;
 
     [CommandOption("-d|--download-danmaku")]
@@ -137,6 +141,7 @@ public class MyOption : CommandSettings
 
     [CommandOption("--skip-ai")]
     [Description("跳过AI字幕下载(默认开启)")]
+    [DefaultValue(true)]
     public bool SkipAi { get; set; } = true;
 
     [CommandOption("--video-ascending")]
@@ -205,6 +210,7 @@ public class MyOption : CommandSettings
 
     [CommandOption("--force-replace-host")]
     [Description("强制替换下载服务器host(默认开启)")]
+    [DefaultValue(true)]
     public bool ForceReplaceHost { get; set; } = true;
 
     [CommandOption("--save-archives-to-file")]
