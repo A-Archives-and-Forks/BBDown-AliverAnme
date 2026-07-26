@@ -93,7 +93,9 @@ internal partial class Program
             Logger.Log("请选择一条视频流(输入序号): ", false);
             Console.ForegroundColor = ConsoleColor.Cyan;
             vIndex = ReadIntSafe();
-            if (vIndex > parsedResult.VideoTracks.Count || vIndex < 0) vIndex = 0;
+            // 合法下标是 0..Count-1；用 > 会放过 vIndex==Count，下游 ElementAtOrDefault
+            // 取到 null 静默跳过该轨道，产出缺流文件。必须用 >=。
+            if (vIndex >= parsedResult.VideoTracks.Count || vIndex < 0) vIndex = 0;
             Console.ResetColor();
         }
         if (parsedResult.AudioTracks.Any())
@@ -101,7 +103,7 @@ internal partial class Program
             Logger.Log("请选择一条音频流(输入序号): ", false);
             Console.ForegroundColor = ConsoleColor.Cyan;
             aIndex = ReadIntSafe();
-            if (aIndex > parsedResult.AudioTracks.Count || aIndex < 0) aIndex = 0;
+            if (aIndex >= parsedResult.AudioTracks.Count || aIndex < 0) aIndex = 0;
             Console.ResetColor();
         }
     }

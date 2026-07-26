@@ -439,7 +439,9 @@ internal partial class Program
                     Logger.Log("请选择最想要的清晰度(输入序号): ", false);
                     Console.ForegroundColor = ConsoleColor.Cyan;
                     vIndex = ReadIntSafe();
-                    if (vIndex > dfns.Count || vIndex < 0) vIndex = 0;
+                    // 下一行直接 dfns[vIndex]；用 > 会放过 vIndex==dfns.Count 而抛
+                    // ArgumentOutOfRangeException（不在重试白名单里，整个下载中止）。必须 >=。
+                    if (vIndex >= dfns.Count || vIndex < 0) vIndex = 0;
                     Console.ResetColor();
                     //重新解析
                     parsedResult = await Parser.ExtractTracksAsync(aidOri, p.aid, p.cid, p.epid, myOption.UseTvApi, myOption.UseIntlApi, myOption.UseAppApi, firstEncoding!, myOption.DecryptDrm, dfns[vIndex]);
