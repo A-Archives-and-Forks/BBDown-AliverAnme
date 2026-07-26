@@ -210,6 +210,49 @@ internal partial class Program
         }
     }
 
+    /// <summary>供测试使用：直接校验数值选项，不触碰其余启动流程。</summary>
+    internal static void ValidateNumericOptionsForTest(MyOption myOption) => ValidateNumericOptions(myOption);
+
+    /// <summary>
+    /// 校验数值选项的取值范围。
+    /// 这些值会一路流入下载循环与混流超时，非法值不会当场报错，
+    /// 而是变成"不下载任何数据就成功返回""分片切分不收敛"这类难以定位的故障。
+    /// </summary>
+    private static void ValidateNumericOptions(MyOption myOption)
+    {
+        // 上限 35000：MuxerTimeout 会以分钟乘 60000 传给 WaitForExit，
+        // 超过约 35791 分钟即溢出为负数并抛 ArgumentOutOfRangeException
+        const int maxMuxerTimeoutMinutes = 35000;
+
+        // 统一使用单参数 ArgumentException：本项目启用了 UseSystemResourceKeys，
+        // 带 paramName 的重载会在消息尾部拼出 "Arg_ParamName_Name, xxx" 这样的资源键
+        if (myOption.MuxerTimeout < 1 || myOption.MuxerTimeout > maxMuxerTimeoutMinutes)
+        {
+            throw new ArgumentException(
+                $"参数有误：--muxer-timeout 需在 1 ~ {maxMuxerTimeoutMinutes} 分钟之间，当前为 {myOption.MuxerTimeout}");
+        }
+        if (myOption.RetryCount < 1)
+        {
+            throw new ArgumentException(
+                $"参数有误：--retry-count 至少为 1，当前为 {myOption.RetryCount}（设为 0 将不会发起任何下载）");
+        }
+        if (myOption.RetryDelay < 0)
+        {
+            throw new ArgumentException(
+                $"参数有误：--retry-delay 不能为负数，当前为 {myOption.RetryDelay}");
+        }
+        if (myOption.ThreadSegmentSize < 1)
+        {
+            throw new ArgumentException(
+                $"参数有误：--thread-segment-size 至少为 1 MB，当前为 {myOption.ThreadSegmentSize}（设为 0 会导致分片切分无法收敛）");
+        }
+        if (myOption.DelayPerPage < 0)
+        {
+            throw new ArgumentException(
+                $"参数有误：--delay-per-page 不能为负数，当前为 {myOption.DelayPerPage}");
+        }
+    }
+
     /// <summary>
     /// 设置用户输入的自定义工作目录
     /// </summary>

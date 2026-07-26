@@ -25,15 +25,12 @@ public static class HTTPUtil
         return new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(2) };
     }
 
-    private static HttpClient? _appHttpClient;
-    public static HttpClient AppHttpClient
-    {
-        get
-        {
-            _appHttpClient ??= CreateAppHttpClient();
-            return _appHttpClient;
-        }
-    }
+    // 并发下载与 serve 模式会从多个线程首次访问，Lazy 保证只创建一个 HttpClient，
+    // 否则多余实例各自持有一份 SocketsHttpHandler 连接池，造成 socket 泄漏。
+    private static readonly Lazy<HttpClient> _appHttpClient =
+        new(CreateAppHttpClient, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    public static HttpClient AppHttpClient => _appHttpClient.Value;
 
     private static readonly string[] platforms = { "Windows NT 10.0; Win64", "Macintosh; Intel Mac OS X 10_15", "X11; Linux x86_64" };
 
@@ -64,7 +61,8 @@ public static class HTTPUtil
         webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
         webRequest.Headers.Connection.Clear();
 
-        Logger.LogDebug("获取网页内容: Url: {0}, Headers: {1}", url, webRequest.Headers);
+        Logger.LogDebug("获取网页内容: Url: {0}, Headers: {1}",
+            SensitiveDataMasker.MaskUrl(url), SensitiveDataMasker.MaskHeaders(webRequest.Headers));
         using var webResponse = (await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
 
         string htmlCode = await webResponse.Content.ReadAsStringAsync(token);
@@ -86,10 +84,10 @@ public static class HTTPUtil
                 webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
                 webRequest.Headers.Connection.Clear();
 
-                Logger.LogDebug("获取网页重定向地址(method={1}): Url: {0}", url, method);
+                Logger.LogDebug("获取网页重定向地址(method={1}): Url: {0}", SensitiveDataMasker.MaskUrl(url), method);
                 using var webResponse = (await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
                 string location = webResponse.RequestMessage?.RequestUri?.AbsoluteUri ?? url;
-                Logger.LogDebug("Location: {0}", location);
+                Logger.LogDebug("Location: {0}", SensitiveDataMasker.MaskUrl(location));
                 return location;
             }
             catch (HttpRequestException) when (method == HttpMethod.Head)
@@ -103,7 +101,8 @@ public static class HTTPUtil
 
     public static async Task<byte[]> GetPostResponseAsync(string Url, byte[] postData, Dictionary<string, string>? headers = null, CancellationToken token = default)
     {
-        Logger.LogDebug("Post to: {0}, data: {1}", Url, Convert.ToBase64String(postData));
+        // postData 是 grpc 请求体，可能携带 access_key，只记录长度而非内容
+        Logger.LogDebug("Post to: {0}, data: {1} bytes", SensitiveDataMasker.MaskUrl(Url), postData.Length);
 
         using ByteArrayContent content = new(postData);
         content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/grpc");
@@ -127,7 +126,9 @@ public static class HTTPUtil
             request.Headers.TryAddWithoutValidation("grpc-encoding", "gzip");
         }
 
-        using HttpResponseMessage response = await AppHttpClient.SendAsync(request, token);
+        // 不检查状态码会把 4xx/5xx 的错误页当成 grpc 响应体返回，
+        // 下游只能报出难以定位的反序列化错误
+        using HttpResponseMessage response = (await AppHttpClient.SendAsync(request, token)).EnsureSuccessStatusCode();
         byte[] bytes = await response.Content.ReadAsByteArrayAsync(token);
 
         return bytes;

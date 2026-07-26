@@ -10,6 +10,18 @@
 
 一条命令完成链接解析、多线程下载与音视频混流，支持 8K / HDR / 杜比视界 / 杜比全景声，以及原生 C# 实现的 Widevine DRM 解密。
 
+<a name="演示"></a>
+
+![实际效果](assets/readme/section-demo.svg)
+
+![BBDown 命令行下载演示动图](https://user-images.githubusercontent.com/20772925/88686407-a2001480-d129-11ea-8aac-97a0c71af115.gif)
+
+下载完毕后在当前目录即可看到混流完成的 MP4 文件：
+
+![下载结果：目录中生成的 MP4 文件截图](https://user-images.githubusercontent.com/20772925/88478901-5e1cdc00-cf7e-11ea-97c1-154b9226564e.png)
+
+> 以上两张图来自上游 [nilaoda/BBDown](https://github.com/nilaoda/BBDown) 的早期版本，下载流程一致，但控制台样式与本分支当前基于 Spectre.Console 的输出有所不同。
+
 ![核心功能](assets/readme/section-features.svg)
 
 - 普通视频、番剧、课程、合集 / 列表 / 收藏夹 / 个人空间解析
@@ -65,12 +77,20 @@ BBDown --help
 | | `--thread-segment-size` | 多线程下载分片大小（MB，默认 20） |
 | | `--config-file` | 指定配置文件路径 |
 
-Commands:
-- `login` — APP 扫码登录 WEB 账号
-- `logintv` — APP 扫码登录 TV 账号
-- `serve` — 以 API 服务器模式运行
-  - `-l, --listen` — 监听地址（默认 `http://0.0.0.0:23333`）
-  - `--max-concurrent` — 最大并发下载数（默认 3）
+### 子命令
+
+| 命令 | 说明 |
+|------|------|
+| `login` | APP 扫码登录 WEB 账号 |
+| `logintv` | APP 扫码登录 TV 账号 |
+| `serve` | 以 API 服务器模式运行 |
+
+`serve` 子选项：
+
+| 短选项 | 长选项 | 说明 |
+|--------|--------|------|
+| `-l` | `--listen` | 监听地址（默认 `http://0.0.0.0:23333`） |
+| | `--max-concurrent` | 最大并发下载数（默认 3） |
 
 ### 常用命令
 
@@ -81,7 +101,7 @@ BBDown "https://www.bilibili.com/video/BV1qt4y1X7TW"
 
 使用 TV 接口下载（粉丝量大的 UP 主片源通常无水印）：
 ```bash
-BBDown -tv "https://www.bilibili.com/video/BV1qt4y1X7TW"
+BBDown -t "https://www.bilibili.com/video/BV1qt4y1X7TW"
 ```
 
 显示所有分 P 信息：
@@ -130,7 +150,7 @@ BBDown -c "SESSDATA=******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
 
 手动加载云视听小电视 Token：
 ```bash
-BBDown -tv -token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
+BBDown -t --access-token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
 ```
 </details>
 
@@ -143,10 +163,10 @@ BBDown -tv -token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
 
 目前程序无法自动获取鉴权信息，推荐通过抓包来获取。在请求 Header 中寻找键为 `authorization` 的项，其值形如 `identify_v1 5227************1`，其中的 `5227************1` 就是 token（access_key）。
 
-获取后手动通过 `-token` 命令加载，或写入 `BBDownApp.data` 使程序自动读取：
+获取后手动通过 `--access-token` 选项加载，或写入 `BBDownApp.data` 使程序自动读取：
 
 ```bash
-BBDown -app -token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
+BBDown -a --access-token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
 ```
 </details>
 
@@ -239,14 +259,6 @@ BBDown --decrypt-drm "https://www.bilibili.com/cheese/play/ep1243104"
 - 从 B 站许可证服务器获取密钥（兼容性取决于 `device.wvd` 的 `security_level`）
 - 解密后与普通视频一样进行混流输出
 
-## 演示
-
-![演示动图](https://user-images.githubusercontent.com/20772925/88686407-a2001480-d129-11ea-8aac-97a0c71af115.gif)
-
-下载完毕后在当前目录查看 MP4 文件：
-
-![下载结果截图](https://user-images.githubusercontent.com/20772925/88478901-5e1cdc00-cf7e-11ea-97c1-154b9226564e.png)
-
 ## 开发构建
 
 ```bash
@@ -259,7 +271,7 @@ dotnet restore
 dotnet build
 
 # 运行
-BBDown/bin/Debug/net9.0/BBDown --help
+BBDown/bin/Debug/net10.0/BBDown --help
 ```
 
 详细贡献指南请参考 [CONTRIBUTING.md](./CONTRIBUTING.md)。

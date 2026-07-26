@@ -22,6 +22,9 @@ internal partial class Program
         //处理冲突选项
         HandleConflictingOptions(myOption);
 
+        //校验数值选项，避免非法值在下载或混流阶段以离奇的方式失败
+        ValidateNumericOptions(myOption);
+
         //寻找并设置所需的二进制文件路径
         FindBinaries(myOption);
 

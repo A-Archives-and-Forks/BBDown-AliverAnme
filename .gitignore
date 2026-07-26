@@ -11,6 +11,8 @@
 
 # Tooling
 .claude/
+.agents/
+skills-lock.json
 *.sln.docstates
 
 # User-specific files (MonoDevelop/Xamarin Studio)

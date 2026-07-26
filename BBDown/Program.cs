@@ -55,7 +55,7 @@ partial class Program
             if (!OperatingSystem.IsWindows())
                 System.Diagnostics.Process.Start("stty", "echo");
         }
-        catch { }
+        catch { /* 尽力恢复终端状态，进程即将退出，失败无需上报 */ }
         Environment.Exit(0);
     }
 
