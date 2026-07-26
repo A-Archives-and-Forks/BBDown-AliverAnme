@@ -15,9 +15,22 @@ internal static class BBDownConfigParser
     {
         var result = new List<string>(cliArgs);
 
-        var configPath = cliArgs.Contains("--config-file")
-            ? cliArgs.ElementAtOrDefault(Array.IndexOf(cliArgs, "--config-file") + 1)
-            : null;
+        // 同时支持 "--config-file path" 与 "--config-file=path" 两种写法；
+        // 旧实现只认空格写法，等号写法会被忽略而回落到默认配置路径。
+        string? configPath = null;
+        for (int i = 0; i < cliArgs.Length; i++)
+        {
+            if (cliArgs[i] == "--config-file")
+            {
+                configPath = cliArgs.ElementAtOrDefault(i + 1);
+                break;
+            }
+            if (cliArgs[i].StartsWith("--config-file=", StringComparison.Ordinal))
+            {
+                configPath = cliArgs[i]["--config-file=".Length..];
+                break;
+            }
+        }
 
         if (string.IsNullOrEmpty(configPath))
             configPath = Path.Combine(Program.APP_DIR, "BBDown.config");
@@ -46,7 +59,13 @@ internal static class BBDownConfigParser
         var explicitOptions = new HashSet<string>();
         for (int i = 0; i < cliArgs.Length; i++)
         {
-            if (cliArgs[i].StartsWith('-') && aliasMap.TryGetValue(cliArgs[i], out var canonical))
+            if (!cliArgs[i].StartsWith('-')) continue;
+            // 命令行可写成 "--opt value" 或 "--opt=value"，识别"已显式指定"时
+            // 必须剥掉等号后缀，否则等号写法匹配不到别名，会被配置文件反向覆盖。
+            var token = cliArgs[i];
+            var eq = token.IndexOf('=');
+            if (eq > 0) token = token[..eq];
+            if (aliasMap.TryGetValue(token, out var canonical))
             {
                 explicitOptions.Add(canonical);
             }
