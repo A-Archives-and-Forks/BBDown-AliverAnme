@@ -25,6 +25,14 @@ public class BBDownApiServer
     private readonly List<DownloadTask> finishedTasks = [];
     private readonly SemaphoreSlim _concurrencyLimiter;
 
+    /// <summary>
+    /// 下载任务的生命周期 token。必须独立于 HTTP 请求：
+    /// Minimal API 注入的 CancellationToken 是 HttpContext.RequestAborted，
+    /// 它在响应写完后即失效，会让后台下载在客户端拿到 200 的瞬间被取消。
+    /// 该 token 只在服务器关停时触发。
+    /// </summary>
+    private readonly CancellationTokenSource _serverLifetimeCts = new();
+
     public BBDownApiServer(int maxConcurrent = 3)
     {
         _concurrencyLimiter = new SemaphoreSlim(maxConcurrent, maxConcurrent);
@@ -49,6 +57,11 @@ public class BBDownApiServer
                 });
         });
         app = builder.Build();
+        // 服务器关停时取消仍在进行的下载，避免进程挂在未完成的任务上
+        app.Lifetime.ApplicationStopping.Register(() =>
+        {
+            if (!_serverLifetimeCts.IsCancellationRequested) _serverLifetimeCts.Cancel();
+        });
         app.UseCors("AllowAnyOrigin");
         var taskStatusApi = app.MapGroup("/get-tasks");
         taskStatusApi.MapGet("/", handler: () =>
@@ -87,14 +100,18 @@ public class BBDownApiServer
             }
             return Results.Json(task, AppJsonSerializerContext.Default.DownloadTask);
         });
-        app.MapPost("/add-task", (MyOptionBindingResult<ServeRequestOptions> bindingResult, CancellationToken token) =>
+        app.MapPost("/add-task", (MyOptionBindingResult<ServeRequestOptions> bindingResult) =>
         {
             if (!bindingResult.IsValid)
             {
                 return Results.BadRequest("输入有误");
             }
             var req = bindingResult.Result!;
-            _ = AddDownloadTaskAsync(req, req.CallBackWebHook, token);
+            // 使用服务器生命周期 token 而非请求 token，否则下载会随响应结束一同被取消。
+            // AddDownloadTaskAsync 内部已收敛所有异常，此处兜底避免遗漏变成无人观察的 Task 异常
+            _ = AddDownloadTaskAsync(req, req.CallBackWebHook, _serverLifetimeCts.Token)
+                .ContinueWith(t => Logger.LogError($"任务异常终止: {t.Exception?.GetBaseException().Message}"),
+                    TaskContinuationOptions.OnlyOnFaulted);
             return Results.Ok();
         });
         var finishedRemovalApi = app.MapGroup("remove-finished");
@@ -132,7 +149,25 @@ public class BBDownApiServer
 
     private async Task<DownloadTask> AddDownloadTaskAsync(MyOption option, string? callBackWebHook = null, CancellationToken cancellationToken = default)
     {
-        var aid = await BBDownUtil.GetAvIdAsync(option.Url);
+        string aid;
+        try
+        {
+            aid = await BBDownUtil.GetAvIdAsync(option.Url);
+        }
+        catch (Exception e)
+        {
+            // 链接无法解析时客户端已经收到 200，必须留下一条失败记录，
+            // 否则用户既等不到结果也查不到原因
+            var rejected = new DownloadTask(option.Url, option.Url, DateTimeOffset.Now.ToUnixTimeSeconds())
+            {
+                ErrorMessage = e.Message,
+                TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds(),
+            };
+            lock (_taskLock) { finishedTasks.Add(rejected); }
+            Logger.LogError($"解析链接失败: {option.Url} - {e.Message}");
+            return rejected;
+        }
+
         DownloadTask? runningTask;
         lock (_taskLock) { runningTask = runningTasks.FirstOrDefault(t => t.Aid == aid); }
         if (runningTask is not null)
@@ -141,32 +176,34 @@ public class BBDownApiServer
         };
         var task = new DownloadTask(aid, option.Url, DateTimeOffset.Now.ToUnixTimeSeconds());
         lock (_taskLock) { runningTasks.Add(task); }
-        await _concurrencyLimiter.WaitAsync(cancellationToken);
         try
         {
-            var (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay) = Program.SetUpWork(option);
-            var (fetchedAid, vInfo, apiType) = await Program.GetVideoInfoAsync(option, aidOri, input);
-            task.Title = vInfo.Title;
-            task.Pic = vInfo.Pic;
-            task.VideoPubTime = vInfo.PubTime;
-            await Program.DownloadPagesAsync(option, vInfo, encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
-                        input, savePathFormat, lang, fetchedAid, delay, apiType, task, cancellationToken);
-            task.IsSuccessful = true;
+            await _concurrencyLimiter.WaitAsync(cancellationToken);
+            try
+            {
+                var (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay) = Program.SetUpWork(option);
+                var (fetchedAid, vInfo, apiType) = await Program.GetVideoInfoAsync(option, aidOri, input);
+                task.Title = vInfo.Title;
+                task.Pic = vInfo.Pic;
+                task.VideoPubTime = vInfo.PubTime;
+                await Program.DownloadPagesAsync(option, vInfo, encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
+                            input, savePathFormat, lang, fetchedAid, delay, apiType, task, cancellationToken);
+                task.IsSuccessful = true;
+            }
+            finally
+            {
+                _concurrencyLimiter.Release();
+            }
         }
-        catch (Exception e) when (e is HttpRequestException or JsonException or IOException or InvalidOperationException)
+        // 捕获所有异常：任何漏网的异常类型都会跳过下方的收尾逻辑，
+        // 使任务永久滞留在 runningTasks 中，该 aid 之后再也无法重新下载。
+        catch (Exception e)
         {
             bool debugMode = option.Debug || Config.Current.DebugLog;
             var displayMsg = debugMode ? e.ToString() : e.Message;
-            if (debugMode)
-            {
-                task.ErrorMessage = displayMsg;
-            }
-            Logger.LogError($"{aid} 下载失败");
+            task.ErrorMessage = displayMsg;
+            Logger.LogError($"{aid} 下载失败: {e.Message}");
             Logger.LogDebug("异常详情: {0}", displayMsg);
-        }
-        finally
-        {
-            _concurrencyLimiter.Release();
         }
         task.TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds();
         if (task.IsSuccessful)
