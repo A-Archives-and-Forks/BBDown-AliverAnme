@@ -106,19 +106,22 @@ BBDown -t "https://www.bilibili.com/video/BV1qt4y1X7TW"
 
 显示所有分 P 信息：
 ```bash
-BBDown --show-all "https://www.bilibili.com/video/BV1At41167aj"
+BBDown --show-all "https://www.bilibili.com/video/BV1Y7411d7Ys"
 ```
 
 选择分 P 下载：
 ```bash
 # 单个分 P
-BBDown -p 10 "https://www.bilibili.com/video/BV1At41167aj"
+BBDown -p 10 "https://www.bilibili.com/video/BV1Y7411d7Ys"
 
 # 多个分 P
-BBDown -p 1,2,10 "https://www.bilibili.com/video/BV1At41167aj"
+BBDown -p 1,2,10 "https://www.bilibili.com/video/BV1Y7411d7Ys"
 
 # 范围分 P
-BBDown -p 1-10 "https://www.bilibili.com/video/BV1At41167aj"
+BBDown -p 1-10 "https://www.bilibili.com/video/BV1Y7411d7Ys"
+
+# 范围与单个混用
+BBDown -p 1-3,7,9-11 "https://www.bilibili.com/video/BV1Y7411d7Ys"
 
 # 番剧全集
 BBDown -p ALL "https://www.bilibili.com/bangumi/play/ss33073"
