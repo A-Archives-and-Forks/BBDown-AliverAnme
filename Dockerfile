@@ -1,15 +1,16 @@
-FROM mcr.microsoft.com/dotnet/sdk:9.0 AS builder
+FROM mcr.microsoft.com/dotnet/sdk:10.0 AS builder
 
 WORKDIR /src
 
 COPY BBDown.Core/ BBDown.Core/
 COPY BBDown/ BBDown/
-COPY BBDown.sln .
 
-RUN dotnet restore BBDown.sln
-RUN dotnet publish BBDown -c Release -o /app/publish --no-restore
+# 只还原/发布 BBDown 本身：解决方案还含 BBDown.Tests，
+# 而这里未复制该项目，用 BBDown.sln 会导致 restore 找不到测试工程而失败。
+RUN dotnet restore BBDown/BBDown.csproj
+RUN dotnet publish BBDown/BBDown.csproj -c Release -o /app/publish --no-restore
 
-FROM mcr.microsoft.com/dotnet/aspnet:9.0
+FROM mcr.microsoft.com/dotnet/aspnet:10.0
 
 WORKDIR /app
 
