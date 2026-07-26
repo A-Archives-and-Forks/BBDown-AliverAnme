@@ -124,11 +124,13 @@ internal partial class Program
         {
             vInfo = await fetcher.FetchAsync(aidOri);
         }
-        catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException)
+        // 回退只对 ep: 前缀成立：其余输入（mid:、favlist:、listBizId: 等）与课程无关，
+        // 此前它们同样会走进这里，打印"未找到此 EP/SS 对应番剧信息"这类无关提示，
+        // 再用未经改动的 aidOri 重试一次——既误导用户，也把失败的请求翻倍。
+        catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException
+                                  && aidOri.StartsWith("ep:"))
         {
             // B站返回非番剧JSON结构（可能是课程），尝试按课程查找
-            if (aidOri.StartsWith("cheese:")) throw; // 已经按课程查找过，不再重复尝试
-
             Logger.LogWarn("未找到此 EP/SS 对应番剧信息, 正在尝试按课程查找。");
 
             aidOri = aidOri.Replace("ep", "cheese");
