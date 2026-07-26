@@ -188,6 +188,40 @@ internal partial class Program
                 p.points = parsedResult.ExtraPoints;
             }
 
+            // 充电专属视频：接口对无权限身份照常返回 code=0 且谎报完整时长，
+            // 只把完整流悄悄换成试看片段。必须在开始下载前拦下，
+            // 否则会产出一个被报告为"下载成功"的残片。
+            var previewVerdict = UpowerGuard.Inspect(
+                vInfo.IsUpowerExclusive, vInfo.IsUpowerPlay, p.dur, parsedResult.ActualDurationSec);
+            if (previewVerdict.IsPreview)
+            {
+                Logger.LogWarn("========================================");
+                Logger.LogWarn("  充电专属视频");
+                Logger.LogWarn($"  {previewVerdict.Reason}");
+                if (!myOption.AllowPreview && !myOption.OnlyShowInfo)
+                {
+                    Logger.LogWarn("  已跳过。如需下载试看片段，请加 --allow-preview");
+                    Logger.LogWarn("========================================");
+                    return false;
+                }
+                if (myOption.OnlyShowInfo)
+                {
+                    // 仅解析模式不落盘，放行但要说清下面列出的流属于试看片段
+                    Logger.LogWarn("  仅解析模式，以下流信息对应的是试看片段");
+                    Logger.LogWarn("========================================");
+                }
+                else
+                {
+                    Logger.LogWarn("  已启用 --allow-preview，将下载试看片段");
+                    Logger.LogWarn("========================================");
+
+                    // 标记在标题上而非拼接到最终路径：<videoTitle> 是所有产物(视频/封面/弹幕)
+                    // 共用的占位符，改这里能一次覆盖 dash 与 flv 两条保存路径，
+                    // 也不会破坏用户自定义的 --file-pattern。
+                    title = $"[试看]{title}";
+                }
+            }
+
             if (Config.Current.DebugLog)
             {
                 var debugFile = $"debug_{DateTime.Now:yyyyMMddHHmmssfff}.json";

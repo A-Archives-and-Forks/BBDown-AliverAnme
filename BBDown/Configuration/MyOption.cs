@@ -102,6 +102,10 @@ public class MyOption : CommandSettings
     [Description("尝试解密DRM保护视频")]
     public bool DecryptDrm { get; set; }
 
+    [CommandOption("--allow-preview")]
+    [Description("允许下载充电专属视频的试看片段(默认遇到试看片段直接中止)")]
+    public bool AllowPreview { get; set; }
+
     [CommandOption("--key")]
     [Description("DRM解密密钥 (hex)")]
     public string? DrmKeyHex { get; set; }
