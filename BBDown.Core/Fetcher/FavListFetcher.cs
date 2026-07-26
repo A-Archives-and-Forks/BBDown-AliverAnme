@@ -40,61 +40,84 @@ public class FavListFetcher : IFetcher
         var json = await HTTPUtil.GetWebSourceAsync(api);
         using var infoJson = JsonDocument.Parse(json);
         var data = infoJson.RootElement.GetPropertySafe("data");
-        int totalCount = data.GetPropertySafe("info").GetPropertySafe("media_count").GetInt32();
+        var favInfo = data.GetPropertySafe("info");
+        int totalCount = favInfo.GetPropertySafe("media_count").GetInt32();
         int totalPage = (int)Math.Ceiling((double)totalCount / pageSize);
-        var title = data.GetPropertySafe("info").GetPropertySafe("title").GetString()!;
-        var intro = data.GetPropertySafe("info").GetPropertySafe("intro").GetString()!;
-        long pubTime = data.GetPropertySafe("info").GetPropertySafe("ctime").GetInt64();
-        var userName = data.GetPropertySafe("info").GetPropertySafe("upper").GetPropertySafe("name").ToString();
-        var medias = data.GetPropertySafe("medias").EnumerateArray().ToList();
+        var title = favInfo.GetPropertySafe("title").GetString()!;
+        var intro = favInfo.GetPropertySafe("intro").GetString()!;
+        long pubTime = favInfo.GetPropertySafe("ctime").GetInt64();
 
+        var failures = new List<string>();
+
+        // 就地处理一页的 medias。必须在其 JsonDocument 仍存活时调用——
+        // JsonElement 只是对文档的引用，原实现把分页结果 ToList 攒到循环外，
+        // 而每次迭代的 using var jsonDoc 已在迭代末尾释放，随后访问会抛
+        // ObjectDisposedException（收藏夹超过一页即触发）。
+        async Task ProcessPageAsync(JsonElement pageData)
+        {
+            // 用 EnumerateArraySafe：空收藏夹的 medias 为 null，EnumerateArray 会抛异常
+            foreach (var m in pageData.EnumerateArraySafe("medias"))
+            {
+                //只处理未失效视频
+                if (m.GetInt32Safe("attr") != 0) continue;
+
+                var pageCount = m.GetInt32Safe("page");
+                if (pageCount > 1)
+                {
+                    try
+                    {
+                        var tmpInfo = await new NormalInfoFetcher().FetchAsync(m.GetValueAsStringSafe("id"));
+                        foreach (var item in tmpInfo.PagesInfo)
+                        {
+                            Page p = new(index++, item)
+                            {
+                                title = m.GetValueAsStringSafe("title") + $"_P{item.index}_{item.title}",
+                                cover = tmpInfo.Pic,
+                                desc = m.GetValueAsStringSafe("intro")
+                            };
+                            if (!pagesInfo.Contains(p)) pagesInfo.Add(p);
+                        }
+                    }
+                    // 单个多P稿件失效（删除/私密/风控）不应中断整个收藏夹解析
+                    catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
+                                                  or InvalidOperationException or TaskCanceledException)
+                    {
+                        failures.Add($"av{m.GetValueAsStringSafe("id")} {m.GetValueAsStringSafe("title")} —— {ex.Message}");
+                    }
+                }
+                else
+                {
+                    Page p = new(index++,
+                        m.GetValueAsStringSafe("id"),
+                        m.GetPropertySafe("ugc").GetValueAsStringSafe("first_cid"),
+                        "", //epid
+                        m.GetValueAsStringSafe("title"),
+                        m.GetInt32Safe("duration"),
+                        "",
+                        m.GetInt64Safe("pubtime"),
+                        m.GetValueAsStringSafe("cover"),
+                        m.GetValueAsStringSafe("intro"),
+                        m.GetPropertySafe("upper").GetValueAsStringSafe("name"),
+                        m.GetPropertySafe("upper").GetValueAsStringSafe("mid"));
+                    if (!pagesInfo.Contains(p)) pagesInfo.Add(p);
+                }
+            }
+        }
+
+        await ProcessPageAsync(data);
         for (int page = 2; page <= totalPage; page++)
         {
             api = $"https://api.bilibili.com/x/v3/fav/resource/list?media_id={favId}&pn={page}&ps={pageSize}&order=mtime&type=2&tid=0&platform=web";
             json = await HTTPUtil.GetWebSourceAsync(api);
             using var jsonDoc = JsonDocument.Parse(json);
-            data = jsonDoc.RootElement.GetPropertySafe("data");
-            medias.AddRange(data.GetPropertySafe("medias").EnumerateArray().ToList());
+            await ProcessPageAsync(jsonDoc.RootElement.GetPropertySafe("data"));
         }
 
-        foreach (var m in medias)
+        if (failures.Count > 0)
         {
-            //只处理视频类型(可以直接在query param上指定type=2)
-            // if (m.GetProperty("type").GetInt32() != 2) continue;
-            //只处理未失效视频
-            if (m.GetInt32Safe("attr") != 0) continue;
-
-            var pageCount = m.GetInt32Safe("page");
-            if (pageCount > 1)
-            {
-                var tmpInfo = await new NormalInfoFetcher().FetchAsync(m.GetValueAsStringSafe("id"));
-                foreach (var item in tmpInfo.PagesInfo)
-                {
-                    Page p = new(index++, item)
-                    {
-                        title = m.GetValueAsStringSafe("title") + $"_P{item.index}_{item.title}",
-                        cover = tmpInfo.Pic,
-                        desc = m.GetValueAsStringSafe("intro")
-                    };
-                    if (!pagesInfo.Contains(p)) pagesInfo.Add(p);
-                }
-            }
-            else
-            {
-                Page p = new(index++,
-                    m.GetValueAsStringSafe("id"),
-                    m.GetPropertySafe("ugc").GetValueAsStringSafe("first_cid"),
-                    "", //epid
-                    m.GetValueAsStringSafe("title"),
-                    m.GetInt32Safe("duration"),
-                    "",
-                    m.GetInt64Safe("pubtime"),
-                    m.GetValueAsStringSafe("cover"),
-                    m.GetValueAsStringSafe("intro"),
-                    m.GetPropertySafe("upper").GetValueAsStringSafe("name"),
-                    m.GetPropertySafe("upper").GetValueAsStringSafe("mid"));
-                if (!pagesInfo.Contains(p)) pagesInfo.Add(p);
-            }
+            Logger.LogWarn($"收藏夹中有 {failures.Count} 个稿件无法解析，已跳过：");
+            foreach (var f in failures.Take(10)) Logger.LogWarn("  " + f, time: false);
+            if (failures.Count > 10) Logger.LogWarn($"  ...另有 {failures.Count - 10} 个", time: false);
         }
 
         var info = new VInfo
