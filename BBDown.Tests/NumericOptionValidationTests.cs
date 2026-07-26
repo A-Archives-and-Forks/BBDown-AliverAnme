@@ -69,7 +69,7 @@ public class NumericOptionValidationTests
     [Fact]
     public void Defaults_AreAccepted()
     {
-        Program.ValidateNumericOptionsForTest(Valid());
+        Assert.Null(Record.Exception(() => Program.ValidateNumericOptionsForTest(Valid())));
     }
 
     [Fact]
@@ -82,6 +82,6 @@ public class NumericOptionValidationTests
         option.ThreadSegmentSize = 1;
         option.DelayPerPage = 0;
 
-        Program.ValidateNumericOptionsForTest(option);
+        Assert.Null(Record.Exception(() => Program.ValidateNumericOptionsForTest(option)));
     }
 }

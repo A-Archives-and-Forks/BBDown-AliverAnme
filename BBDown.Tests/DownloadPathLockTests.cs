@@ -96,7 +96,12 @@ public class DownloadPathLockTests
         var second = BBDownDownloadUtil.RunWithPathLockAsync("/tmp/bbdown-test-e2.mp4", () => Task.CompletedTask);
         await second.WaitAsync(TimeSpan.FromSeconds(5));
 
+        // 第一个仍持锁未结束，第二个却已完成——这才说明两把锁是独立的
+        Assert.True(second.IsCompletedSuccessfully);
+        Assert.False(first.IsCompleted);
+
         release.SetResult();
         await first;
+        Assert.True(first.IsCompletedSuccessfully);
     }
 }

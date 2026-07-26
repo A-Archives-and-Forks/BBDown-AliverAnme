@@ -25,7 +25,9 @@ public partial class NormalInfoFetcher : IFetcher
         string desc = data.GetStringSafe("desc");
         string pic = data.GetStringSafe("pic");
         var owner = data.GetPropertySafe("owner");
-        string ownerMid = owner.GetStringSafe("mid");
+        // owner.mid 是 JSON 数字，GetStringSafe 只认字符串会返回空串，
+        // 导致 <ownerMid> 文件名占位符恒为空；用 GetValueAsStringSafe 兼容数字。
+        string ownerMid = owner.GetValueAsStringSafe("mid");
         string ownerName = owner.GetStringSafe("name");
         long pubTime = data.GetInt64Safe("pubdate");
         bool bangumi = false;

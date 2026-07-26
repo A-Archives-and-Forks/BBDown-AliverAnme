@@ -59,7 +59,9 @@ static class AppHelper
                 : throw new ArgumentException($"{name} 必须是有效的数字 ID，当前值: '{value}'");
 
         var headers = GetHeader(appkey);
-        Logger.LogDebug("App-Req-Headers: {0}", JsonSerializer.Serialize(headers, JsonContext.Default.DictionaryStringString));
+        // headers 里的 authorization 携带 access_token，直接序列化会把它写进日志文件
+        Logger.LogDebug("App-Req-Headers: {0}",
+            JsonSerializer.Serialize(SensitiveDataMasker.MaskHeaderMap(headers), JsonContext.Default.DictionaryStringString));
         byte[] data;
         // 只有pgc接口才有配音和片头尾信息
         if (bangumi)

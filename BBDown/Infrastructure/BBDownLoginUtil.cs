@@ -116,7 +116,10 @@ internal static class BBDownLoginUtil
                 responseArray = await (await HTTPUtil.AppHttpClient.PostAsync(pollUrl, new FormUrlEncodedContent(parameters.ToDictionary()))).Content.ReadAsByteArrayAsync();
                 web = Encoding.UTF8.GetString(responseArray);
                 using var pollDoc2 = JsonDocument.Parse(web);
-                string code = pollDoc2.RootElement.GetStringSafe("code")!;
+                // 该轮询接口的 code 是 JSON 数字，而 GetStringSafe 只接受字符串类型、
+                // 对数字一律返回空串，导致 code 恒为 "" 永远匹配不到 86038/86039，
+                // 每次轮询都误入成功分支。GetValueAsStringSafe 用 ToString() 兼容数字与字符串。
+                string code = pollDoc2.RootElement.GetValueAsStringSafe("code");
                 if (code == "86038")
                 {
                     Logger.LogColor("二维码已过期, 请重新执行登录指令.");

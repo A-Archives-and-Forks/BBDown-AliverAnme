@@ -135,7 +135,10 @@ internal partial class Program
         if (proc.ExitCode != 0)
         {
             var err = await stderrTask;
-            Logger.LogError($"mp4decrypt failed: {err}");
+            // 失败必须抛出：原实现只 LogError 后继续，主流程会把仍处于加密状态或
+            // 半损坏的输出当作解密成功，最终混流出无法播放的文件却报告成功。
+            try { if (File.Exists(output)) File.Delete(output); } catch (IOException) { }
+            throw new InvalidOperationException($"mp4decrypt 解密失败 (code={proc.ExitCode}): {err}");
         }
     }
 

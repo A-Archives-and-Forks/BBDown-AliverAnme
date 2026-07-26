@@ -24,7 +24,8 @@
 
 ![核心功能](assets/readme/section-features.svg)
 
-- 普通视频、番剧、课程、合集 / 列表 / 收藏夹 / 个人空间解析
+- 普通视频、番剧、课程、合集 / 列表 / 收藏夹解析
+- UP 主全部投稿批量下载（需登录）
 - 多分 P 自动下载，支持自由选择清晰度、编码与分 P 范围
 - 下载外挂字幕并转换为 `srt` / `ass` 格式
 - 自动混流：合并音频 + 视频 + 字幕 + 章节信息（需 ffmpeg 或 mp4box）
@@ -77,6 +78,40 @@ BBDown --help
 | | `--thread-segment-size` | 多线程下载分片大小（MB，默认 20） |
 | | `--config-file` | 指定配置文件路径 |
 
+### 更多常用选项
+
+下载内容控制：
+
+| 长选项 | 说明 |
+|--------|------|
+| `--video-only` / `--audio-only` | 仅下载视频 / 音频轨 |
+| `--sub-only` | 仅下载字幕 |
+| `--cover-only` | 仅下载封面 |
+| `--show-all` | 显示全部可用音视频流 |
+| `--save-archives-to-file` | 记录已下载 aid，重复运行时自动跳过 |
+
+外部工具与网络：
+
+| 长选项 | 说明 |
+|--------|------|
+| `--multi-thread` | 多线程下载（默认开启，`--multi-thread false` 关闭） |
+| `--use-aria2c` | 改用 aria2c 下载 |
+| `--aria2c-path` / `--aria2c-args` | 指定 aria2c 路径 / 额外参数 |
+| `--ffmpeg-path` / `--mp4box-path` | 指定混流工具路径 |
+| `--use-mp4box` | 使用 mp4box 混流 |
+| `--work-dir` | 指定下载工作目录 |
+| `--insecure` | 跳过 SSL 证书校验 |
+
+跳过与排障：
+
+| 长选项 | 说明 |
+|--------|------|
+| `--skip-mux` | 跳过混流，保留原始音视频文件 |
+| `--skip-subtitle` / `--skip-cover` / `--skip-ai` | 跳过字幕 / 封面 / AI 字幕 |
+| `--debug` | 输出调试日志（排障时附上） |
+
+> DRM 解密相关选项（`--decrypt-drm` / `--key` / `--kid` / `--wvd-path` 等）见下方 [Widevine DRM 解密](#widevine-drm-解密)。完整选项请执行 `BBDown --help`。
+
 ### 子命令
 
 | 命令 | 说明 |
@@ -106,23 +141,41 @@ BBDown -t "https://www.bilibili.com/video/BV1qt4y1X7TW"
 
 显示所有分 P 信息：
 ```bash
-BBDown --show-all "https://www.bilibili.com/video/BV1At41167aj"
+BBDown --show-all "https://www.bilibili.com/video/BV1Y7411d7Ys"
 ```
 
 选择分 P 下载：
 ```bash
 # 单个分 P
-BBDown -p 10 "https://www.bilibili.com/video/BV1At41167aj"
+BBDown -p 10 "https://www.bilibili.com/video/BV1Y7411d7Ys"
 
 # 多个分 P
-BBDown -p 1,2,10 "https://www.bilibili.com/video/BV1At41167aj"
+BBDown -p 1,2,10 "https://www.bilibili.com/video/BV1Y7411d7Ys"
 
 # 范围分 P
-BBDown -p 1-10 "https://www.bilibili.com/video/BV1At41167aj"
+BBDown -p 1-10 "https://www.bilibili.com/video/BV1Y7411d7Ys"
+
+# 范围与单个混用
+BBDown -p 1-3,7,9-11 "https://www.bilibili.com/video/BV1Y7411d7Ys"
 
 # 番剧全集
 BBDown -p ALL "https://www.bilibili.com/bangumi/play/ss33073"
 ```
+
+下载 UP 主的全部投稿（需登录）：
+```bash
+# 先登录，该接口不接受未登录请求
+BBDown login
+
+# 解析整个空间，每个投稿的每个分 P 会依次编号
+BBDown "https://space.bilibili.com/21241234"
+
+# 配合 -p 只取其中一部分
+BBDown -p 1-20 "https://space.bilibili.com/21241234"
+```
+
+> 投稿列表接口不返回 cid，程序需逐个请求视频详情来展开分 P，
+> 投稿较多时解析阶段会花费一些时间。
 
 ### 登录与鉴权
 

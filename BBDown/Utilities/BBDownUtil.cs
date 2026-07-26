@@ -140,13 +140,6 @@ public static partial class BBDownUtil
         return "";
     }
 
-    //https://s1.hdslb.com/bfs/static/player/main/video.9efc0c61.js
-    public static string GetSession(string buvid3)
-    {
-        //这个参数可以没有 所以此处就不写具体实现了
-        throw new NotImplementedException();
-    }
-
     public static string GetSign(string parameters)
     {
         string toEncode = parameters + "59b43e04ad6965f34319062b478f83dd";
@@ -323,21 +316,49 @@ public static partial class BBDownUtil
             using var navDoc = JsonDocument.Parse(source);
             var json = navDoc.RootElement;
             int code = json.GetPropertySafe("code").GetInt32();
+
+            // wbi 密钥必须在判断登录状态之前提取：nav 接口在未登录（code=-101）时
+            // 依然会返回 wbi_img，而此前的提前 return 会跳过这一步，
+            // 使未登录用户的 Config.WBI 恒为空串、w_rid 恒为无效签名。
+            TryUpdateWbiKey(json);
+
             if (code == -101)
             {
                 Logger.LogDebug("Cookie 已过期或无效 (code=-101)");
                 return (false, true);
             }
             var is_login = json.GetPropertySafe("data").GetPropertySafe("isLogin").GetBoolean();
-            var wbi_img = json.GetPropertySafe("data").GetPropertySafe("wbi_img");
-            Core.Config.WBI = GetMixinKey(RSubString(wbi_img.GetPropertySafe("img_url").GetString()!) + RSubString(wbi_img.GetPropertySafe("sub_url").GetString()!));
-            Logger.LogDebug("wbi: {0}", Core.Config.WBI);
             return (is_login, false);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException)
         {
             Logger.LogDebug("检测登录状态失败: {0}", ex.Message);
             return (false, false);
+        }
+    }
+
+    /// <summary>
+    /// 从 nav 响应中提取 wbi 混淆密钥。缺失时保持原值并记录，
+    /// 不因此让登录状态检测失败。
+    /// </summary>
+    private static void TryUpdateWbiKey(JsonElement navRoot)
+    {
+        try
+        {
+            var wbiImg = navRoot.GetPropertySafe("data").GetPropertySafe("wbi_img");
+            var imgUrl = wbiImg.GetPropertySafe("img_url").GetString();
+            var subUrl = wbiImg.GetPropertySafe("sub_url").GetString();
+            if (string.IsNullOrEmpty(imgUrl) || string.IsNullOrEmpty(subUrl))
+            {
+                Logger.LogDebug("nav 响应中缺少 wbi_img，跳过 wbi 密钥更新");
+                return;
+            }
+            Core.Config.WBI = GetMixinKey(RSubString(imgUrl) + RSubString(subUrl));
+            Logger.LogDebug("wbi: {0}", Core.Config.WBI);
+        }
+        catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
+        {
+            Logger.LogDebug("提取 wbi 密钥失败: {0}", ex.Message);
         }
     }
 

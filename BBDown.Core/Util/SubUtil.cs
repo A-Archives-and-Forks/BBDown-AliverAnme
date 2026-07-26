@@ -476,15 +476,42 @@ public static partial class SubUtil
             }
             //有的没有内容
             if (line.TryGetProperty("content", out JsonElement content))
-                lines.AppendLine(content.ToString());
+                lines.AppendLine(SanitizeSrtContent(content.ToString()));
             lines.AppendLine();
         }
         return lines.ToString();
     }
 
-    private static string FormatTime(double sec) //64.13
+    /// <summary>
+    /// 按 SRT 的 <c>HH:MM:SS,mmm</c> 输出时间轴。
+    /// 不能用 <c>hh</c> 格式符：它取的是 TimeSpan.Hours（0-23），
+    /// 超过 24 小时的时间会丢掉天数——86400 秒会变成 00:00:00，
+    /// 让超长视频的字幕整体跳回开头。SRT 本身允许小时数超过 24。
+    /// 负数时间在 SRT 中无意义，夹紧到 0，否则符号会被格式化悄悄丢弃。
+    /// </summary>
+    internal static string FormatTime(double sec) //64.13
     {
-        return TimeSpan.FromSeconds(sec).ToString(@"hh\:mm\:ss\,fff");
+        if (double.IsNaN(sec) || sec < 0) sec = 0;
+        var ts = TimeSpan.FromSeconds(sec);
+        return $"{(int)ts.TotalHours:D2}:{ts.Minutes:D2}:{ts.Seconds:D2},{ts.Milliseconds:D3}";
+    }
+
+    /// <summary>
+    /// 中和字幕正文里会破坏 SRT 块结构的字符。
+    /// SRT 用空行分隔字幕块：正文中一旦出现空行，后续所有字幕都会错位。
+    /// 多行正文本身合法，因此只折叠空行而不是删除全部换行。
+    /// </summary>
+    internal static string SanitizeSrtContent(string? content)
+    {
+        if (string.IsNullOrEmpty(content)) return string.Empty;
+
+        var normalized = content.Replace("\r\n", "\n").Replace('\r', '\n');
+        var keptLines = normalized
+            .Split('\n')
+            .Select(l => l.TrimEnd())
+            .Where(l => l.Length > 0);
+
+        return string.Join('\n', keptLines);
     }
 
     [GeneratedRegex("-[a-z]")]

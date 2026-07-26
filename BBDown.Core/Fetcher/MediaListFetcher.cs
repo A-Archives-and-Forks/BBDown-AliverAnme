@@ -66,8 +66,13 @@ public class MediaListFetcher : IFetcher
                 throw new InvalidOperationException($"获取合集视频列表失败(code={code}): {message}");
             }
             hasMore = data.GetBooleanSafe("has_more");
+            // 游标必须记录本页最后一条的 id，无论它是否被 attr 过滤跳过。
+            // 否则整页都是失效条目时 oid 不会推进，下一轮请求同一页 → 死循环。
+            var previousOid = oid;
             foreach (var m in data.EnumerateArraySafe("media_list"))
             {
+                oid = m.GetValueAsStringSafe("id");
+
                 // 只处理未失效的视频条目（与收藏夹解析逻辑保持一致）
                 if (m.TryGetProperty("attr", out var attrElem) && attrElem.GetInt32() != 0)
                     continue;
@@ -93,7 +98,14 @@ public class MediaListFetcher : IFetcher
                     if (!pagesInfo.Contains(p)) pagesInfo.Add(p);
                     else index--;
                 }
-                oid = m.GetValueAsStringSafe("id");
+            }
+
+            // 兜底：接口报 has_more 却没让游标前进（空页 / with_current 只回显游标本身），
+            // 再请求也是同一页，直接停止，避免请求洪泛
+            if (hasMore && oid == previousOid)
+            {
+                Logger.LogDebug("合集翻页游标未推进（oid={0}），停止翻页", oid);
+                break;
             }
         }
 

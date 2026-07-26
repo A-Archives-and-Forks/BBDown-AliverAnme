@@ -43,6 +43,18 @@ internal partial class Program
             savePathFormat = string.IsNullOrEmpty(myOption.MultiFilePattern) ? MultiPageDefaultSavePath : myOption.MultiFilePattern;
         }
 
+        var failedPages = new List<int>();
+
+        // 存档以 aid 为粒度，而一个多P稿件的所有分P共享同一个 aid。
+        // 若下完第一个分P就写入存档，同稿件余下的分P会在下一次循环里被
+        // CheckAidFromFile 判定为"已下载"而全部跳过——收藏夹、合集、UP 主投稿
+        // 这类含多P稿件的列表尤其容易踩到。因此必须等一个 aid 的分P全部成功
+        // 之后再写入。
+        var remainingPagesByAid = pagesInfo
+            .GroupBy(p => p.aid)
+            .ToDictionary(g => g.Key, g => g.Count());
+        var failedAids = new HashSet<string>();
+
         foreach (Page p in pagesInfo)
         {
             if (pagesInfo.Count > 1 && delay > 0)
@@ -52,29 +64,50 @@ internal partial class Program
             }
             Logger.Log($"开始解析P{p.index}: {p.aid}... ({pagesInfo.IndexOf(p) + 1} of {pagesInfo.Count})");
 
-            if (myOption.SaveArchivesToFile)
+            if (myOption.SaveArchivesToFile && CheckAidFromFile(p.aid))
             {
-                if (CheckAidFromFile(p.aid))
-                {
-
-                    Logger.Log($"aid: {p.aid}已下载过, 跳过下载...");
-                    continue;
-                }
+                Logger.Log($"aid: {p.aid}已下载过, 跳过下载...");
+                remainingPagesByAid[p.aid]--;
+                continue;
             }
 
-            await DownloadPageAsync(p, myOption, vInfo, pagesInfo, encodingPriority, dfnPriority, firstEncoding,
+            var succeeded = await DownloadPageAsync(p, myOption, vInfo, pagesInfo, encodingPriority, dfnPriority, firstEncoding,
                 downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, apiType, relatedTask, cancellationToken);
 
             if (myOption.SaveArchivesToFile)
             {
-                SaveAidToFile(p.aid);
+                remainingPagesByAid[p.aid]--;
+                // 只要该稿件有任何一个分P失败就不入档，否则下次运行会跳过尚未下全的稿件
+                if (!succeeded) failedAids.Add(p.aid);
+                if (remainingPagesByAid[p.aid] == 0 && !failedAids.Contains(p.aid))
+                {
+                    SaveAidToFile(p.aid);
+                }
             }
+
+            if (!succeeded)
+            {
+                // 记录后继续处理其余分P
+                failedPages.Add(p.index);
+            }
+        }
+
+        if (failedPages.Count > 0)
+        {
+            // 必须抛出：调用方据此决定退出码，serve 模式据此把任务标记为失败。
+            // 此前这里只打印"任务完成"，失败对脚本与 API 客户端完全不可见。
+            throw new InvalidOperationException(
+                $"共 {failedPages.Count} 个分P下载失败：P{string.Join(", P", failedPages)}");
         }
 
         Logger.Log("任务完成");
     }
 
-    private static async Task DownloadPageAsync(Page p, MyOption myOption, VInfo vInfo, List<Page> selectedPagesInfo, Dictionary<string, byte> encodingPriority, Dictionary<string, int> dfnPriority,
+    /// <summary>
+    /// 下载单个分P。返回 false 表示该分P最终失败——调用方据此避免把它记为已完成，
+    /// 并让整体任务状态反映失败，而不是照常报告"任务完成"。
+    /// </summary>
+    private static async Task<bool> DownloadPageAsync(Page p, MyOption myOption, VInfo vInfo, List<Page> selectedPagesInfo, Dictionary<string, byte> encodingPriority, Dictionary<string, int> dfnPriority,
         string? firstEncoding, bool downloadDanmaku, BBDownDanmakuFormat[] downloadDanmakuFormats, string input, string savePathFormat, string lang, string aidOri, string apiType, DownloadTask? relatedTask = null, CancellationToken cancellationToken = default)
     {
         string desc = string.IsNullOrEmpty(p.desc) ? vInfo.Desc : p.desc;
@@ -143,7 +176,7 @@ internal partial class Program
                 if (myOption.SubOnly)
                 {
                     if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0) Directory.Delete(p.aid, true);
-                    return;
+                    return true;
                 }
             }
 
@@ -182,12 +215,12 @@ internal partial class Program
                 if (parsedResult.VideoTracks.Count == 0)
                 {
                     Logger.LogWarn("没有找到符合要求的视频流");
-                    if (myOption.VideoOnly) return;
+                    if (myOption.VideoOnly) return true;
                 }
                 if (parsedResult.AudioTracks.Count == 0)
                 {
                     Logger.LogWarn("没有找到符合要求的音频流");
-                    if (myOption.AudioOnly) return;
+                    if (myOption.AudioOnly) return true;
                 }
 
                 if (myOption.AudioOnly)
@@ -219,7 +252,7 @@ internal partial class Program
                 //仅展示 跳过下载
                 if (myOption.OnlyShowInfo)
                 {
-                    return;
+                    return true;
                 }
 
                 int vIndex = 0; //用户手动选择的视频序号
@@ -276,7 +309,7 @@ internal partial class Program
                         {
                             Directory.Delete(p.aid);
                         }
-                        return;
+                        return true;
                     }
                 }
 
@@ -310,7 +343,7 @@ internal partial class Program
                     {
                         Directory.Delete(p.aid, true);
                     }
-                    return;
+                    return true;
                 }
 
                 if (selectedVideo != null)
@@ -358,7 +391,7 @@ internal partial class Program
 
                 if (!parsedResult.VideoTracks.Any()) videoPath = "";
                 if (!parsedResult.AudioTracks.Any()) audioPath = "";
-                if (myOption.SkipMux) return;
+                if (myOption.SkipMux) return true;
                 Logger.Log($"开始合并音视频{(subtitleInfo.Any() ? "和字幕" : "")}...");
                 if (myOption.AudioOnly)
                     savePath = savePath[..^4] + ".m4a";
@@ -374,7 +407,7 @@ internal partial class Program
                     subtitleInfo, myOption.AudioOnly, myOption.VideoOnly, p.points, p.pubTime, myOption.SimplyMux, isHevc);
                 if (code != 0 || !File.Exists(savePath) || new FileInfo(savePath).Length == 0)
                 {
-                    Logger.LogError("合并失败"); return;
+                    Logger.LogError("合并失败"); return false;
                 }
                 Logger.Log("清理临时文件...");
                 await Task.Delay(200, cancellationToken);
@@ -393,7 +426,7 @@ internal partial class Program
                 {
                     Logger.LogError("此视频需要大会员登录才能获取完整DRM内容。");
                     Logger.LogError($"请先运行: BBDown login  或使用 --cookie 参数");
-                    return;
+                    return false;
                 }
                 var clips = parsedResult.Clips;
                 var dfns = parsedResult.Dfns;
@@ -406,7 +439,9 @@ internal partial class Program
                     Logger.Log("请选择最想要的清晰度(输入序号): ", false);
                     Console.ForegroundColor = ConsoleColor.Cyan;
                     vIndex = ReadIntSafe();
-                    if (vIndex > dfns.Count || vIndex < 0) vIndex = 0;
+                    // 下一行直接 dfns[vIndex]；用 > 会放过 vIndex==dfns.Count 而抛
+                    // ArgumentOutOfRangeException（不在重试白名单里，整个下载中止）。必须 >=。
+                    if (vIndex >= dfns.Count || vIndex < 0) vIndex = 0;
                     Console.ResetColor();
                     //重新解析
                     parsedResult = await Parser.ExtractTracksAsync(aidOri, p.aid, p.cid, p.epid, myOption.UseTvApi, myOption.UseIntlApi, myOption.UseAppApi, firstEncoding!, myOption.DecryptDrm, dfns[vIndex]);
@@ -428,7 +463,7 @@ internal partial class Program
                         clips.ForEach(Console.WriteLine);
                     }
                 }
-                if (myOption.OnlyShowInfo) return;
+                if (myOption.OnlyShowInfo) return true;
                 savePath = FormatSavePath(savePathFormat, title, parsedResult.VideoTracks.ElementAtOrDefault(vIndex), null, p, pagesCount, apiType, pubTime);
                 if (File.Exists(savePath) && new FileInfo(savePath).Length != 0)
                 {
@@ -438,22 +473,25 @@ internal partial class Program
                     {
                         Directory.Delete(p.aid, true);
                     }
-                    return;
+                    return true;
                 }
                 var pad = string.Empty.PadRight(clips.Count.ToString().Length, '0');
+                var segFiles = new List<string>();
                 for (int i = 0; i < clips.Count; i++)
                 {
                     var link = clips[i];
                     videoPath = $"{p.aid}/{p.aid}.P{p.index}.{p.cid}.{i.ToString(pad)}.mp4";
                     Logger.Log($"开始下载P{p.index}视频, 片段({(i + 1).ToString(pad)}/{clips.Count})...");
                     await DownloadTrackAsync(link, videoPath, downloadConfig, video: true);
+                    segFiles.Add(videoPath);
                 }
                 Logger.Log($"下载P{p.index}完毕");
                 Logger.Log("开始合并分段...");
-                var files = BBDownUtil.GetFiles(Path.GetDirectoryName(videoPath)!, ".mp4");
+                // 传入本次下载的精确分段列表，而非扫描整个目录（GetFiles(".mp4") 会连同
+                // 同 aid 其它分P 的成品一起捞进来，多P FLV 视频会被拼串味）
                 videoPath = $"{p.aid}/{p.aid}.P{p.index}.{p.cid}.mp4";
-                BBDownMuxer.MergeFLV(files, videoPath);
-                if (myOption.SkipMux) return;
+                BBDownMuxer.MergeFLV(segFiles.ToArray(), videoPath);
+                if (myOption.SkipMux) return true;
                 Logger.Log($"开始混流视频{(subtitleInfo.Any() ? "和字幕" : "")}...");
                 if (myOption.AudioOnly)
                     savePath = savePath[..^4] + ".m4a";
@@ -467,7 +505,7 @@ internal partial class Program
                     subtitleInfo, myOption.AudioOnly, myOption.VideoOnly, p.points, p.pubTime, myOption.SimplyMux);
                 if (code != 0 || !File.Exists(savePath) || new FileInfo(savePath).Length == 0)
                 {
-                    Logger.LogError("合并失败"); return;
+                    Logger.LogError("合并失败"); return false;
                 }
                 Logger.Log("清理临时文件...");
                 await Task.Delay(200, cancellationToken);
@@ -500,7 +538,7 @@ internal partial class Program
             if (!string.IsNullOrWhiteSpace(savePath)) {
                 relatedTask?.SavePaths.Add(savePath);
             }
-            break; // success, exit retry loop
+            return true; // success, exit retry loop
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException)
         {
@@ -511,6 +549,7 @@ internal partial class Program
             await Task.Delay(3000, cancellationToken);
         }
         }
+        return false;
     }
 
 }

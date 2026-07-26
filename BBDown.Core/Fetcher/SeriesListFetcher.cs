@@ -19,7 +19,16 @@ public class SeriesListFetcher : IFetcher
         var api = $"https://api.bilibili.com/x/v1/medialist/info?type=5&biz_id={id}&tid=0";
         var json = await HTTPUtil.GetWebSourceAsync(api);
         using var infoJson = JsonDocument.Parse(json);
-        var data = infoJson.RootElement.GetPropertySafe("data");
+        var infoRoot = infoJson.RootElement;
+        var data = infoRoot.GetPropertySafe("data");
+        // data 为 null 说明系列不存在/私密/无权访问。必须抛出而非静默返回空 VInfo，
+        // 否则 MediaListFetcher 的回退会吞掉真正的错误，用户只看到"无视频"。
+        if (data.ValueKind != JsonValueKind.Object)
+        {
+            var code = infoRoot.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0;
+            var message = infoRoot.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.String ? msg.GetString() : "未知错误";
+            throw new InvalidOperationException($"获取系列信息失败(code={code}): {message}");
+        }
         var listTitle = data.GetStringSafe("title")!;
         var intro = data.GetStringSafe("intro")!;
         long pubTime = data.GetInt64Safe("ctime");
@@ -35,8 +44,13 @@ public class SeriesListFetcher : IFetcher
             using var listJson = JsonDocument.Parse(json);
             data = listJson.RootElement.GetPropertySafe("data");
             hasMore = data.GetBooleanSafe("has_more");
+            // 游标必须记录本页最后一条 id，无论是否被 attr 过滤；否则整页失效时
+            // oid 不推进，重复请求同一页造成死循环。
+            var previousOid = oid;
             foreach (var m in data.EnumerateArraySafe("media_list"))
             {
+                oid = m.GetValueAsStringSafe("id");
+
                 // 只处理未失效的视频条目（与收藏夹解析逻辑保持一致）
                 if (m.TryGetProperty("attr", out var attrElem) && attrElem.GetInt32() != 0)
                     continue;
@@ -62,7 +76,12 @@ public class SeriesListFetcher : IFetcher
                     if (!pagesInfo.Contains(p)) pagesInfo.Add(p);
                     else index--;
                 }
-                oid = m.GetValueAsStringSafe("id");
+            }
+
+            if (hasMore && oid == previousOid)
+            {
+                Logger.LogDebug("系列翻页游标未推进（oid={0}），停止翻页", oid);
+                break;
             }
         }
 
