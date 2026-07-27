@@ -8,6 +8,7 @@ namespace BBDown.Commands;
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
 public class DefaultCommand : AsyncCommand<MyOption>
 {
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(MyOption))]
     protected override async Task<int> ExecuteAsync(CommandContext context, MyOption settings, CancellationToken cancellationToken)
     {
         _ = BBDownUtil.CheckUpdateAsync();

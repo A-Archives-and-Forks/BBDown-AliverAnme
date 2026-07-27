@@ -20,6 +20,7 @@ public class ServeSettings : CommandSettings
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
 public class ServeCommand : Command<ServeSettings>
 {
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ServeSettings))]
     protected override int Execute(CommandContext context, ServeSettings settings, CancellationToken cancellationToken)
     {
         _ = BBDownUtil.CheckUpdateAsync();
