@@ -577,8 +577,12 @@ internal partial class Program
         catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException)
         {
             retryCount++;
-            if (retryCount >= 3) throw;
-            Logger.LogError(ex.Message);
+            if (retryCount >= 3)
+            {
+                Logger.LogError($"下载重试 {retryCount} 次后仍失败，最后错误: [{ex.GetType().Name}] {ex.Message}");
+                throw;
+            }
+            Logger.LogError($"[{ex.GetType().Name}] {ex.Message}");
             Logger.LogWarn("下载出现异常, 3秒后将进行自动重试...");
             await Task.Delay(3000, cancellationToken);
         }

@@ -18,7 +18,7 @@ internal static class BBDownLoginUtil
         return await HTTPUtil.GetWebSourceAsync(queryUrl);
     }
 
-    public static async Task LoginWEB()
+    public static async Task<bool> LoginWEB()
     {
         try
         {
@@ -48,7 +48,7 @@ internal static class BBDownLoginUtil
                 if (code == 86038)
                 {
                     Logger.LogColor("二维码已过期, 请重新执行登录指令.");
-                    break;
+                    return false;
                 }
                 else if (code == 86101) //等待扫码
                 {
@@ -71,13 +71,15 @@ internal static class BBDownLoginUtil
                     var cookiePath = Path.Combine(Program.APP_DIR, "BBDown.data");
                     await File.WriteAllTextAsync(cookiePath, cc[(cc.IndexOf('?') + 1)..].Replace("&", ";").Replace(",", "%2C"));
                     SetOwnerOnlyPermission(cookiePath);
-                    break;
+                    return true;
                 }
             }
         }
         catch (Exception e) when (e is HttpRequestException or JsonException or InvalidOperationException)
         {
-            Logger.LogError(e.Message);
+            Logger.LogError($"WEB 登录失败: {e.Message}");
+            Logger.LogError("请检查网络连接；若二维码已过期请重新执行 BBDown login。");
+            return false;
         }
         finally
         {
@@ -85,7 +87,7 @@ internal static class BBDownLoginUtil
         }
     }
 
-    public static async Task LoginTV()
+    public static async Task<bool> LoginTV()
     {
         try
         {
@@ -123,7 +125,7 @@ internal static class BBDownLoginUtil
                 if (code == "86038")
                 {
                     Logger.LogColor("二维码已过期, 请重新执行登录指令.");
-                    break;
+                    return false;
                 }
                 else if (code == "86039") //等待扫码
                 {
@@ -138,13 +140,15 @@ internal static class BBDownLoginUtil
                     var tvTokenPath = Path.Combine(Program.APP_DIR, "BBDownTV.data");
                     await File.WriteAllTextAsync(tvTokenPath, "access_token=" + cc);
                     SetOwnerOnlyPermission(tvTokenPath);
-                    break;
+                    return true;
                 }
             }
         }
         catch (Exception e) when (e is HttpRequestException or JsonException or InvalidOperationException)
         {
-            Logger.LogError(e.Message);
+            Logger.LogError($"TV 登录失败: {e.Message}");
+            Logger.LogError("请检查网络连接；若二维码已过期请重新执行 BBDown logintv。");
+            return false;
         }
         finally
         {

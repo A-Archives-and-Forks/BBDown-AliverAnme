@@ -165,8 +165,9 @@ public static partial class UrlResolver
                 string epId = await GetEpIdByBangumiSSIdAsync(input[2..]);
                 avid = $"ep:{epId}";
             }
-            catch
+            catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException)
             {
+                Core.Logger.LogWarn($"番剧 SS 解析失败，尝试课程 SS: {ex.Message}");
                 string epId = await GetEpidBySSIdAsync(input[2..]);
                 avid = $"cheese:{epId}";
             }
@@ -196,7 +197,7 @@ public static partial class UrlResolver
         }
         catch (Exception ex) when (ex is HttpRequestException)
         {
-            Core.Logger.LogDebug("FixAvidAsync HEAD 请求失败: {0}", ex.Message);
+            Core.Logger.LogWarn($"av{avid} 跳转检查失败: {ex.Message}");
             return avid;
         }
     }

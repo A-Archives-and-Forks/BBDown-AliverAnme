@@ -309,7 +309,7 @@ public static partial class Parser
                             parsedResult.PsshBase64 = ps;
                     }
                     catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
-                    { Logger.LogDebug("DRM license info extraction error: {0}", ex.Message); }
+                    { Logger.LogWarn($"DRM license info extraction error: {ex.Message}"); }
                 }
             }
 

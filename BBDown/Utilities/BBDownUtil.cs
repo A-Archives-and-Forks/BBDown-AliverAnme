@@ -32,9 +32,10 @@ public static partial class BBDownUtil
                 Logger.LogColor($"发现新版本：{latestVer}");
             }
         }
-        catch (Exception ex) when (ex is HttpRequestException)
+        catch (Exception ex)
         {
-            Logger.LogDebug("检查更新失败: {0}", ex.Message);
+            Logger.LogWarn($"检查更新失败: {ex.Message}");
+            Logger.LogDebug($"检查更新失败详情: {ex}");
         }
     }
     public static Task<string> GetAvIdAsync(string input) => UrlResolver.ResolveAsync(input);
@@ -240,7 +241,7 @@ public static partial class BBDownUtil
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException)
         {
-            Logger.LogDebug("获取章节信息失败: {0}", ex.Message);
+            Logger.LogWarn($"获取章节信息失败 (cid={cid}, aid={aid}): {ex.Message}");
         }
         return points;
     }
