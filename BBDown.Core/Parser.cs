@@ -163,7 +163,7 @@ public static partial class Parser
         ThrowIfPlayLimited(data);
         // 根据API版本自动定位数据节点
         JsonElement root;
-        if (data.TryGetProperty("result", out var resultElem))
+        if (data.TryGetProperty("result", out var resultElem) && resultElem.ValueKind == JsonValueKind.Object)
         {
             root = resultElem.TryGetProperty("video_info", out var vi) ? vi : resultElem;
         }
@@ -212,8 +212,8 @@ public static partial class Parser
                 respJson.Dispose();
                 respJson = JsonDocument.Parse(parsedResult.WebJsonString);
                 var newRoot = respJson.RootElement;
-                root = newRoot.TryGetProperty("result", out var rr) && rr.TryGetProperty("video_info", out var vvii) ? vvii :
-                       newRoot.TryGetProperty("result", out var rr2) ? rr2 :
+                root = newRoot.TryGetProperty("result", out var rr) && rr.ValueKind == JsonValueKind.Object && rr.TryGetProperty("video_info", out var vvii) ? vvii :
+                       newRoot.TryGetProperty("result", out var rr2) && rr2.ValueKind == JsonValueKind.Object ? rr2 :
                        newRoot.TryGetProperty("data", out var dd) ? dd : newRoot;
             }
             if (root.TryGetProperty("dash", out var dash) && dash.TryGetProperty("video", out var vidArr))
@@ -397,12 +397,15 @@ public static partial class Parser
         {
             //默认以最高清晰度解析
             parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn());
-            using var newDoc = JsonDocument.Parse(parsedResult.WebJsonString);
-            var newData = newDoc.RootElement;
-            if (newData.TryGetProperty("result", out var r))
+            respJson.Dispose();
+            respJson = JsonDocument.Parse(parsedResult.WebJsonString);
+            var newData = respJson.RootElement;
+            if (newData.TryGetProperty("result", out var r) && r.ValueKind == JsonValueKind.Object)
                 root = r.TryGetProperty("video_info", out var vi) ? vi : r;
             else if (newData.TryGetProperty("data", out var d))
                 root = d;
+            else
+                root = newData;
             string quality = "";
             string videoCodecid = "";
             string url = "";
