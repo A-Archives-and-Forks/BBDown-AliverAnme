@@ -7,7 +7,6 @@ namespace BBDown.Commands;
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
 public class LoginTVCommand : Command<LoginSettings>
 {
-    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoginSettings))]
     protected override int Execute(CommandContext context, LoginSettings settings, CancellationToken cancellationToken)
     {
         return BBDownLoginUtil.LoginTV().GetAwaiter().GetResult() ? 0 : 1;
