@@ -23,10 +23,10 @@ public static partial class BBDownUtil
         try
         {
             var ver = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version!;
-            string nowVer = $"{ver.Major}.{ver.Minor}.{ver.Build}";
+            string nowVer = $"v{ver.Major}.{ver.Minor}.{ver.Build}";
             string redirectUrl = await HTTPUtil.GetWebLocationAsync("https://github.com/AliverAnme/BBDown/releases/latest");
             string latestVer = redirectUrl.Replace("https://github.com/AliverAnme/BBDown/releases/tag/", "");
-            if (nowVer != latestVer && !latestVer.StartsWith("https"))
+            if (!nowVer.Equals(latestVer, StringComparison.OrdinalIgnoreCase) && !latestVer.StartsWith("https"))
             {
                 Console.Title = $"发现新版本：{latestVer}";
                 Logger.LogColor($"发现新版本：{latestVer}");

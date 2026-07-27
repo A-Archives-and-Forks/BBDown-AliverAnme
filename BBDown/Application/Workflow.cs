@@ -93,6 +93,7 @@ internal partial class Program
                     Logger.LogWarn("  Cookie 已过期！");
                     Logger.LogWarn("  请运行 BBDown login 重新扫码登录以获取新 Cookie。");
                     Logger.LogWarn("  或者使用 --use-tv-api 配合 --access-token 下载。");
+                    Logger.LogWarn("  （若已执行 BBDown logintv，请加上 --use-tv-api）");
                     Logger.LogWarn("========================================");
                 }
                 else
@@ -101,6 +102,7 @@ internal partial class Program
                     Logger.LogWarn("  你尚未登录B站账号！");
                     Logger.LogWarn("  未登录状态下仅能下载6分钟试看片段。");
                     Logger.LogWarn("  请运行 BBDown login 扫码登录以获取完整视频。");
+                    Logger.LogWarn("  （若已执行 BBDown logintv，请在下载命令中加上 --use-tv-api）");
                     Logger.LogWarn("========================================");
                 }
             }
