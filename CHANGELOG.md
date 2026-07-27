@@ -4,6 +4,27 @@
 
 ## [Unreleased]
 
+## [1.6.7] - 2026-07-27
+
+### 修复
+
+- **TV 端解析健壮性**：处理 TV API 返回的 `result` 节点不是 JSON 对象（如 `null`/数组）时的解析错误。
+- **登录错误提示增强**：WEB/TV 登录失败时返回非零退出码；提示信息区分“网络失败”与“二维码过期”。
+- **取消 token 贯通** (`cancellationToken`)：
+  - `CheckUpdateAsync` 可被取消，避免退出后仍访问 GitHub。
+  - `BBDown serve` 收到 `Ctrl+C` 时优雅停止，正在处理的 HTTP 请求可被正常关闭。
+  - `BBDown login` / `BBDown logintv` 的二维码轮询可被取消，不再每秒请求一次 B站登录接口。
+- **silent-failure 补遗**：
+  - 更新检查失败从 debug 日志升级到 warn 提示。
+  - `ss:` 输入的番剧→课程 fallback 不再裸 `catch`，会打印 fallback 原因。
+  - 章节信息、DRM license 元数据提取失败时改为 warn 级别。
+  - 下载重试日志带上异常类型名，3 次失败后给出明确“已重试 N 次”提示。
+
+### 变更
+
+- `CheckUpdateAsync` 版本比较统一为 `vX.Y.Z` 格式，不再对同一版本误报“发现新版本”。
+- 未登录提示增加 TV 登录用法说明：若已执行 `BBDown logintv`，请在下载命令中加上 `--use-tv-api`。
+
 ## [1.6.6] - 2026-07-27
 
 ### 新增
@@ -157,7 +178,8 @@
 
 ---
 
-[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.6.6...HEAD
+[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.6.7...HEAD
+[1.6.7]: https://github.com/AliverAnme/BBDown/compare/v1.6.6...v1.6.7
 [1.6.6]: https://github.com/AliverAnme/BBDown/compare/v1.6.5...v1.6.6
 [1.6.5]: https://github.com/AliverAnme/BBDown/compare/v1.6.4...v1.6.5
 [1.6.4]: https://github.com/AliverAnme/BBDown/compare/v1.6.3...v1.6.4
