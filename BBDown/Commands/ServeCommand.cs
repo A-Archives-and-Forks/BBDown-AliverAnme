@@ -22,8 +22,15 @@ public class ServeCommand : Command<ServeSettings>
 {
     protected override int Execute(CommandContext context, ServeSettings settings, CancellationToken cancellationToken)
     {
-        _ = BBDownUtil.CheckUpdateAsync();
-        Program.StartServer(settings.ListenUrl, settings.MaxConcurrent);
-        return 0;
+        _ = BBDownUtil.CheckUpdateAsync(cancellationToken);
+        try
+        {
+            Program.StartServer(settings.ListenUrl, settings.MaxConcurrent, cancellationToken);
+            return 0;
+        }
+        catch (OperationCanceledException)
+        {
+            return 0;
+        }
     }
 }

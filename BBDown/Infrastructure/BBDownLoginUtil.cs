@@ -2,6 +2,7 @@
 using BBDown.Core;
 using System;
 using System.IO;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Text;
 using System.Text.Json;
@@ -12,19 +13,20 @@ namespace BBDown;
 
 internal static class BBDownLoginUtil
 {
-    public static async Task<string> GetLoginStatusAsync(string qrcodeKey)
+    public static async Task<string> GetLoginStatusAsync(string qrcodeKey, CancellationToken cancellationToken = default)
     {
         string queryUrl = $"https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={qrcodeKey}&source=main-fe-header";
-        return await HTTPUtil.GetWebSourceAsync(queryUrl);
+        return await HTTPUtil.GetWebSourceAsync(queryUrl, token: cancellationToken);
     }
 
-    public static async Task<bool> LoginWEB()
+    public static async Task<bool> LoginWEB(CancellationToken cancellationToken = default)
     {
         try
         {
             Logger.Log("获取登录地址...");
+            cancellationToken.ThrowIfCancellationRequested();
             string loginUrl = "https://passport.bilibili.com/x/passport-login/web/qrcode/generate?source=main-fe-header";
-            using var loginDoc = JsonDocument.Parse(await HTTPUtil.GetWebSourceAsync(loginUrl));
+            using var loginDoc = JsonDocument.Parse(await HTTPUtil.GetWebSourceAsync(loginUrl, token: cancellationToken));
             string url = loginDoc.RootElement.GetPropertySafe("data").GetStringSafe("url")!;
             string qrcodeKey = BBDownUtil.GetQueryString("qrcode_key", url);
             //Logger.Log(oauthKey);
@@ -41,8 +43,9 @@ internal static class BBDownLoginUtil
 
             while (true)
             {
-                await Task.Delay(1000);
-                string w = await GetLoginStatusAsync(qrcodeKey);
+                await Task.Delay(1000, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                string w = await GetLoginStatusAsync(qrcodeKey, cancellationToken);
                 using var pollDoc = JsonDocument.Parse(w);
                 int code = pollDoc.RootElement.GetPropertySafe("data").GetInt32Safe("code");
                 if (code == 86038)
@@ -81,13 +84,18 @@ internal static class BBDownLoginUtil
             Logger.LogError("请检查网络连接；若二维码已过期请重新执行 BBDown login。");
             return false;
         }
+        catch (OperationCanceledException)
+        {
+            Logger.LogWarn("WEB 登录已取消。");
+            return false;
+        }
         finally
         {
             CleanUpQrCodeFile();
         }
     }
 
-    public static async Task<bool> LoginTV()
+    public static async Task<bool> LoginTV(CancellationToken cancellationToken = default)
     {
         try
         {
@@ -95,7 +103,8 @@ internal static class BBDownLoginUtil
             string pollUrl = "https://passport.bilibili.com/x/passport-tv-login/qrcode/poll";
             var parameters = BBDownUtil.GetTVLoginParms();
             Logger.Log("获取登录地址...");
-            byte[] responseArray = await (await HTTPUtil.AppHttpClient.PostAsync(loginUrl, new FormUrlEncodedContent(parameters.ToDictionary()))).Content.ReadAsByteArrayAsync();
+            cancellationToken.ThrowIfCancellationRequested();
+            byte[] responseArray = await (await HTTPUtil.AppHttpClient.PostAsync(loginUrl, new FormUrlEncodedContent(parameters.ToDictionary()), cancellationToken)).Content.ReadAsByteArrayAsync(cancellationToken);
             string web = Encoding.UTF8.GetString(responseArray);
             using var authDoc = JsonDocument.Parse(web);
             string url = authDoc.RootElement.GetPropertySafe("data").GetStringSafe("url")!;
@@ -114,8 +123,9 @@ internal static class BBDownLoginUtil
             parameters.Add("sign", BBDownUtil.GetSign(BBDownUtil.ToQueryString(parameters)));
             while (true)
             {
-                await Task.Delay(1000);
-                responseArray = await (await HTTPUtil.AppHttpClient.PostAsync(pollUrl, new FormUrlEncodedContent(parameters.ToDictionary()))).Content.ReadAsByteArrayAsync();
+                await Task.Delay(1000, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                responseArray = await (await HTTPUtil.AppHttpClient.PostAsync(pollUrl, new FormUrlEncodedContent(parameters.ToDictionary()), cancellationToken)).Content.ReadAsByteArrayAsync(cancellationToken);
                 web = Encoding.UTF8.GetString(responseArray);
                 using var pollDoc2 = JsonDocument.Parse(web);
                 // 该轮询接口的 code 是 JSON 数字，而 GetStringSafe 只接受字符串类型、
@@ -148,6 +158,11 @@ internal static class BBDownLoginUtil
         {
             Logger.LogError($"TV 登录失败: {e.Message}");
             Logger.LogError("请检查网络连接；若二维码已过期请重新执行 BBDown logintv。");
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            Logger.LogWarn("TV 登录已取消。");
             return false;
         }
         finally

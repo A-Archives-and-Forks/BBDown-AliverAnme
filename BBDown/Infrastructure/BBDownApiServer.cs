@@ -132,7 +132,7 @@ public class BBDownApiServer
         });
     }
 
-    public void Run(string url)
+    public void Run(string url, CancellationToken cancellationToken = default)
     {
         if (app is null) return;
         bool result = Uri.TryCreate(url, UriKind.Absolute, out Uri? uriResult)
@@ -144,7 +144,15 @@ public class BBDownApiServer
             Environment.ExitCode = 1;
             return;
         }
-        app.Run(url);
+        app.Urls.Add(url);
+        try
+        {
+            app.RunAsync(cancellationToken).GetAwaiter().GetResult();
+        }
+        catch (OperationCanceledException)
+        {
+            // 收到取消信号（如 Ctrl+C），正常退出
+        }
     }
 
     private async Task<DownloadTask> AddDownloadTaskAsync(MyOption option, string? callBackWebHook = null, CancellationToken cancellationToken = default)

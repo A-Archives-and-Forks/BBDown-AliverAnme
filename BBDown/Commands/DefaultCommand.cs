@@ -10,7 +10,7 @@ public class DefaultCommand : AsyncCommand<MyOption>
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, MyOption settings, CancellationToken cancellationToken)
     {
-        _ = BBDownUtil.CheckUpdateAsync();
+        _ = BBDownUtil.CheckUpdateAsync(cancellationToken);
         await Program.DoWorkAsync(settings, cancellationToken);
         return 0;
     }

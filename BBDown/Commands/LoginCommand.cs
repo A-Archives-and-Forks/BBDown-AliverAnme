@@ -14,6 +14,6 @@ public class LoginCommand : Command<LoginSettings>
 {
     protected override int Execute(CommandContext context, LoginSettings settings, CancellationToken cancellationToken)
     {
-        return BBDownLoginUtil.LoginWEB().GetAwaiter().GetResult() ? 0 : 1;
+        return BBDownLoginUtil.LoginWEB(cancellationToken).GetAwaiter().GetResult() ? 0 : 1;
     }
 }

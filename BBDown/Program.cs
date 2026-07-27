@@ -132,13 +132,13 @@ partial class Program
         }).ToArray();
     }
 
-    internal static void StartServer(string? listenUrl, int maxConcurrent = 3)
+    internal static void StartServer(string? listenUrl, int maxConcurrent = 3, CancellationToken cancellationToken = default)
     {
         var defaultListenUrl = "http://0.0.0.0:23333";
         Logger.LogFilePath = Path.Combine(Directory.GetCurrentDirectory(), "bbdown-api.log");
         var server = new BBDownApiServer(maxConcurrent);
         server.SetUpServer();
-        server.Run(string.IsNullOrEmpty(listenUrl) ? defaultListenUrl : listenUrl);
+        server.Run(string.IsNullOrEmpty(listenUrl) ? defaultListenUrl : listenUrl, cancellationToken);
     }
 
     internal static async Task DoWorkAsync(MyOption myOption, CancellationToken cancellationToken = default)

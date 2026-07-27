@@ -10,6 +10,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using System.Threading;
 using System.Threading.Tasks;
 using System.Web;
 using static BBDown.Core.Entity.Entity;
@@ -18,13 +19,14 @@ namespace BBDown;
 
 public static partial class BBDownUtil
 {
-    public static async Task CheckUpdateAsync()
+    public static async Task CheckUpdateAsync(CancellationToken cancellationToken = default)
     {
         try
         {
             var ver = System.Reflection.Assembly.GetExecutingAssembly().GetName().Version!;
             string nowVer = $"v{ver.Major}.{ver.Minor}.{ver.Build}";
-            string redirectUrl = await HTTPUtil.GetWebLocationAsync("https://github.com/AliverAnme/BBDown/releases/latest");
+            string redirectUrl = await HTTPUtil.GetWebLocationAsync("https://github.com/AliverAnme/BBDown/releases/latest", token: cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             string latestVer = redirectUrl.Replace("https://github.com/AliverAnme/BBDown/releases/tag/", "");
             if (!nowVer.Equals(latestVer, StringComparison.OrdinalIgnoreCase) && !latestVer.StartsWith("https"))
             {
@@ -32,7 +34,7 @@ public static partial class BBDownUtil
                 Logger.LogColor($"发现新版本：{latestVer}");
             }
         }
-        catch (Exception ex)
+        catch (Exception ex) when (ex is not OperationCanceledException)
         {
             Logger.LogWarn($"检查更新失败: {ex.Message}");
             Logger.LogDebug($"检查更新失败详情: {ex}");

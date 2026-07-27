@@ -9,6 +9,6 @@ public class LoginTVCommand : Command<LoginSettings>
 {
     protected override int Execute(CommandContext context, LoginSettings settings, CancellationToken cancellationToken)
     {
-        return BBDownLoginUtil.LoginTV().GetAwaiter().GetResult() ? 0 : 1;
+        return BBDownLoginUtil.LoginTV(cancellationToken).GetAwaiter().GetResult() ? 0 : 1;
     }
 }
