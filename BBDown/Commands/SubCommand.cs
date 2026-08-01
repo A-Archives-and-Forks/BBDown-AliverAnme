@@ -131,6 +131,17 @@ public class SubCheckCommand : Command<SubCheckSettings>
                 return 0;
             }
 
+            // 订阅解析与拉取（VIP/登录态内容）需要凭据：先把命令行传入的 --cookie/--access-token
+            // 写入当前 async 流，否则 ResolveAsync / FetcherFactory.FetchAsync 会在未登录状态下执行
+            if (!string.IsNullOrEmpty(settings.Cookie) || !string.IsNullOrEmpty(settings.AccessToken))
+            {
+                Config.Apply(Config.Current with
+                {
+                    Cookie = settings.Cookie,
+                    Token = settings.AccessToken.Replace("access_token=", ""),
+                });
+            }
+
             foreach (var sub in subs)
             {
                 Logger.Log($"检查订阅: {sub.Name} ({sub.Target})");
@@ -160,7 +171,8 @@ public class SubCheckCommand : Command<SubCheckSettings>
                         SubscriptionStore.RecordDownloaded(sub.Target, aid);
                     }
                 }
-                catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException or IOException)
+                catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
+                                            or InvalidOperationException or IOException or ArgumentException)
                 {
                     Logger.LogWarn($"  订阅检查失败: {ex.Message}");
                 }

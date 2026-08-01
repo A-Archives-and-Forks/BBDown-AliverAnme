@@ -148,7 +148,7 @@ public class MyOption : CommandSettings
     public string? DanmakuFilter { get; set; }
 
     [CommandOption("--danmaku-filter-user")]
-    [Description("弹幕过滤: 指定用户UID的弹幕将被丢弃(逗号分隔)")]
+    [Description("弹幕过滤: 指定发送者 midHash 的弹幕将被丢弃(逗号分隔)")]
     public string? DanmakuFilterUser { get; set; }
 
     [CommandOption("--comments")]

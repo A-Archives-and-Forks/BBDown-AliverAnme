@@ -68,8 +68,9 @@ public static class DanmakuUtil
     }
 
     /// <summary>
-    /// 按关键词/发送者UID过滤弹幕：任一过滤条件命中即丢弃。
-    /// 关键词黑名单用于去掉广告/无关弹幕，UID黑名单用于屏蔽特定用户。
+    /// 按关键词/发送者 midHash 过滤弹幕：任一过滤条件命中即丢弃。
+    /// 关键词黑名单用于去掉广告/无关弹幕；B站弹幕 XML 不含用户 UID，
+    /// 只有发送者 midHash（p 属性 index 6），按用户过滤即匹配该哈希。
     /// </summary>
     public static DanmakuItem[] Filter(DanmakuItem[] danmakus, string? keywords, string? userIds)
     {
@@ -81,7 +82,7 @@ public static class DanmakuUtil
 
         return danmakus.Where(d =>
         {
-            if (uids.Length > 0 && d.Timestamp.Length > 0 && uids.Contains(d.Timestamp)) return false;
+            if (uids.Length > 0 && d.MidHash.Length > 0 && uids.Contains(d.MidHash)) return false;
             if (kw.Length > 0 && kw.Any(k => d.Content.Contains(k, StringComparison.Ordinal))) return false;
             return true;
         }).ToArray();
@@ -253,6 +254,10 @@ public static class DanmakuUtil
                 Logger.LogDebug("弹幕颜色解析失败: {0}", e.Message);
             }
             Timestamp = attrs[4];
+            // B站弹幕 p 属性: 进度,模式,字号,颜色,ctime,弹幕池,用户midHash,rowID。
+            // index 6 才是发送者标识（哈希）；Timestamps 存的是 ctime（发送时间戳），
+            // 若用它做"按用户过滤"会永远匹配不上。
+            MidHash = attrs.Length > 6 ? attrs[6] : "";
             Content = content;
         }
         private static string ComputeTime(double second)
@@ -278,6 +283,8 @@ public static class DanmakuUtil
         // 颜色
         public string Timestamp { get; set; } = "";
         // 时间戳
+        public string MidHash { get; set; } = "";
+        // 发送者标识（弹幕 XML p 属性 index 6）
     }
 
     public class DanmakuComparer : IComparer<DanmakuItem>

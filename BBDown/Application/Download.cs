@@ -132,8 +132,9 @@ internal partial class Program
             if (!resp.IsSuccessStatusCode)
                 Logger.LogWarn($"通知回调返回 HTTP {(int)resp.StatusCode}");
         }
-        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException or InvalidOperationException)
         {
+            // 回调必须不影响下载结果：URL 畸形（UriFormatException）或内容构造失败都不能把成功任务变失败
             Logger.LogDebug("通知回调失败: {0}", ex.Message);
         }
     }
@@ -477,11 +478,20 @@ internal partial class Program
 
                 if (myOption.DownloadComments && p.index == 1 && long.TryParse(p.aid, out var commentAid))
                 {
-                    var commentsPath = Path.ChangeExtension(savePath, ".comments.json");
-                    Logger.Log("正在下载评论...");
-                    var comments = await CommentUtil.FetchAsync(commentAid, token: cancellationToken);
-                    await CommentUtil.SaveToJsonAsync(comments, commentsPath);
-                    Logger.Log($"评论已保存: {commentsPath} ({comments.Count} 条)");
+                    // 评论是附加功能：任何失败都只降级为警告，绝不能触发页面级重试
+                    // 或中止整批（页面级 try 会把评论异常误判为下载失败而重下已混流的视频）
+                    try
+                    {
+                        var commentsPath = Path.ChangeExtension(savePath, ".comments.json");
+                        Logger.Log("正在下载评论...");
+                        var comments = await CommentUtil.FetchAsync(commentAid, token: cancellationToken);
+                        await CommentUtil.SaveToJsonAsync(comments, commentsPath);
+                        Logger.Log($"评论已保存: {commentsPath} ({comments.Count} 条)");
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or IOException)
+                    {
+                        Logger.LogWarn($"评论下载失败（已跳过）: {ex.Message}");
+                    }
                 }
 
                 if (parsedResult.IsDrm && myOption.DecryptDrm && (!string.IsNullOrEmpty(parsedResult.KidHex) || !string.IsNullOrEmpty(parsedResult.PsshBase64)))

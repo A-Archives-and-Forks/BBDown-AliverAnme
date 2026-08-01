@@ -35,7 +35,11 @@ public static class CommentUtil
             string api = $"https://api.bilibili.com/x/v2/reply?type=1&oid={aid}&sort=0&ps=20&pn={pn}";
             string json = await HTTPUtil.GetWebSourceAsync(api, token: token);
             using var doc = JsonDocument.Parse(json);
-            var data = doc.RootElement.GetPropertySafe("data");
+            var root = doc.RootElement;
+            int code = root.GetPropertySafe("code").GetInt32();
+            if (code != 0)
+                throw new InvalidOperationException($"获取评论失败(code={code}): {root.GetValueAsStringSafe("message")}");
+            var data = root.GetPropertySafe("data");
             var replies = data.EnumerateArraySafe("replies");
             if (!replies.Any()) break;
             foreach (var r in replies)

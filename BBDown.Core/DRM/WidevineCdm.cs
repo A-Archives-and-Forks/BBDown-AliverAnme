@@ -310,7 +310,7 @@ public sealed class WidevineCdm : IDisposable
                     contentKey = WidevineCrypto.Pkcs7Unpad(dec);
                 }
             }
-            catch (Exception ex) when (ex is CryptographicException or FormatException)
+            catch (Exception ex) when (ex is CryptographicException or FormatException or InvalidDataException)
             {
                 // 单个 key 解密失败（key/IV 不匹配或数据损坏）不应放弃整份授权：
                 // 其余 key 仍可正常解密，跳过这条损坏记录

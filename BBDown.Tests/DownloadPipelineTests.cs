@@ -37,18 +37,44 @@ public class DownloadPipelineTests
             var mineA = Path.Combine(dir, "00000_video.vclip");
             var mineB = Path.Combine(dir, "00001_video.vclip");
             var other = Path.Combine(dir, "00000_other.vclip");
+            var audioClip = Path.Combine(dir, "00000_video.aclip"); // 同 stem 的音频轨分片
             var unrelated = Path.Combine(dir, "notes.txt");
             File.WriteAllText(mineA, "a");
             File.WriteAllText(mineB, "b");
             File.WriteAllText(other, "c");
+            File.WriteAllText(audioClip, "e");
             File.WriteAllText(unrelated, "d");
 
             BBDownDownloadUtil.CleanStaleClipsFor(Path.Combine(dir, "video.mp4"));
 
             Assert.False(File.Exists(mineA));
             Assert.False(File.Exists(mineB));
-            Assert.True(File.Exists(other));      // 其他任务的 clip 必须保留
-            Assert.True(File.Exists(unrelated));  // 非 clip 文件必须保留
+            Assert.True(File.Exists(other));      // 其他任务的 clip 保留
+            Assert.True(File.Exists(audioClip));  // 音频轨分片必须保留
+            Assert.True(File.Exists(unrelated));  // 非 clip 文件保留
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
+    public void CleanStaleClips_Audio_DoesNotDeleteVideoClips()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var videoClip = Path.Combine(dir, "00000_video.vclip");
+            var audioClip = Path.Combine(dir, "00000_video.aclip");
+            File.WriteAllText(videoClip, "v");
+            File.WriteAllText(audioClip, "a");
+
+            BBDownDownloadUtil.CleanStaleClipsFor(Path.Combine(dir, "video.m4a"));
+
+            Assert.True(File.Exists(videoClip)); // 视频轨分片保留
+            Assert.False(File.Exists(audioClip));
         }
         finally
         {

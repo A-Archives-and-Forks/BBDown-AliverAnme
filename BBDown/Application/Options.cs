@@ -295,8 +295,11 @@ internal partial class Program
     /// </summary>
     internal static void LoadCredentials(MyOption myOption)
     {
-        string cookie = Config.Current.Cookie;
-        string token = Config.Current.Token;
+        // 用户显式传入的凭据优先于本地文件；否则从 Config.Current / BBDown.data 加载
+        string cookie = !string.IsNullOrEmpty(myOption.Cookie) ? myOption.Cookie : Config.Current.Cookie;
+        string token = !string.IsNullOrEmpty(myOption.AccessToken)
+            ? myOption.AccessToken.Replace("access_token=", "")
+            : Config.Current.Token;
 
         if (string.IsNullOrEmpty(cookie) && File.Exists(Path.Combine(APP_DIR, "BBDown.data")))
         {

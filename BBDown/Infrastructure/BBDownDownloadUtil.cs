@@ -323,15 +323,17 @@ internal static class BBDownDownloadUtil
     }
 
     /// <summary>
-    /// 删除某个目标路径对应的历史分片文件（上次中断遗留），只匹配该路径自己的命名前缀
-    /// （如 00001_xxx.vclip），避免误删同目录下其他并发任务的 .vclip/.aclip。
+    /// 删除某个目标路径对应的历史分片文件（上次中断遗留）。
+    /// 视频与音频的 stem 相同（xxx.mp4 / xxx.m4a），必须按各自扩展名匹配
+    /// （.vclip / .aclip），否则清理视频残留会把音频轨的可续传分片一起删掉。
     /// </summary>
     internal static void CleanStaleClipsFor(string path)
     {
         string? dir = Path.GetDirectoryName(path);
         if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
         string prefix = Path.GetFileNameWithoutExtension(path);
-        foreach (var clip in new DirectoryInfo(dir).EnumerateFiles("*_" + prefix + ".?clip"))
+        string clipExt = Path.GetExtension(path).EndsWith(".mp4", StringComparison.OrdinalIgnoreCase) ? ".vclip" : ".aclip";
+        foreach (var clip in new DirectoryInfo(dir).EnumerateFiles("*_" + prefix + clipExt))
         {
             try { clip.Delete(); }
             catch (IOException) { /* 并发占用时跳过，下次运行再清理 */ }

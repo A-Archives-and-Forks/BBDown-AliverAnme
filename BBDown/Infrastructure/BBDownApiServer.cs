@@ -261,13 +261,17 @@ public class BBDownApiServer
         if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
         if (IPAddress.TryParse(uri.Host, out var ip))
         {
+            // IPv4-mapped IPv6（如 [::ffff:169.254.169.254]）会把下方的 169.254 检查绕过
+            // （其 AddressFamily 是 InterNetworkV6），统一映射回 IPv4 后再做回环/链路本地检查
+            if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
+
             if (IPAddress.IsLoopback(ip)) return false;
-            if (ip.IsIPv6LinkLocal) return false;
             if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
             {
                 var b = ip.GetAddressBytes();
-                if (b.Length == 4 && b[0] == 169 && b[1] == 254) return false; // 169.254.0.0/16
+                if (b.Length == 4 && b[0] == 169 && b[1] == 254) return false; // 169.254.0.0/16 云元数据面
             }
+            if (ip.IsIPv6LinkLocal) return false;
             return true;
         }
         var host = uri.Host;
@@ -276,6 +280,14 @@ public class BBDownApiServer
 
     private async Task<DownloadTask> AddDownloadTaskAsync(MyOption option, string? callBackWebHook = null, CancellationToken cancellationToken = default)
     {
+        // 解析 aid 前先把本任务的认证配置写入当前 async 流：
+        // URL 解析阶段的网络请求（GetAvIdAsync 等）若此时读到全局 _settings，
+        // 会拿到上一个任务留下的 cookie，造成跨账号解析（region/VIP 状态错乱）。
+        Config.Apply(Config.Current with
+        {
+            Cookie = option.Cookie,
+            Token = option.AccessToken.Replace("access_token=", ""),
+        });
         string aid;
         try
         {
