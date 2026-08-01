@@ -96,25 +96,34 @@ public class WvdDevice : IDisposable
     private static WvdDevice Create(byte[] privateKeyBytes, byte[] clientIdBytes)
     {
         var rsa = RSA.Create();
-        ImportPrivateKey(rsa, privateKeyBytes);
-
-        // 尝试解析 protobuf，兼容非 protobuf 的原始 client_id
-        ClientIdentification clientId;
         try
         {
-            clientId = ClientIdentification.Parser.ParseFrom(clientIdBytes);
+            ImportPrivateKey(rsa, privateKeyBytes);
+
+            // 尝试解析 protobuf，兼容非 protobuf 的原始 client_id
+            ClientIdentification clientId;
+            try
+            {
+                clientId = ClientIdentification.Parser.ParseFrom(clientIdBytes);
+            }
+            catch
+            {
+                // 如果 client_id 不是 protobuf 格式，构建最小 ClientIdentification
+                clientId = new ClientIdentification
+                {
+                    Type = ClientIdentification.Types.TokenType.DrmDeviceCertificate,
+                    Token = Google.Protobuf.ByteString.CopyFrom(clientIdBytes),
+                };
+            }
+
+            return new WvdDevice(clientIdBytes, rsa, clientId);
         }
         catch
         {
-            // 如果 client_id 不是 protobuf 格式，构建最小 ClientIdentification
-            clientId = new ClientIdentification
-            {
-                Type = ClientIdentification.Types.TokenType.DrmDeviceCertificate,
-                Token = Google.Protobuf.ByteString.CopyFrom(clientIdBytes),
-            };
+            // 私钥导入/解析失败时 RSA 仍持有非托管句柄，必须释放，避免句柄泄漏
+            rsa.Dispose();
+            throw;
         }
-
-        return new WvdDevice(clientIdBytes, rsa, clientId);
     }
 
     /// <summary>

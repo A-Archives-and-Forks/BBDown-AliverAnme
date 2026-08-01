@@ -15,6 +15,22 @@ namespace BBDown;
 
 internal partial class Program
 {
+    private static readonly object _deprecatedSavePathLock = new();
+
+    /// <summary>
+    /// 幂等追加 [&lt;dfn&gt;] 后缀。serve 模式下每个下载任务都会执行一次 SetUpWork→HandleDeprecatedOptions，
+    /// 多个任务若都带废弃的 --add-dfn-subfix，静态默认路径会被反复追加成重复后缀。
+    /// </summary>
+    private static void EnsureDfnSuffixOnce()
+    {
+        lock (_deprecatedSavePathLock)
+        {
+            if (SinglePageDefaultSavePath.Contains("[<dfn>]")) return;
+            SinglePageDefaultSavePath += "[<dfn>]";
+            MultiPageDefaultSavePath += "[<dfn>]";
+        }
+    }
+
     private static void HandleDeprecatedOptions(MyOption myOption)
     {
         if (myOption.AddDfnSuffix)
@@ -22,8 +38,7 @@ internal partial class Program
             Logger.LogWarn("--add-dfn-subfix 已被弃用, 建议使用 --file-pattern/-F 或 --multi-file-pattern/-M 来自定义输出文件名格式");
             if (string.IsNullOrEmpty(myOption.FilePattern) && string.IsNullOrEmpty(myOption.MultiFilePattern))
             {
-                SinglePageDefaultSavePath += "[<dfn>]";
-                MultiPageDefaultSavePath += "[<dfn>]";
+                EnsureDfnSuffixOnce();
                 Logger.LogWarn($"已切换至 -F \"{SinglePageDefaultSavePath}\" -M \"{MultiPageDefaultSavePath}\"");
             }
         }

@@ -265,6 +265,9 @@ internal static class BBDownDownloadUtil
         if (File.Exists(path) && new FileInfo(path).Length == fileSize)
         {
             Logger.LogDebug("文件已下载过, 跳过下载");
+            // 目标文件已完整：清理上一次中断遗留的该路径分片。否则调用方（Display）
+            // 在下载返回后仍会无条件重合并目录里的 .vclip，用残缺分片截断覆盖这份完整成品。
+            CleanStaleClipsFor(path);
             return;
         }
         List<Clip> allClips = GetAllClips(url, fileSize);
@@ -319,8 +322,24 @@ internal static class BBDownDownloadUtil
         });
     }
 
+    /// <summary>
+    /// 删除某个目标路径对应的历史分片文件（上次中断遗留），只匹配该路径自己的命名前缀
+    /// （如 00001_xxx.vclip），避免误删同目录下其他并发任务的 .vclip/.aclip。
+    /// </summary>
+    internal static void CleanStaleClipsFor(string path)
+    {
+        string? dir = Path.GetDirectoryName(path);
+        if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
+        string prefix = Path.GetFileNameWithoutExtension(path);
+        foreach (var clip in new DirectoryInfo(dir).EnumerateFiles("*_" + prefix + ".?clip"))
+        {
+            try { clip.Delete(); }
+            catch (IOException) { /* 并发占用时跳过，下次运行再清理 */ }
+        }
+    }
+
     //此函数主要是切片下载逻辑
-    private static List<Clip> GetAllClips(string url, long fileSize)
+    internal static List<Clip> GetAllClips(string url, long fileSize)
     {
         List<Clip> clips = [];
         int index = 0;
@@ -329,11 +348,15 @@ internal static class BBDownDownloadUtil
         while (fileSize > 0)
         {
             long segmentSize = Math.Min(perSize, fileSize);
+            // to 必须始终指向段末（而非末段用 -1 表示"到 EOF"）：
+            // RangeDownloadToTmpAsync 的"已下载完成跳过"检查以 toPosition > 0 为前提，
+            // 末段 to=-1 会被调用处映射为 null 而跳过该检查；断点续传时完整末段会发送
+            // Range: bytes=<fileSize>-（起始即 EOF），服务器回 416，重试同请求直至永久失败。
             Clip c = new()
             {
                 index = index,
                 from = counter,
-                to = fileSize > perSize ? counter + segmentSize - 1 : -1
+                to = counter + segmentSize - 1
             };
             clips.Add(c);
             fileSize -= segmentSize;

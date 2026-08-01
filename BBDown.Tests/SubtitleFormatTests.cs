@@ -41,6 +41,15 @@ public class SubtitleFormatTests
     }
 
     [Fact]
+    public void FormatTime_HugeValue_DoesNotOverflow()
+    {
+        // TimeSpan.FromSeconds 对超出 TimeSpan.MaxValue 的输入抛 OverflowException，
+        // 字幕 JSON 里异常大的时间字段不应让格式转换崩溃
+        _ = SubUtil.FormatTime(double.MaxValue);
+        _ = SubUtil.FormatTime(TimeSpan.MaxValue.TotalSeconds + 1);
+    }
+
+    [Fact]
     public void SanitizeSrtContent_RemovesBlankLinesThatWouldSplitTheCue()
     {
         var sanitized = SubUtil.SanitizeSrtContent("第一行\n\n第二行");

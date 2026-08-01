@@ -70,4 +70,16 @@ public class ConfigMergeTests
 
         Assert.Equal("1080P 高清", EffectiveValue(merged, "--dfn-priority"));
     }
+
+    [Fact]
+    public void ConfigValueStartingWithDash_IsNotSwallowed()
+    {
+        // 值本身以 - 开头（如 access-token 的值、负数参数）时，
+        // 旧实现把它误判为下一个选项而丢弃该值
+        var cfg = WriteConfig("--access-token\n-access-token-value\n");
+        var merged = BBDownConfigParser.MergeWithConfig(["--config-file", cfg, "URL"]);
+        File.Delete(cfg);
+
+        Assert.Equal("-access-token-value", EffectiveValue(merged, "--access-token"));
+    }
 }

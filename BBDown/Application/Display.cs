@@ -112,11 +112,11 @@ internal partial class Program
     /// 下载轨道
     /// </summary>
     /// <returns></returns>
-    private static async Task DownloadTrackAsync(string url, string destPath, BBDownDownloadUtil.DownloadConfig downloadConfig, bool video)
+    private static async Task DownloadTrackAsync(string url, string destPath, BBDownDownloadUtil.DownloadConfig downloadConfig, bool video, CancellationToken token = default)
     {
         if (downloadConfig.MultiThread && !url.Contains("-cmcc-"))
         {
-            await BBDownDownloadUtil.MultiThreadDownloadFileAsync(url, destPath, downloadConfig);
+            await BBDownDownloadUtil.MultiThreadDownloadFileAsync(url, destPath, downloadConfig, token);
             Logger.Log($"合并{(video ? "视频" : "音频")}分片...");
             BBDownUtil.CombineMultipleFilesIntoSingleFile(BBDownUtil.GetFiles(Path.GetDirectoryName(destPath)!, $".{(video ? "v" : "a")}clip"), destPath);
             Logger.Log("清理分片...");
@@ -129,7 +129,7 @@ internal partial class Program
                 Logger.LogWarn("检测到cmcc域名cdn, 已经禁用多线程");
                 downloadConfig.ForceHttp = false;
             }
-            await BBDownDownloadUtil.DownloadFileAsync(url, destPath, downloadConfig);
+            await BBDownDownloadUtil.DownloadFileAsync(url, destPath, downloadConfig, token);
         }
     }
 }

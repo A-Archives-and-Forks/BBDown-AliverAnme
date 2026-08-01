@@ -9,8 +9,8 @@ namespace BBDown.Tests;
 /// </summary>
 public class DanmakuAssEscapingTests
 {
-    private static DanmakuUtil.DanmakuItem Make(string content, double second = 1.0)
-        => new(["" + second, "1", "25", "16777215", "1600000000"], content);
+    private static DanmakuUtil.DanmakuItem Make(string content, double second = 1.0, int color = 16777215)
+        => new(["" + second, "1", "25", color.ToString(), "1600000000"], content);
 
     private static async Task<string> RenderAsync(params DanmakuUtil.DanmakuItem[] items)
     {
@@ -39,6 +39,26 @@ public class DanmakuAssEscapingTests
         var braceBlocks = text.Count(c => c == '{');
         Assert.Equal(1, braceBlocks);
         Assert.DoesNotContain(@"{\c&HFF0000&}", text);
+    }
+
+    [Fact]
+    public async Task Color_IsConvertedFromRgbToAssBgr()
+    {
+        // B站弹幕色 255 = 0x0000FF（蓝）。ASS 颜色格式是 &HBBGGRR（BGR），
+        // 直接拼接 #RRGGBB 会把蓝色弹幕渲染成红色；这里验证字节序被反转。
+        var ass = await RenderAsync(Make("蓝色弹幕", color: 255));
+
+        var dialogue = ass.Split('\n').Single(l => l.StartsWith("Dialogue:"));
+        Assert.Contains(@"\c&HFF0000&", dialogue);
+        Assert.DoesNotContain(@"\c&H0000FF&", dialogue);
+    }
+
+    [Fact]
+    public async Task Color_White_OmitsColorOverride()
+    {
+        var ass = await RenderAsync(Make("白色弹幕", color: 16777215));
+        var dialogue = ass.Split('\n').Single(l => l.StartsWith("Dialogue:"));
+        Assert.DoesNotContain(@"\c&", dialogue);
     }
 
     [Fact]

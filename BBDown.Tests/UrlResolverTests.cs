@@ -94,6 +94,15 @@ public class UrlResolverTests
         await Assert.ThrowsAsync<ArgumentException>(() => UrlResolver.ResolveAsync("invalid_input"));
     }
 
+    [Fact]
+    public async Task ResolveAsync_InvalidBv_ThrowsReadableError()
+    {
+        // 畸形 BV 输入（如裸 "bv"）此前会因字符串切片越界崩溃；
+        // 现在应返回可读错误而非底层异常
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() => UrlResolver.ResolveAsync("bv"));
+        Assert.Contains("无法识别", ex.Message);
+    }
+
     // ── 额外本地解析测试 ──
 
     [Theory]

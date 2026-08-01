@@ -230,16 +230,15 @@ public static partial class SubUtil
             {
                 var lan = sub.GetValueAsStringSafe("lang_key");
                 var url = sub.GetValueAsStringSafe("url");
+                // 空 URL 的条目无法下载：跳过该条目而不是抛异常。
+                // 此前的 ArgumentException 不在本方法 catch 过滤内，会一路抛出并终止整个下载。
+                if (string.IsNullOrEmpty(url)) continue;
                 Subtitle subtitle = new()
                 {
                     url = url,
                     lan = lan,
                     path = $"{aid}/{aid}.{cid}.{lan}{(url.Contains(".json") ? ".srt" : ".ass")}"
                 };
-
-                //有空的URL 不合法
-                if (subtitles.Any(s => string.IsNullOrEmpty(s.url)))
-                    throw new ArgumentException("Bad url");
 
                 subtitles.Add(subtitle);
             }
@@ -492,8 +491,12 @@ public static partial class SubUtil
     internal static string FormatTime(double sec) //64.13
     {
         if (double.IsNaN(sec) || sec < 0) sec = 0;
+        // 防御畸形时间值：TimeSpan.FromSeconds 对超出 TimeSpan.MaxValue 的输入抛
+        // OverflowException，字幕 JSON 里异常的时间字段不应让格式转换直接崩溃。
+        // TotalHours 转 long 而非 int：超长视频的小时数可能超过 int 范围。
+        if (sec > TimeSpan.MaxValue.TotalSeconds) sec = TimeSpan.MaxValue.TotalSeconds;
         var ts = TimeSpan.FromSeconds(sec);
-        return $"{(int)ts.TotalHours:D2}:{ts.Minutes:D2}:{ts.Seconds:D2},{ts.Milliseconds:D3}";
+        return $"{(long)ts.TotalHours:D2}:{ts.Minutes:D2}:{ts.Seconds:D2},{ts.Milliseconds:D3}";
     }
 
     /// <summary>

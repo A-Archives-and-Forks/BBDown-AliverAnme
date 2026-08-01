@@ -216,8 +216,9 @@ static class AppHelper
         {
             EpId = aid,
             Cid = cid,
-            //obj.Qn = qn;
-            Qn = 127,
+            // 用户通过 --dfn-priority 指定的清晰度应传递到接口；
+            // qn=0（未指定）时保持原默认 127（接口返回全部清晰度），避免默认行为回归
+            Qn = qn == 0 ? 127 : qn,
             Fnval = 4048,
             Fourk = true,
             Spmid = "main.ugc-video-detail.0.0",

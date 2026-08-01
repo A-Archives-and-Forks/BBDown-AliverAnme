@@ -87,7 +87,9 @@ internal static class BBDownConfigParser
                 {
                     result.Add(name);
                     i++;
-                    while (i < configArgs.Count && !configArgs[i].StartsWith('-'))
+                    // 收集该选项的值。仅当"以 - 开头且是已知选项名"时才视为下一个选项终止收集：
+                    // 否则配置文件里值本身以 - 开头（如 --access-token -abc、负数参数）会被误当选项丢弃。
+                    while (i < configArgs.Count && (!configArgs[i].StartsWith('-') || !aliasMap.ContainsKey(configArgs[i])))
                     {
                         result.Add(configArgs[i]);
                         i++;
@@ -96,7 +98,8 @@ internal static class BBDownConfigParser
                 else
                 {
                     i++;
-                    while (i < configArgs.Count && !configArgs[i].StartsWith('-')) i++;
+                    // 命令行已显式指定该选项：跳过配置文件里的值，判定规则同上
+                    while (i < configArgs.Count && (!configArgs[i].StartsWith('-') || !aliasMap.ContainsKey(configArgs[i]))) i++;
                 }
             }
             else

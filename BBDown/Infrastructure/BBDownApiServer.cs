@@ -2,6 +2,7 @@ using System;
 using System.Collections.Generic;
 using System.Data;
 using System.Linq;
+using System.Net;
 using System.Net.Http;
 using System.Net.Http.Json;
 using System.Text.Json;
@@ -24,6 +25,7 @@ public class BBDownApiServer
     private readonly List<DownloadTask> runningTasks = [];
     private readonly List<DownloadTask> finishedTasks = [];
     private readonly SemaphoreSlim _concurrencyLimiter;
+    private readonly string? _serveToken;
 
     /// <summary>
     /// 下载任务的生命周期 token。必须独立于 HTTP 请求：
@@ -33,9 +35,12 @@ public class BBDownApiServer
     /// </summary>
     private readonly CancellationTokenSource _serverLifetimeCts = new();
 
-    public BBDownApiServer(int maxConcurrent = 3)
+    public BBDownApiServer(int maxConcurrent = 3, string? serveToken = null)
     {
-        _concurrencyLimiter = new SemaphoreSlim(maxConcurrent, maxConcurrent);
+        // 防御：maxConcurrent <= 0 会让 SemaphoreSlim 构造抛 ArgumentOutOfRangeException，
+        // serve 作为长驻进程应以可读错误退出而非崩溃
+        _concurrencyLimiter = new SemaphoreSlim(Math.Max(1, maxConcurrent), Math.Max(1, maxConcurrent));
+        _serveToken = serveToken;
     }
 
     public void SetUpServer()
@@ -63,27 +68,50 @@ public class BBDownApiServer
             if (!_serverLifetimeCts.IsCancellationRequested) _serverLifetimeCts.Cancel();
         });
         app.UseCors("AllowAnyOrigin");
+        // 可选 token 认证：serve 默认监听 0.0.0.0 且 CORS 全放开，
+        // 配置了 --serve-token 后所有任务/查询端点要求 X-Serve-Token 匹配，否则 401。
+        // 未配置 token 时保持向后兼容（仅本地信任环境）。
+        if (!string.IsNullOrEmpty(_serveToken))
+        {
+            app.Use(async (context, next) =>
+            {
+                var path = context.Request.Path;
+                bool isApi = path.StartsWithSegments("/get-tasks")
+                    || path.StartsWithSegments("/add-task")
+                    || path.StartsWithSegments("/remove-finished");
+                if (isApi && context.Request.Headers["X-Serve-Token"] != _serveToken)
+                {
+                    context.Response.StatusCode = StatusCodes.Status401Unauthorized;
+                    return;
+                }
+                await next();
+            });
+        }
         var taskStatusApi = app.MapGroup("/get-tasks");
         taskStatusApi.MapGet("/", handler: () =>
         {
+            // Results.Json 的序列化发生在锁外（响应流式化阶段），必须在此快照集合，
+            // 否则锁外遍历 runningTasks/finishedTasks 与并发 Add/RemoveAll 竞争，
+            // 轻则读到不完整状态，重则抛集合修改异常
+            List<DownloadTask> running, finished;
             lock (_taskLock)
             {
-                return Results.Json(new DownloadTaskCollection(runningTasks, finishedTasks), AppJsonSerializerContext.Default.DownloadTaskCollection);
+                running = runningTasks.ToList();
+                finished = finishedTasks.ToList();
             }
+            return Results.Json(new DownloadTaskCollection(running, finished), AppJsonSerializerContext.Default.DownloadTaskCollection);
         });
         taskStatusApi.MapGet("/running", handler: () =>
         {
-            lock (_taskLock)
-            {
-                return Results.Json(runningTasks, AppJsonSerializerContext.Default.ListDownloadTask);
-            }
+            List<DownloadTask> snapshot;
+            lock (_taskLock) { snapshot = runningTasks.ToList(); }
+            return Results.Json(snapshot, AppJsonSerializerContext.Default.ListDownloadTask);
         });
         taskStatusApi.MapGet("/finished", handler: () =>
         {
-            lock (_taskLock)
-            {
-                return Results.Json(finishedTasks, AppJsonSerializerContext.Default.ListDownloadTask);
-            }
+            List<DownloadTask> snapshot;
+            lock (_taskLock) { snapshot = finishedTasks.ToList(); }
+            return Results.Json(snapshot, AppJsonSerializerContext.Default.ListDownloadTask);
         });
         taskStatusApi.MapGet("/{id}", (string id, CancellationToken token) =>
         {
@@ -107,6 +135,14 @@ public class BBDownApiServer
                 return Results.BadRequest("输入有误");
             }
             var req = bindingResult.Result!;
+            // 安全边界：网络传入的执行路径/参数/代理一律忽略。
+            // Aria2cArgs 会被拼入 aria2c 命令行、Aria2cPath 会覆盖静态进程路径，
+            // 允许客户端控制这些字段等价于任意命令/程序执行（RCE）。
+            SanitizeUntrustedOptions(req);
+            if (!IsSafeCallbackUrl(req.CallBackWebHook))
+            {
+                return Results.BadRequest("回调地址不合法：仅支持 http/https 且禁止指向回环或链路本地地址");
+            }
             // 使用服务器生命周期 token 而非请求 token，否则下载会随响应结束一同被取消。
             // AddDownloadTaskAsync 内部已收敛所有异常，此处兜底避免遗漏变成无人观察的 Task 异常
             _ = AddDownloadTaskAsync(req, req.CallBackWebHook, _serverLifetimeCts.Token)
@@ -141,8 +177,9 @@ public class BBDownApiServer
         {
             Logger.LogError($"{url} 不是合法的 http URL，url 示例：http://0.0.0.0:5000");
             Logger.LogWarn("如果您需要 https，请额外配置反向代理");
-            Environment.ExitCode = 1;
-            return;
+            // 抛异常而非仅设置 ExitCode：Environment.ExitCode 会被 Main 的返回值覆盖，
+            // 导致监听地址无效时进程仍以 0 退出。ServeCommand 捕获后返回非零退出码。
+            throw new ArgumentException($"{url} 不是合法的 http URL");
         }
         app.Urls.Add(url);
         try
@@ -153,6 +190,43 @@ public class BBDownApiServer
         {
             // 收到取消信号（如 Ctrl+C），正常退出
         }
+    }
+
+    /// <summary>
+    /// 清除网络请求体中可能导致任意命令/程序执行的字段。
+    /// Aria2cArgs 会拼入 aria2c 命令行、Aria2cPath 会覆盖静态进程路径、
+    /// Aria2cProxy 会追加进 Aria2cArgs —— 三者都不允许客户端控制。
+    /// </summary>
+    internal static void SanitizeUntrustedOptions(ServeRequestOptions req)
+    {
+        req.Aria2cArgs = "";
+        req.Aria2cPath = "";
+        req.Aria2cProxy = "";
+    }
+
+    /// <summary>
+    /// 回调地址 SSRF 防护：仅允许 http/https 绝对地址，
+    /// 且禁止指向回环（127.0.0.1/::1/localhost）与链路本地（169.254.x / fe80::）。
+    /// 保留 RFC1918 私网段：局域网回调是 serve 模式的正常用法。
+    /// </summary>
+    internal static bool IsSafeCallbackUrl(string? url)
+    {
+        if (string.IsNullOrWhiteSpace(url)) return true; // 未配置回调视为合法
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
+        if (IPAddress.TryParse(uri.Host, out var ip))
+        {
+            if (IPAddress.IsLoopback(ip)) return false;
+            if (ip.IsIPv6LinkLocal) return false;
+            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            {
+                var b = ip.GetAddressBytes();
+                if (b.Length == 4 && b[0] == 169 && b[1] == 254) return false; // 169.254.0.0/16
+            }
+            return true;
+        }
+        var host = uri.Host;
+        return !host.Equals("localhost", StringComparison.OrdinalIgnoreCase);
     }
 
     private async Task<DownloadTask> AddDownloadTaskAsync(MyOption option, string? callBackWebHook = null, CancellationToken cancellationToken = default)
@@ -176,14 +250,18 @@ public class BBDownApiServer
             return rejected;
         }
 
-        DownloadTask? runningTask;
-        lock (_taskLock) { runningTask = runningTasks.FirstOrDefault(t => t.Aid == aid); }
-        if (runningTask is not null)
+        DownloadTask task = new(aid, option.Url, DateTimeOffset.Now.ToUnixTimeSeconds());
+        // 查重与入队必须在同一把锁内完成，否则并发提交同一 aid 时
+        // 两个请求都能通过 FirstOrDefault 检查并各自入队，导致重复下载
+        lock (_taskLock)
         {
-            return runningTask;
-        };
-        var task = new DownloadTask(aid, option.Url, DateTimeOffset.Now.ToUnixTimeSeconds());
-        lock (_taskLock) { runningTasks.Add(task); }
+            var runningTask = runningTasks.FirstOrDefault(t => t.Aid == aid);
+            if (runningTask is not null)
+            {
+                return runningTask;
+            }
+            runningTasks.Add(task);
+        }
         try
         {
             await _concurrencyLimiter.WaitAsync(cancellationToken);

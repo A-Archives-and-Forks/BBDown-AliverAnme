@@ -19,4 +19,25 @@ public class ParserPlayLimitTests
         Assert.Contains("limit_play_reason=AREA_LIMIT", ex.Message);
         Assert.Contains("play_detail=PLAY_NONE", ex.Message);
     }
+
+    [Fact]
+    public void ThrowIfBizError_NonZeroCode_ThrowsReadableMessage()
+    {
+        const string json = """{"code":-86038,"message":"抱歉，您所在地区暂时无法观看","data":{}}""";
+        using var doc = JsonDocument.Parse(json);
+        var ex = Assert.Throws<InvalidOperationException>(() => Parser.ThrowIfBizError(doc.RootElement));
+        Assert.Contains("86038", ex.Message);
+        Assert.Contains("无法观看", ex.Message);
+    }
+
+    [Theory]
+    [InlineData("""{"code":0,"message":"success","data":{}}""")]
+    [InlineData("""{"data":{}}""")]
+    [InlineData("""{"code":"-412","data":{}}""")]  // code 非数字
+    [InlineData("""[1,2,3]""")]                    // 根节点非对象
+    public void ThrowIfBizError_ZeroOrMissingOrNonNumericCode_DoesNotThrow(string json)
+    {
+        using var doc = JsonDocument.Parse(json);
+        Parser.ThrowIfBizError(doc.RootElement); // 不应抛异常
+    }
 }

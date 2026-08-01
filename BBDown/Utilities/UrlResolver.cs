@@ -15,7 +15,8 @@ public static partial class UrlResolver
     public static async Task<string> ResolveAsync(string input)
     {
         var avid = input;
-        if (input.StartsWith("http"))
+        // 大小写不敏感：用户可能输入 HTTPS:// 或 Http://
+        if (input.StartsWith("http", StringComparison.OrdinalIgnoreCase))
         {
             var lowerInput = input.ToLowerInvariant();
             if (input.Contains("b23.tv"))
@@ -31,7 +32,7 @@ public static partial class UrlResolver
             }
             else if (lowerInput.Contains("video/bv"))
             {
-                avid = DecodeBv(BVRegex().Match(input).Groups[1].Value);
+                avid = DecodeBv(input);
             }
             else if (input.Contains("/cheese/"))
             {
@@ -123,6 +124,10 @@ public static partial class UrlResolver
                 string web = await HTTPUtil.GetWebSourceAsync(input);
                 Regex regex = StateRegex();
                 string json = regex.Match(web).Groups[1].Value;
+                // 页面未含 __INITIAL_STATE__ 时 json 为空，JsonDocument.Parse("") 会抛底层 JsonException；
+                // 换成用户可读的"无法解析"错误
+                if (string.IsNullOrEmpty(json))
+                    throw new ArgumentException("输入有误：无法从该链接解析出视频信息");
                 using var jDoc = JsonDocument.Parse(json);
                 var epList = jDoc.RootElement.EnumerateArraySafe("epList");
                 var firstEp = epList.FirstOrDefault();
@@ -134,7 +139,7 @@ public static partial class UrlResolver
         }
         else if (input.ToLowerInvariant().StartsWith("bv"))
         {
-            avid = DecodeBv(input[3..]);
+            avid = DecodeBv(input);
         }
         else if (input.ToLowerInvariant().StartsWith("av"))
         {
@@ -202,9 +207,21 @@ public static partial class UrlResolver
         }
     }
 
-    private static string DecodeBv(string bv)
+    private static string DecodeBv(string input)
     {
-        return BilibiliBvConverter.Decode(bv).ToString();
+        var m = BVRegex().Match(input);
+        if (!m.Success)
+            throw new ArgumentException("输入有误：无法识别的 BV 号");
+        try
+        {
+            return BilibiliBvConverter.Decode(m.Groups[1].Value).ToString();
+        }
+        catch (ArgumentException ex)
+        {
+            // 长度/字符非法的 BV 号：转成用户可读的错误而非底层转换器异常，
+            // 避免畸形输入（如裸 "bv"）直接因字符串切片越界而崩溃
+            throw new ArgumentException($"输入有误：BV 号格式不正确 ({ex.Message})");
+        }
     }
 
     private static async Task<string> GetEpidBySSIdAsync(string ssid)

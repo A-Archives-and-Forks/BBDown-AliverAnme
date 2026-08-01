@@ -298,14 +298,24 @@ public sealed class WidevineCdm : IDisposable
 
             // Widevine spec: if IV is unset or all zeros → ECB, otherwise CBC
             var isZeroIv = keyIv.All(b => b == 0);
-            if (isZeroIv)
+            try
             {
-                contentKey = WidevineCrypto.AesEcbDecrypt(encContentKey, encKey);
+                if (isZeroIv)
+                {
+                    contentKey = WidevineCrypto.AesEcbDecrypt(encContentKey, encKey);
+                }
+                else
+                {
+                    var dec = WidevineCrypto.AesCbcDecrypt(encContentKey, encKey, keyIv);
+                    contentKey = WidevineCrypto.Pkcs7Unpad(dec);
+                }
             }
-            else
+            catch (Exception ex) when (ex is CryptographicException or FormatException)
             {
-                var dec = WidevineCrypto.AesCbcDecrypt(encContentKey, encKey, keyIv);
-                contentKey = WidevineCrypto.Pkcs7Unpad(dec);
+                // 单个 key 解密失败（key/IV 不匹配或数据损坏）不应放弃整份授权：
+                // 其余 key 仍可正常解密，跳过这条损坏记录
+                Logger.LogDebug("解密 content key 失败: {0}", ex.Message);
+                continue;
             }
 
             var kidHex = Convert.ToHexString(kidBytes).ToLowerInvariant();

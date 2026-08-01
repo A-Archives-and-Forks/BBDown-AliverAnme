@@ -107,6 +107,14 @@ internal partial class Program
     /// 下载单个分P。返回 false 表示该分P最终失败——调用方据此避免把它记为已完成，
     /// 并让整体任务状态反映失败，而不是照常报告"任务完成"。
     /// </summary>
+    /// <summary>
+    /// 计算角色配音轨的安全下标：主音轨的 aIndex 只对 AudioTracks.Count 校验过，
+    /// 每个 role 的 audio 列表更小，越界抛 ArgumentOutOfRangeException 且不在下载重试的
+    /// catch 过滤内，会直接中止整批下载。返回 -1 表示该 role 没有可用音频（调用方跳过）。
+    /// </summary>
+    internal static int ClampRoleAudioIndex(int aIndex, int audioCount)
+        => audioCount <= 0 ? -1 : Math.Min(Math.Max(aIndex, 0), audioCount - 1);
+
     private static async Task<bool> DownloadPageAsync(Page p, MyOption myOption, VInfo vInfo, List<Page> selectedPagesInfo, Dictionary<string, byte> encodingPriority, Dictionary<string, int> dfnPriority,
         string? firstEncoding, bool downloadDanmaku, BBDownDanmakuFormat[] downloadDanmakuFormats, string input, string savePathFormat, string lang, string aidOri, string apiType, DownloadTask? relatedTask = null, CancellationToken cancellationToken = default)
     {
@@ -389,20 +397,20 @@ internal partial class Program
                         myOption.UseMP4box = true;
                     }
                     Logger.Log($"开始下载P{p.index}视频...");
-                    await DownloadTrackAsync(selectedVideo.baseUrl, videoPath, downloadConfig, video: true);
+                    await DownloadTrackAsync(selectedVideo.baseUrl, videoPath, downloadConfig, video: true, cancellationToken);
                 }
 
                 if (selectedAudio != null)
                 {
                     Logger.Log($"开始下载P{p.index}音频...");
-                    await DownloadTrackAsync(selectedAudio.baseUrl, audioPath, downloadConfig, video: false);
+                    await DownloadTrackAsync(selectedAudio.baseUrl, audioPath, downloadConfig, video: false, cancellationToken);
                 }
 
                 if (selectedBackgroundAudio != null)
                 {
                     var backgroundPath = $"{p.aid}/{p.aid}.{p.cid}.P{p.index}.back_ground.m4a";
                     Logger.Log($"开始下载P{p.index}背景配音...");
-                    await DownloadTrackAsync(selectedBackgroundAudio.baseUrl, backgroundPath, downloadConfig, video: false);
+                    await DownloadTrackAsync(selectedBackgroundAudio.baseUrl, backgroundPath, downloadConfig, video: false, cancellationToken);
                     audioMaterial.Add(new AudioMaterial("背景音频", "", backgroundPath));
                 }
 
@@ -410,8 +418,14 @@ internal partial class Program
                 {
                     foreach (var role in parsedResult.RoleAudioList)
                     {
+                        // aIndex 只对 AudioTracks.Count 校验过，而每个 role 的 audio 是独立列表
+                        //（通常只有 1-2 个清晰度），主列表的序号可能越界。越界会抛
+                        // ArgumentOutOfRangeException 且不在下载重试的 catch 过滤内，直接中止整批。
+                        int roleIdx = ClampRoleAudioIndex(aIndex, role.audio.Count);
+                        if (roleIdx < 0) continue;
+                        var roleAudio = role.audio[roleIdx];
                         Logger.Log($"开始下载P{p.index}配音[{role.title}]...");
-                        await DownloadTrackAsync(role.audio[aIndex].baseUrl, role.path, downloadConfig, video: false);
+                        await DownloadTrackAsync(roleAudio.baseUrl, role.path, downloadConfig, video: false, cancellationToken);
                         audioMaterial.Add(new AudioMaterial(role));
                     }
                 }

@@ -66,9 +66,14 @@ public static partial class Parser
         if (webJson.Contains("\"大会员专享限制\""))
         {
             Logger.Log("此视频需要大会员，您大概率需要登录一个有大会员的账号才可以下载，尝试从网页源码解析");
-            string webUrl = "https://www.bilibili.com/bangumi/play/ep" + epId;
-            string webSource = await HTTPUtil.GetWebSourceAsync(webUrl);
-            webJson = PlayerJsonRegex().Match(webSource).Groups[1].Value;
+            // 该回退只对番剧成立：UGC 的 epId 为空，构造 /bangumi/play/ep<空> 会拿到
+            // 无效页面并被 PlayerJsonRegex 误替换成空/垃圾内容，导致后续解析失败
+            if (!string.IsNullOrEmpty(epId))
+            {
+                string webUrl = "https://www.bilibili.com/bangumi/play/ep" + epId;
+                string webSource = await HTTPUtil.GetWebSourceAsync(webUrl);
+                webJson = PlayerJsonRegex().Match(webSource).Groups[1].Value;
+            }
         }
         return webJson;
     }
@@ -111,11 +116,19 @@ public static partial class Parser
                     parsedResult.WebJsonString = await GetPlayJsonAsync(aid, cid, epId, qn, code);
 
                 using var intlJson = JsonDocument.Parse(parsedResult.WebJsonString);
-                var streamList = intlJson.RootElement.GetPropertySafe("data").GetPropertySafe("video_info").GetPropertySafe("stream_list");
-                int pDur = intlJson.RootElement.GetPropertySafe("data").GetPropertySafe("video_info").GetInt32Safe("timelength") / 1000;
-                var audioElements = intlJson.RootElement.GetPropertySafe("data").GetPropertySafe("video_info").EnumerateArraySafe("dash_audio").ToList();
+                // intl 接口某次请求可能不返回 video_info / stream_list（code=0 与 code=1 返回结构不同），
+                // GetPropertySafe 遇到缺失会抛 KeyNotFoundException 直接中断整次解析，
+                // 这里逐级判空后跳过本次迭代，等待下一次请求
+                var intlData = intlJson.RootElement.TryGetPropertySafe("data");
+                if (intlData is not { ValueKind: JsonValueKind.Object }) continue;
+                var videoInfo = intlData.Value.TryGetPropertySafe("video_info");
+                if (videoInfo is not { ValueKind: JsonValueKind.Object }) continue;
+                var streamList = videoInfo.Value.TryGetPropertySafe("stream_list");
+                if (streamList is not { ValueKind: JsonValueKind.Array }) continue;
+                int pDur = videoInfo.Value.GetInt32Safe("timelength") / 1000;
+                var audioElements = videoInfo.Value.EnumerateArraySafe("dash_audio").ToList();
 
-                foreach (var stream in streamList.EnumerateArray())
+                foreach (var stream in streamList.Value.EnumerateArray())
                 {
                     if (stream.TryGetProperty("dash_video", out JsonElement dashVideo))
                     {
@@ -161,6 +174,9 @@ public static partial class Parser
         var respJson = JsonDocument.Parse(parsedResult.WebJsonString);
         var data = respJson.RootElement;
         ThrowIfPlayLimited(data);
+        // UGC 的播放限制通过顶层业务 code 表达（区域限制 -86038、风控 -412、视频失效 -404 等），
+        // 而 play_check 只在 pgc 响应的 result 节点出现、对 UGC 不可达，这里统一兜底
+        ThrowIfBizError(data);
         // 根据API版本自动定位数据节点
         JsonElement root;
         if (data.TryGetProperty("result", out var resultElem) && resultElem.ValueKind == JsonValueKind.Object)
@@ -503,6 +519,19 @@ public static partial class Parser
         };
 
         throw new InvalidOperationException($"{message} (limit_play_reason={reason}, play_detail={detail})");
+    }
+
+    /// <summary>
+    /// 对 playurl 响应统一兜底：顶层业务 code != 0（如 -86038 区域限制、-412 风控、-404 视频失效）
+    /// 时以可读错误抛出不播放限制，避免 UGC 路径静默解析出空轨道后在下载阶段才失败。
+    /// </summary>
+    internal static void ThrowIfBizError(JsonElement root)
+    {
+        if (root.ValueKind != JsonValueKind.Object) return;
+        if (!root.TryGetProperty("code", out var code) || code.ValueKind != JsonValueKind.Number) return;
+        if (!code.TryGetInt64(out var codeValue) || codeValue == 0) return;
+        var message = root.GetValueAsStringSafe("message", $"接口返回错误码 {codeValue}");
+        throw new InvalidOperationException($"接口返回错误: {message} (code={codeValue})");
     }
 
     /// <summary>

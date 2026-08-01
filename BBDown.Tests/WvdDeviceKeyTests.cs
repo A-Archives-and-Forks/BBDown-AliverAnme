@@ -60,4 +60,27 @@ public class WvdDeviceKeyTests
             .Trim();
         AssertImports(System.Text.Encoding.ASCII.GetBytes(body), expected);
     }
+
+    [Fact]
+    public void ImportPrivateKey_Garbage_Throws()
+    {
+        // 垃圾输入必须抛异常，触发上层 Create 的 catch-dispose 释放 RSA 句柄
+        using var rsa = RSA.Create();
+        Assert.ThrowsAny<Exception>(() => WvdDevice.ImportPrivateKey(rsa, new byte[] { 0x01, 0x02, 0x03 }));
+    }
+
+    [Fact]
+    public void Load_CorruptWvd_ThrowsInsteadOfLeaking()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bbdown-bad-{Guid.NewGuid():N}.wvd");
+        File.WriteAllBytes(path, new byte[] { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 });
+        try
+        {
+            Assert.ThrowsAny<Exception>(() => WvdDevice.Load(path));
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

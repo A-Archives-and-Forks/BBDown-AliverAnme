@@ -106,9 +106,13 @@ public static class DanmakuUtil
                 2 => $"\\an8\\pos({MONITOR_WIDTH / 2}, {height})",
                 _ => $"\\move({MONITOR_WIDTH}, {height}, {-danmaku.Content.Length * FONT_SIZE}, {height})",
             };
-            if (danmaku.Color != "FFFFFF")
+            if (danmaku.Color.Length == 6 && danmaku.Color != "FFFFFF")
             {
-                effect += $"\\c&{danmaku.Color}&";
+                // ASS 颜色格式为 &HBBGGRR（BGR），而 B 站弹幕 color 是 #RRGGBB（RGB）。
+                // 直接拼接会让红蓝互换（红弹幕渲染成蓝）；反转字节序后才能还原正确颜色。
+                // &H 前缀是 ASS 颜色规范的必需部分：缺了它 FF0000 会被当作十进制而非十六进制。
+                string bgr = danmaku.Color[4..] + danmaku.Color[2..4] + danmaku.Color[..2];
+                effect += $"\\c&H{bgr}&";
             }
             sb.AppendLine($"Dialogue: 2,{danmaku.StartTime},{danmaku.EndTime},BBDOWN_Style,,0000,0000,0000,,{{{effect}}}{EscapeAssText(danmaku.Content)}");
         }
