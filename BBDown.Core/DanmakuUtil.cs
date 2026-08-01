@@ -68,6 +68,26 @@ public static class DanmakuUtil
     }
 
     /// <summary>
+    /// 按关键词/发送者UID过滤弹幕：任一过滤条件命中即丢弃。
+    /// 关键词黑名单用于去掉广告/无关弹幕，UID黑名单用于屏蔽特定用户。
+    /// </summary>
+    public static DanmakuItem[] Filter(DanmakuItem[] danmakus, string? keywords, string? userIds)
+    {
+        if (danmakus.Length == 0) return danmakus;
+        if (string.IsNullOrWhiteSpace(keywords) && string.IsNullOrWhiteSpace(userIds)) return danmakus;
+
+        var kw = (keywords ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        var uids = (userIds ?? "").Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+
+        return danmakus.Where(d =>
+        {
+            if (uids.Length > 0 && d.Timestamp.Length > 0 && uids.Contains(d.Timestamp)) return false;
+            if (kw.Length > 0 && kw.Any(k => d.Content.Contains(k, StringComparison.Ordinal))) return false;
+            return true;
+        }).ToArray();
+    }
+
+    /// <summary>
     /// 保存为ASS字幕文件
     /// </summary>
     /// <param name="danmakus">弹幕</param>

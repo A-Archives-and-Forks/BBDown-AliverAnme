@@ -143,6 +143,22 @@ public class MyOption : CommandSettings
     [Description("指定需下载的弹幕格式, 用逗号分隔")]
     public string? DownloadDanmakuFormats { get; set; }
 
+    [CommandOption("--danmaku-filter")]
+    [Description("弹幕过滤: 包含任一关键词的弹幕将被丢弃(逗号分隔)")]
+    public string? DanmakuFilter { get; set; }
+
+    [CommandOption("--danmaku-filter-user")]
+    [Description("弹幕过滤: 指定用户UID的弹幕将被丢弃(逗号分隔)")]
+    public string? DanmakuFilterUser { get; set; }
+
+    [CommandOption("--comments")]
+    [Description("同时下载视频评论区, 保存为 JSON")]
+    public bool DownloadComments { get; set; }
+
+    [CommandOption("--notify-webhook")]
+    [Description("下载完成后向指定 URL 发送 HTTP POST 通知(CLI 版回调)")]
+    public string? NotifyWebhook { get; set; }
+
     [CommandOption("--skip-ai")]
     [Description("跳过AI字幕下载(默认开启)")]
     [DefaultValue(true)]

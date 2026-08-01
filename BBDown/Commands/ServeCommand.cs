@@ -18,7 +18,7 @@ public class ServeSettings : CommandSettings
     [Description("最大并发下载数(默认3)")]
     public int MaxConcurrent { get; set; } = 3;
 
-    [CommandOption("--token")]
+    [CommandOption("--serve-token")]
     [Description("可选访问令牌，设置后所有 API 请求需携带 X-Serve-Token 请求头，否则返回 401")]
     public string? ServeToken { get; set; }
 }

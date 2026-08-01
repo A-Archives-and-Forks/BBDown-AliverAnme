@@ -34,6 +34,8 @@ public class BBDownApiServer
     /// 该 token 只在服务器关停时触发。
     /// </summary>
     private readonly CancellationTokenSource _serverLifetimeCts = new();
+    // 已完成任务持久化：serve 是长驻进程，任务记录只留在内存会在重启后丢失
+    private static readonly string _taskFile = Path.Combine(Environment.CurrentDirectory, "bbdown-tasks.json");
 
     public BBDownApiServer(int maxConcurrent = 3, string? serveToken = null)
     {
@@ -46,6 +48,7 @@ public class BBDownApiServer
     public void SetUpServer()
     {
         if (app is not null) return;
+        LoadFinishedTasks();
         var builder = WebApplication.CreateSlimBuilder();
         builder.Services.ConfigureHttpJsonOptions((options) =>
         {
@@ -154,16 +157,19 @@ public class BBDownApiServer
         finishedRemovalApi.MapGet("/", () =>
         {
             lock (_taskLock) { finishedTasks.RemoveAll(t => true); }
+            PersistFinishedTasks();
             return Results.Ok();
         });
         finishedRemovalApi.MapGet("/failed", () =>
         {
             lock (_taskLock) { finishedTasks.RemoveAll(t => !t.IsSuccessful); }
+            PersistFinishedTasks();
             return Results.Ok();
         });
         finishedRemovalApi.MapGet("/{id}", (string id) =>
         {
             lock (_taskLock) { finishedTasks.RemoveAll(t => t.Aid == id); }
+            PersistFinishedTasks();
             return Results.Ok();
         });
     }
@@ -189,6 +195,45 @@ public class BBDownApiServer
         catch (OperationCanceledException)
         {
             // 收到取消信号（如 Ctrl+C），正常退出
+        }
+    }
+
+    /// <summary>
+    /// 把已完成任务快照写入磁盘，serve 重启后可恢复。
+    /// 写失败只降级为日志，不影响下载流程。
+    /// </summary>
+    private void PersistFinishedTasks()
+    {
+        try
+        {
+            List<DownloadTask> snapshot;
+            lock (_taskLock) { snapshot = finishedTasks.ToList(); }
+            var json = JsonSerializer.Serialize(snapshot, AppJsonSerializerContext.Default.ListDownloadTask);
+            File.WriteAllText(_taskFile, json);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            Logger.LogDebug("持久化任务记录失败: {0}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// serve 启动时恢复上次运行留下的已完成任务记录。文件损坏时静默忽略。
+    /// </summary>
+    private void LoadFinishedTasks()
+    {
+        try
+        {
+            if (!File.Exists(_taskFile)) return;
+            var json = File.ReadAllText(_taskFile);
+            var loaded = JsonSerializer.Deserialize(json, AppJsonSerializerContext.Default.ListDownloadTask);
+            if (loaded is null) return;
+            lock (_taskLock) { finishedTasks.AddRange(loaded); }
+            Logger.LogDebug("已恢复 {0} 条历史任务记录", loaded.Count);
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
+        {
+            Logger.LogDebug("加载历史任务记录失败: {0}", ex.Message);
         }
     }
 
@@ -246,6 +291,7 @@ public class BBDownApiServer
                 TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds(),
             };
             lock (_taskLock) { finishedTasks.Add(rejected); }
+            PersistFinishedTasks();
             Logger.LogError($"解析链接失败: {option.Url} - {e.Message}");
             return rejected;
         }
@@ -305,6 +351,7 @@ public class BBDownApiServer
             runningTasks.Remove(task);
             finishedTasks.Add(task);
         }
+        PersistFinishedTasks();
 
         // Webhook 回调
         if (!string.IsNullOrEmpty(callBackWebHook))
@@ -358,12 +405,16 @@ record struct MyOptionBindingResult<T>(T? Result, Exception? Exception)
     {
         try
         {
-            JsonTypeInfo? jsonTypeInfo = SourceGenerationContext.Default.GetTypeInfo(typeof(T));
-            if (jsonTypeInfo is null)
+            // 大小写不敏感：客户端可能用 {url:...} 或 {Url:...}，两者都应绑定成功。
+            // 用带该选项的 context 生成 TypeInfo（源生成，AOT 安全）。
+            var context = new SourceGenerationContext(new JsonSerializerOptions { PropertyNameCaseInsensitive = true });
+            JsonTypeInfo? jsonTypeInfo = context.GetTypeInfo(typeof(T));
+            if (jsonTypeInfo is not JsonTypeInfo<T> typedInfo)
             {
                 return new(default, new InvalidOperationException($"Cannot find TypeInfo for type {typeof(T)}"));
             }
-            var item = await httpContext.Request.ReadFromJsonAsync(jsonTypeInfo);
+            var json = await new StreamReader(httpContext.Request.Body).ReadToEndAsync(httpContext.RequestAborted);
+            var item = JsonSerializer.Deserialize<T>(json, typedInfo);
 
             if (item is null) return new(default, new NoNullAllowedException());
 

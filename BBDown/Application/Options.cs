@@ -290,10 +290,10 @@ internal partial class Program
     }
 
     /// <summary>
-    /// 加载用户的认证信息（cookie或token）
+    /// 加载用户的认证信息（cookie或token）。internal：watchlater 等命令在批量下载前
+    /// 需要先加载本地登录凭据，以便调用需要登录态的接口。
     /// </summary>
-    /// <param name="myOption"></param>
-    private static void LoadCredentials(MyOption myOption)
+    internal static void LoadCredentials(MyOption myOption)
     {
         string cookie = Config.Current.Cookie;
         string token = Config.Current.Token;

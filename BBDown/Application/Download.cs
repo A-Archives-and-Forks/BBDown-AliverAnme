@@ -8,6 +8,7 @@ using System.Threading.Tasks;
 using static BBDown.Core.Entity.Entity;
 using BBDown.Core;
 using BBDown.Core.Entity;
+using System.Text;
 using System.Text.Json;
 
 using BBDown.Core.Util;
@@ -92,6 +93,12 @@ internal partial class Program
             }
         }
 
+        // 下载任务完成通知（CLI 版回调）。失败也会通知，但调用方仍会因 failedPages 抛出而获得非零退出码。
+        if (!string.IsNullOrEmpty(myOption.NotifyWebhook))
+        {
+            await NotifyCompletionAsync(myOption.NotifyWebhook, vInfo, failedPages.Count == 0, cancellationToken);
+        }
+
         if (failedPages.Count > 0)
         {
             // 必须抛出：调用方据此决定退出码，serve 模式据此把任务标记为失败。
@@ -101,6 +108,34 @@ internal partial class Program
         }
 
         Logger.Log("任务完成");
+    }
+
+    /// <summary>
+    /// 下载任务完成回调：向用户配置的 webhook POST 任务结果。
+    /// 失败只降级为日志，不影响下载流程本身。
+    /// </summary>
+    private static async Task NotifyCompletionAsync(string webhook, VInfo vInfo, bool success, CancellationToken token)
+    {
+        try
+        {
+            var payload = new NotifyPayload(
+                vInfo.Title,
+                vInfo.PagesInfo.Count,
+                success ? "completed" : "completed-with-failures",
+                DateTimeOffset.Now.ToUnixTimeSeconds());
+            var json = JsonSerializer.Serialize(payload, MyOptionJsonContext.Default.NotifyPayload);
+            using var req = new HttpRequestMessage(HttpMethod.Post, webhook)
+            {
+                Content = new StringContent(json, Encoding.UTF8, new System.Net.Http.Headers.MediaTypeHeaderValue("application/json")),
+            };
+            using var resp = await HTTPUtil.AppHttpClient.SendAsync(req, token);
+            if (!resp.IsSuccessStatusCode)
+                Logger.LogWarn($"通知回调返回 HTTP {(int)resp.StatusCode}");
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
+        {
+            Logger.LogDebug("通知回调失败: {0}", ex.Message);
+        }
     }
 
     /// <summary>
@@ -335,8 +370,16 @@ internal partial class Program
                     }
                     else if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass))
                     {
-                        Logger.Log("正在保存弹幕Ass文件...");
-                        await DanmakuUtil.SaveAsAssAsync(danmakus, danmakuAssPath);
+                        var filtered = DanmakuUtil.Filter(danmakus, myOption.DanmakuFilter, myOption.DanmakuFilterUser);
+                        if (filtered.Length == 0)
+                        {
+                            Logger.Log("过滤后没有剩余弹幕, 跳过Ass保存");
+                        }
+                        else
+                        {
+                            Logger.Log($"正在保存弹幕Ass文件{(filtered.Length < danmakus.Length ? $"(过滤掉 {danmakus.Length - filtered.Length} 条)" : "")}...");
+                            await DanmakuUtil.SaveAsAssAsync(filtered, danmakuAssPath);
+                        }
                     }
 
                     // delete xml if possible
@@ -431,6 +474,15 @@ internal partial class Program
                 }
 
                 Logger.Log($"下载P{p.index}完毕");
+
+                if (myOption.DownloadComments && p.index == 1 && long.TryParse(p.aid, out var commentAid))
+                {
+                    var commentsPath = Path.ChangeExtension(savePath, ".comments.json");
+                    Logger.Log("正在下载评论...");
+                    var comments = await CommentUtil.FetchAsync(commentAid, token: cancellationToken);
+                    await CommentUtil.SaveToJsonAsync(comments, commentsPath);
+                    Logger.Log($"评论已保存: {commentsPath} ({comments.Count} 条)");
+                }
 
                 if (parsedResult.IsDrm && myOption.DecryptDrm && (!string.IsNullOrEmpty(parsedResult.KidHex) || !string.IsNullOrEmpty(parsedResult.PsshBase64)))
                 {

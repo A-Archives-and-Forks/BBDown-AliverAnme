@@ -20,6 +20,9 @@ using BBDown.Commands;
 
 namespace BBDown;
 
+/// <summary>下载完成通知的载荷（--notify-webhook）。</summary>
+public record NotifyPayload(string Title, int PageCount, string Message, long CompletedAt);
+
 partial class Program
 {
     private static readonly string BACKUP_HOST = "upos-sz-mirrorcoso1.bilivideo.com";
@@ -48,6 +51,7 @@ partial class Program
 
     [JsonSerializable(typeof(MyOption))]
     [JsonSerializable(typeof(ServeRequestOptions))]
+    [JsonSerializable(typeof(NotifyPayload))]
     partial class MyOptionJsonContext : JsonSerializerContext { }
 
     private static void Console_CancelKeyPress(object? sender, ConsoleCancelEventArgs e)
@@ -68,9 +72,24 @@ partial class Program
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoginCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoginTVCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ServeCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LiveCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(MyOption))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoginSettings))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ServeSettings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LiveSettings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ArticleSettings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(ArticleCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(WatchLaterSettings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(WatchLaterCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubSettings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubAddSettings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubListSettings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubRemoveSettings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubCheckSettings))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubAddCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubListCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubRemoveCommand))]
+    [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubCheckCommand))]
     public static async Task<int> Main(params string[] args)
     {
         Console.CancelKeyPress += Console_CancelKeyPress;
@@ -116,6 +135,20 @@ partial class Program
                   .WithDescription("通过APP扫描二维码以登录您的TV账号");
             config.AddCommand<ServeCommand>("serve")
                   .WithDescription("以服务器模式运行");
+            config.AddCommand<LiveCommand>("live")
+                  .WithDescription("录制B站直播流");
+            config.AddCommand<ArticleCommand>("article")
+                  .WithDescription("下载B站专栏文章为 Markdown");
+            config.AddCommand<WatchLaterCommand>("watchlater")
+                  .WithDescription("批量下载稍后再看列表(需登录)");
+            config.AddBranch<SubSettings>("sub", sub =>
+            {
+                sub.SetDescription("订阅管理: 添加/列出/移除订阅，检查并增量下载新内容");
+                sub.AddCommand<SubAddCommand>("add").WithDescription("添加订阅");
+                sub.AddCommand<SubListCommand>("list").WithDescription("列出订阅");
+                sub.AddCommand<SubRemoveCommand>("remove").WithDescription("移除订阅");
+                sub.AddCommand<SubCheckCommand>("check").WithDescription("检查订阅并增量下载新内容");
+            });
         });
 
         return await app.RunAsync(mergedArgs);
