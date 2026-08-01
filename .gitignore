@@ -391,3 +391,9 @@ BBDown/116414115482147/
 bilibili-API-collect/
 # Local Pi runtime state
 .atl/
+.remember/
+.pi-subagents/
+
+# Debug output files (contain sensitive API data)
+debug_*.json
+artifact/

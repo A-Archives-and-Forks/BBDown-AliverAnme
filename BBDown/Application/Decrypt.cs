@@ -117,28 +117,48 @@ internal partial class Program
 
     private static async Task RunDecryptAsync(string mp4decrypt, string kid, string key, string input, string output)
     {
-        var psi = new ProcessStartInfo
+        // Write key to a temp file to avoid exposing it on the command line
+        // (visible via ps aux / /proc/<pid>/cmdline to other local users)
+        var keyFile = Path.GetTempFileName();
+        try
         {
-            FileName = mp4decrypt,
-            Arguments = $"--key {kid}:{key} \"{input}\" \"{output}\"",
-            RedirectStandardOutput = false,
-            RedirectStandardError = true,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-        };
+            await File.WriteAllTextAsync(keyFile, $"{kid}:{key}");
 
-        using var proc = Process.Start(psi);
-        if (proc == null) return;
-        var stderrTask = proc.StandardError.ReadToEndAsync();
-        await proc.WaitForExitAsync();
+            var psi = new ProcessStartInfo
+            {
+                FileName = mp4decrypt,
+                Arguments = $"--key-file \"{keyFile}\" \"{input}\" \"{output}\"",
+                RedirectStandardOutput = false,
+                RedirectStandardError = true,
+                UseShellExecute = false,
+                CreateNoWindow = true,
+            };
 
-        if (proc.ExitCode != 0)
+            using var proc = Process.Start(psi);
+            if (proc == null) return;
+            var stderrTask = proc.StandardError.ReadToEndAsync();
+            await proc.WaitForExitAsync();
+
+            if (proc.ExitCode != 0)
+            {
+                var err = await stderrTask;
+                try { if (File.Exists(output)) File.Delete(output); } catch (IOException) { }
+                throw new InvalidOperationException($"mp4decrypt 解密失败 (code={proc.ExitCode}): {err}");
+            }
+        }
+        finally
         {
-            var err = await stderrTask;
-            // 失败必须抛出：原实现只 LogError 后继续，主流程会把仍处于加密状态或
-            // 半损坏的输出当作解密成功，最终混流出无法播放的文件却报告成功。
-            try { if (File.Exists(output)) File.Delete(output); } catch (IOException) { }
-            throw new InvalidOperationException($"mp4decrypt 解密失败 (code={proc.ExitCode}): {err}");
+            // Securely delete the temp key file
+            try
+            {
+                if (File.Exists(keyFile))
+                {
+                    // Overwrite before delete to prevent recovery
+                    await File.WriteAllTextAsync(keyFile, new string('\0', 64));
+                    File.Delete(keyFile);
+                }
+            }
+            catch (IOException) { /* best effort */ }
         }
     }
 

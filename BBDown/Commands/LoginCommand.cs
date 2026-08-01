@@ -14,6 +14,7 @@ public class LoginCommand : Command<LoginSettings>
 {
     protected override int Execute(CommandContext context, LoginSettings settings, CancellationToken cancellationToken)
     {
-        return BBDownLoginUtil.LoginWEB(cancellationToken).GetAwaiter().GetResult() ? 0 : 1;
+        // Task.Run avoids deadlock if called from a thread with a SynchronizationContext
+        return Task.Run(() => BBDownLoginUtil.LoginWEB(cancellationToken)).GetAwaiter().GetResult() ? 0 : 1;
     }
 }

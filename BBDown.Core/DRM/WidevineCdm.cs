@@ -204,14 +204,19 @@ public sealed class WidevineCdm : IDisposable
         {
             sm = SignedMessage.Parser.ParseFrom(data);
         }
-        catch
+        catch (InvalidProtocolBufferException ex)
         {
+            Logger.LogDebug("License response protobuf parse failed: {0}", ex.Message);
             try
             {
                 var err = System.Text.Encoding.UTF8.GetString(data);
-                Logger.LogDebug("License server returned: {0}", err);
+                Logger.LogWarn($"License server returned error: {err}");
             }
-            catch { }
+            catch (Exception decodeEx)
+            {
+                Logger.LogDebug("Unable to decode license server error response: {0}", decodeEx.Message);
+                Logger.LogWarn($"License request failed with unparseable response ({data.Length} bytes)");
+            }
             return null;
         }
 
@@ -222,10 +227,18 @@ public sealed class WidevineCdm : IDisposable
         }
 
         // Decrypt session key with device RSA private key
+        // Try OAEP-SHA1 first (older devices), fall back to OAEP-SHA256
         var encSessionKey = sm.SessionKey.ToByteArray();
         byte[] sessionKey;
-        try { sessionKey = _device.Rsa.Decrypt(encSessionKey, RSAEncryptionPadding.OaepSHA1); }
-        catch { sessionKey = _device.Rsa.Decrypt(encSessionKey, RSAEncryptionPadding.OaepSHA256); }
+        try
+        {
+            sessionKey = _device.Rsa.Decrypt(encSessionKey, RSAEncryptionPadding.OaepSHA1);
+        }
+        catch (CryptographicException)
+        {
+            Logger.LogDebug("OAEP-SHA1 session key decryption failed, trying OAEP-SHA256");
+            sessionKey = _device.Rsa.Decrypt(encSessionKey, RSAEncryptionPadding.OaepSHA256);
+        }
 
         if (sessionKey.Length != 16)
         {

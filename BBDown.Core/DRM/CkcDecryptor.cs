@@ -15,7 +15,7 @@ public static class DrmDecryptor
             return null;
 
         var (kid, key) = keys[0];
-        Logger.LogDebug("Widevine key: kid={0}, key={1}", kid, key);
+        Logger.LogDebug("Widevine key: kid={0}, key={1}...", kid, key[..Math.Min(8, key.Length)]);
         return (kid, key);
     }
 }

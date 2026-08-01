@@ -147,7 +147,7 @@ public class BBDownApiServer
         app.Urls.Add(url);
         try
         {
-            app.RunAsync(cancellationToken).GetAwaiter().GetResult();
+            Task.Run(() => app.RunAsync(cancellationToken)).GetAwaiter().GetResult();
         }
         catch (OperationCanceledException)
         {

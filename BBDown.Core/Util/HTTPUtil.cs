@@ -18,7 +18,12 @@ public static class HTTPUtil
         {
             handler.SslOptions = new System.Net.Security.SslClientAuthenticationOptions
             {
-                RemoteCertificateValidationCallback = (_, _, _, _) => true,
+                RemoteCertificateValidationCallback = (sender, cert, chain, errors) =>
+                {
+                    if (errors != System.Net.Security.SslPolicyErrors.None)
+                        Logger.LogDebug("SSL 证书验证被跳过，证书错误: {0}", errors);
+                    return true;
+                },
             };
             Logger.LogDebug("SSL 证书验证已禁用");
         }

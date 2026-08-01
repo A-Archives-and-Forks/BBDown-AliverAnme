@@ -4,6 +4,32 @@
 
 ## [Unreleased]
 
+## [1.6.8] - 2026-08-01
+
+### 安全
+
+- **DRM 密钥进程列表暴露**：`mp4decrypt` 解密密钥改为通过临时文件传递（`--key-file`），避免命令行对同主机 `ps aux` 可见。临时文件使用后覆写并删除。
+- **Debug 日志密钥脱敏**：Widevine 解密密钥在 debug 日志中仅显示前 8 字符。
+- **SSL 跳过诊断增强**：`--insecure` 模式下记录被跳过的证书错误类型到 debug 日志，便于排查。
+
+### 修复
+
+- **WidevineCdm 异常吞噬**：protobuf 解析失败和 RSA 解密失败不再静默吞错，改为记录诊断日志并降级返回 null。
+- **异步死锁防护**：`LoginCommand`、`LoginTVCommand`、`BBDownApiServer` 中 `.GetAwaiter().GetResult()` 调用改为 `Task.Run(...).GetAwaiter().GetResult()`，防止被 GUI 宿主复用时死锁。
+- **调试日志文件清理**：仓库根目录遗留的 20 个 `debug_*.json` 已删除，并加入 `.gitignore`。
+
+### 测试
+
+- 新增 `WidevineCdmTests`：PSSH 解析边界、非法输入降级。
+- 新增 `ParserTests`：`ThrowIfPlayLimited` 全覆盖、WbiSign、Codec 映射。
+- `UrlResolverTests` 添加 `[Trait("Category", "Integration")]` 标记，CI 可通过 `--filter` 排除。
+
+### 维护
+
+- `.remember/`、`.pi-subagents/`、`debug_*.json`、`artifact/` 加入 `.gitignore`。
+- `Parser.cs` Dispose 所有权说明注释。
+- `WidevineCdm.cs` RSA OAEP fallback 从裸 `catch` 改为 `catch (CryptographicException)`。
+
 ## [1.6.7] - 2026-07-27
 
 ### 修复
@@ -178,7 +204,8 @@
 
 ---
 
-[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.6.7...HEAD
+[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.6.8...HEAD
+[1.6.8]: https://github.com/AliverAnme/BBDown/compare/v1.6.7...v1.6.8
 [1.6.7]: https://github.com/AliverAnme/BBDown/compare/v1.6.6...v1.6.7
 [1.6.6]: https://github.com/AliverAnme/BBDown/compare/v1.6.5...v1.6.6
 [1.6.5]: https://github.com/AliverAnme/BBDown/compare/v1.6.4...v1.6.5
