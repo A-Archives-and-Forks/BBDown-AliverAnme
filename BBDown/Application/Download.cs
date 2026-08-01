@@ -488,7 +488,8 @@ internal partial class Program
                         await CommentUtil.SaveToJsonAsync(comments, commentsPath);
                         Logger.Log($"评论已保存: {commentsPath} ({comments.Count} 条)");
                     }
-                    catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or IOException)
+                    catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException
+                                                or IOException or TaskCanceledException or KeyNotFoundException or FormatException)
                     {
                         Logger.LogWarn($"评论下载失败（已跳过）: {ex.Message}");
                     }

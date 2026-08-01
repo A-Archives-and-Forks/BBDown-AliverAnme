@@ -76,8 +76,16 @@ public class WatchLaterCommand : Command<WatchLaterSettings>
                 foreach (var (aid, title) in targets)
                 {
                     Logger.Log($"--- 下载 av{aid} {title} ---");
-                    var opt = BuildOption($"av{aid}", settings);
-                    await Program.DoWorkAsync(opt, cancellationToken);
+                    try
+                    {
+                        var opt = BuildOption($"av{aid}", settings);
+                        await Program.DoWorkAsync(opt, cancellationToken);
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or IOException)
+                    {
+                        // 单个视频失败不应中止整批稍后再看
+                        Logger.LogWarn($"av{aid} 下载失败（继续下一个）: {ex.Message}");
+                    }
                 }
                 return 0;
             }

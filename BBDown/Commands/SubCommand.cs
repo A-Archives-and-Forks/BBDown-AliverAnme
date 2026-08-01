@@ -131,16 +131,16 @@ public class SubCheckCommand : Command<SubCheckSettings>
                 return 0;
             }
 
-            // 订阅解析与拉取（VIP/登录态内容）需要凭据：先把命令行传入的 --cookie/--access-token
-            // 写入当前 async 流，否则 ResolveAsync / FetcherFactory.FetchAsync 会在未登录状态下执行
-            if (!string.IsNullOrEmpty(settings.Cookie) || !string.IsNullOrEmpty(settings.AccessToken))
+            // 订阅解析与拉取（VIP/登录态内容）需要凭据：
+            // LoadCredentials 会优先应用命令行 --cookie/--access-token，否则加载本地 BBDown.data。
+            // 此前只处理显式传参，已登录但未传参时枚举阶段以匿名身份执行，VIP/区域订阅会被误判为空。
+            Program.LoadCredentials(new MyOption
             {
-                Config.Apply(Config.Current with
-                {
-                    Cookie = settings.Cookie,
-                    Token = settings.AccessToken.Replace("access_token=", ""),
-                });
-            }
+                Cookie = settings.Cookie,
+                AccessToken = settings.AccessToken,
+                UseTvApi = settings.UseTvApi,
+                UseAppApi = settings.UseAppApi,
+            });
 
             foreach (var sub in subs)
             {

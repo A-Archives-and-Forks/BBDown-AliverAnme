@@ -39,6 +39,27 @@ public static class SubscriptionStore
         return Encoding.UTF8.GetString(ms.ToArray());
     }
 
+    /// <summary>原子替换写入（temp + rename）：避免进程被杀/磁盘满留下截断 JSON，
+    /// 否则下次 Load 会把损坏文件静默当作"无订阅"。</summary>
+    private static void AtomicWrite(string path, string content)
+    {
+        string tmp = path + ".tmp";
+        File.WriteAllText(tmp, content);
+        File.Move(tmp, path, true);
+    }
+
+    private static void WriteSubs(List<Subscription> subs)
+    {
+        try
+        {
+            AtomicWrite(SubFile, ToJson(subs, SubscriptionJsonContext.Default.ListSubscription));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Logger.LogWarn($"写入订阅文件失败: {ex.Message}");
+        }
+    }
+
     public static List<Subscription> Load()
     {
         try
@@ -63,7 +84,7 @@ public static class SubscriptionStore
         }
         subs.Add(new Subscription(target, string.IsNullOrWhiteSpace(name) ? target : name!,
             DateTimeOffset.Now.ToUnixTimeSeconds()));
-        File.WriteAllText(SubFile, ToJson(subs, SubscriptionJsonContext.Default.ListSubscription));
+        WriteSubs(subs);
         Logger.Log($"已添加订阅: {target}");
     }
 
@@ -71,7 +92,7 @@ public static class SubscriptionStore
     {
         var subs = Load();
         var removed = subs.RemoveAll(s => s.Target == target);
-        File.WriteAllText(SubFile, ToJson(subs, SubscriptionJsonContext.Default.ListSubscription));
+        WriteSubs(subs);
         Logger.Log(removed > 0 ? $"已移除订阅: {target}" : $"未找到订阅: {target}");
     }
 
@@ -108,6 +129,13 @@ public static class SubscriptionStore
 
         if (!hist.TryGetValue(target, out var list)) { list = []; hist[target] = list; }
         if (!list.Contains(aid)) list.Add(aid);
-        File.WriteAllText(HistoryFile, ToJson(hist, SubscriptionJsonContext.Default.DictionaryStringListString));
+        try
+        {
+            AtomicWrite(HistoryFile, ToJson(hist, SubscriptionJsonContext.Default.DictionaryStringListString));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Logger.LogWarn($"写入订阅历史失败: {ex.Message}");
+        }
     }
 }

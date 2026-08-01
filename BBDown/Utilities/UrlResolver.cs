@@ -145,6 +145,13 @@ public static partial class UrlResolver
         {
             avid = input.ToLowerInvariant()[2..];
         }
+        else if (input.StartsWith("mid:") || input.StartsWith("favId:")
+                 || input.StartsWith("listBizId:") || input.StartsWith("seriesBizId:"))
+        {
+            // 与 FetcherFactory 的前缀对齐：这些是下载器自身的列表/空间目标标识（如 sub add 的输入），
+            // 直接透传给对应 fetcher，而不是落入下方"无法识别"分支
+            avid = input;
+        }
         else if (input.StartsWith("cheese/"))
         {
             string epId = "";
@@ -160,26 +167,29 @@ public static partial class UrlResolver
         }
         else if (input.StartsWith("ep"))
         {
-            string epId = input[2..];
+            // 兼容 "ep123" 与 "ep:123" 两种写法（sub add 会原样保存用户输入）
+            string epId = input[2..].TrimStart(':');
             avid = $"ep:{epId}";
         }
         else if (input.StartsWith("ss"))
         {
             try
             {
-                string epId = await GetEpIdByBangumiSSIdAsync(input[2..]);
+                string epId = await GetEpIdByBangumiSSIdAsync(input[2..].TrimStart(':'));
                 avid = $"ep:{epId}";
             }
             catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException)
             {
                 Core.Logger.LogWarn($"番剧 SS 解析失败，尝试课程 SS: {ex.Message}");
-                string epId = await GetEpidBySSIdAsync(input[2..]);
+                string epId = await GetEpidBySSIdAsync(input[2..].TrimStart(':'));
                 avid = $"cheese:{epId}";
             }
         }
         else if (input.StartsWith("md"))
         {
-            string mdId = MdRegex().Match(input).Groups[1].Value;
+            string mdId = input[2..].TrimStart(':');
+            if (mdId == "")
+                throw new ArgumentException($"输入有误：无法识别的专栏 ID，当前值: '{input}'");
             string epId = await GetEpIdByMDAsync(mdId);
             avid = $"ep:{epId}";
         }

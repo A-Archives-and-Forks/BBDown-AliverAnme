@@ -114,4 +114,18 @@ public class UrlResolverTests
         var result = await UrlResolver.ResolveAsync(input);
         Assert.Equal(expected, result);
     }
+
+    [Theory]
+    [InlineData("mid:123", "mid:123")]
+    [InlineData("favId:1:2", "favId:1:2")]
+    [InlineData("listBizId:123", "listBizId:123")]
+    [InlineData("seriesBizId:123", "seriesBizId:123")]
+    [InlineData("ep:123", "ep:123")]
+    [InlineData("ep123", "ep:123")]
+    public async Task ResolveAsync_PrefixTargets_PassThrough(string input, string expected)
+    {
+        // sub add 承诺支持 mid:/favId:/listBizId:/seriesBizId: 裸前缀；ep: 与 ep 两种写法应归一
+        var result = await UrlResolver.ResolveAsync(input);
+        Assert.Equal(expected, result);
+    }
 }

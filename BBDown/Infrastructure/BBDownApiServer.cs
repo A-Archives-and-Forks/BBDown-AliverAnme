@@ -198,6 +198,10 @@ public class BBDownApiServer
         }
     }
 
+    // 串行化任务文件的写入：多任务并发完成时若直接 File.WriteAllText，
+    // 后写者会因 FileShare.None 抛 IOException 被吞成日志，丢失刚完成任务的记录
+    private static readonly object _persistLock = new();
+
     /// <summary>
     /// 把已完成任务快照写入磁盘，serve 重启后可恢复。
     /// 写失败只降级为日志，不影响下载流程。
@@ -209,7 +213,7 @@ public class BBDownApiServer
             List<DownloadTask> snapshot;
             lock (_taskLock) { snapshot = finishedTasks.ToList(); }
             var json = JsonSerializer.Serialize(snapshot, AppJsonSerializerContext.Default.ListDownloadTask);
-            File.WriteAllText(_taskFile, json);
+            lock (_persistLock) { File.WriteAllText(_taskFile, json); }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -247,6 +251,10 @@ public class BBDownApiServer
         req.Aria2cArgs = "";
         req.Aria2cPath = "";
         req.Aria2cProxy = "";
+        // NotifyWebhook 是 CLI 功能：serve 的 /add-task 请求体若携带它，会绕过
+        // CallBackWebHook 的 SSRF 校验，让服务器向攻击者指定的任意地址 POST 任务数据。
+        // serve 下的任务回调统一走经过 IsSafeCallbackUrl 校验的 CallBackWebHook。
+        req.NotifyWebhook = "";
     }
 
     /// <summary>
@@ -280,13 +288,20 @@ public class BBDownApiServer
 
     private async Task<DownloadTask> AddDownloadTaskAsync(MyOption option, string? callBackWebHook = null, CancellationToken cancellationToken = default)
     {
-        // 解析 aid 前先把本任务的认证配置写入当前 async 流：
-        // URL 解析阶段的网络请求（GetAvIdAsync 等）若此时读到全局 _settings，
-        // 会拿到上一个任务留下的 cookie，造成跨账号解析（region/VIP 状态错乱）。
-        Config.Apply(Config.Current with
+        // 解析 aid 前先把本任务的完整配置写入当前 async 流，用干净的 AppSettings 起步：
+        // 1) 避免解析阶段读到全局 _settings 里上一个任务留下的 cookie（跨账号解析）；
+        // 2) 避免 Host/EpHost/TvHost/Area 等字段继承上个任务的覆盖值（cookie 发往错误 host）。
+        // 用 option 的显式值（MyOption 默认值即官方地址），accessToken 可能被 JSON null 置空。
+        Config.Apply(new AppSettings
         {
-            Cookie = option.Cookie,
-            Token = option.AccessToken.Replace("access_token=", ""),
+            Cookie = option.Cookie ?? "",
+            Token = (option.AccessToken ?? "").Replace("access_token=", ""),
+            DebugLog = option.Debug,
+            Host = option.Host,
+            EpHost = option.EpHost,
+            TvHost = option.TvHost,
+            Area = option.Area ?? "",
+            SkipSslCheck = option.Insecure,
         });
         string aid;
         try
