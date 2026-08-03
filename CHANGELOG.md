@@ -2,6 +2,18 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.10] - 2026-08-04
+
+### 安全
+
+- **webhook 回调 SSRF 重定向封堵**：任务完成回调改用专用 `AllowAutoRedirect=false` 的 HttpClient，不再经共享客户端跟随攻击者可控的 `Location` 重定向到内网/云元数据地址。
+- **回调全零地址拦截**：`IsSafeCallbackUrl` 字面 IP 分支补拦 `0.0.0.0` 与 `[::]`（连接时绑定回环）。
+- **局域网回调边界说明**：字面 IP 的 RFC1918 内网地址仍放行（局域网回调用法）；攻击者构造的域名回调走 DNS 解析分支、内网段一律拒绝。需进一步收紧的局域网用户应配置 `--serve-token` 或前置反向代理。
+
+### 维护
+
+- 修复 2 个编译警告：`ServeApiSecurityTests` 空 host 用例的 null 赋值、`IsSafeCallbackUrl` 的 `literalIp` 可能为 null 解引用。
+
 ## [1.6.9] - 2026-08-04
 
 ### 修复（发布前回归审查）
