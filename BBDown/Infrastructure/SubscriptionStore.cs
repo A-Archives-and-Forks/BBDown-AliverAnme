@@ -39,11 +39,16 @@ public static class SubscriptionStore
         return Encoding.UTF8.GetString(ms.ToArray());
     }
 
+    // 单进程内的读-改-写串行化：Add/Remove/RecordDownloaded 在 _ioLock 内完成
+    // "读文件→内存修改→整体写回"，避免多写者并发时后写者的快照覆盖先写者的修改（丢失更新）。
+    private static readonly object _ioLock = new();
+
     /// <summary>原子替换写入（temp + rename）：避免进程被杀/磁盘满留下截断 JSON，
-    /// 否则下次 Load 会把损坏文件静默当作"无订阅"。</summary>
+    /// 否则下次 Load 会把损坏文件静默当作"无订阅"。
+    /// 临时文件名带唯一后缀：固定 .tmp 名会让并发写者互相踩踏（FileShare.None 抛 IOException）。</summary>
     private static void AtomicWrite(string path, string content)
     {
-        string tmp = path + ".tmp";
+        string tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         File.WriteAllText(tmp, content);
         File.Move(tmp, path, true);
     }
@@ -52,7 +57,10 @@ public static class SubscriptionStore
     {
         try
         {
-            AtomicWrite(SubFile, ToJson(subs, SubscriptionJsonContext.Default.ListSubscription));
+            lock (_ioLock)
+            {
+                AtomicWrite(SubFile, ToJson(subs, SubscriptionJsonContext.Default.ListSubscription));
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -76,24 +84,30 @@ public static class SubscriptionStore
 
     public static void Add(string target, string? name)
     {
-        var subs = Load();
-        if (subs.Any(s => s.Target == target))
+        lock (_ioLock)
         {
-            Logger.LogWarn($"已存在订阅: {target}");
-            return;
+            var subs = Load();
+            if (subs.Any(s => s.Target == target))
+            {
+                Logger.LogWarn($"已存在订阅: {target}");
+                return;
+            }
+            subs.Add(new Subscription(target, string.IsNullOrWhiteSpace(name) ? target : name!,
+                DateTimeOffset.Now.ToUnixTimeSeconds()));
+            WriteSubs(subs);
+            Logger.Log($"已添加订阅: {target}");
         }
-        subs.Add(new Subscription(target, string.IsNullOrWhiteSpace(name) ? target : name!,
-            DateTimeOffset.Now.ToUnixTimeSeconds()));
-        WriteSubs(subs);
-        Logger.Log($"已添加订阅: {target}");
     }
 
     public static void Remove(string target)
     {
-        var subs = Load();
-        var removed = subs.RemoveAll(s => s.Target == target);
-        WriteSubs(subs);
-        Logger.Log(removed > 0 ? $"已移除订阅: {target}" : $"未找到订阅: {target}");
+        lock (_ioLock)
+        {
+            var subs = Load();
+            var removed = subs.RemoveAll(s => s.Target == target);
+            WriteSubs(subs);
+            Logger.Log(removed > 0 ? $"已移除订阅: {target}" : $"未找到订阅: {target}");
+        }
     }
 
     /// <summary>某个订阅已成功下载过的 avid 集合。</summary>
@@ -119,23 +133,26 @@ public static class SubscriptionStore
 
     public static void RecordDownloaded(string target, string aid)
     {
-        var hist = new Dictionary<string, List<string>>();
-        try
+        lock (_ioLock)
         {
-            if (File.Exists(HistoryFile))
-                hist = JsonSerializer.Deserialize(File.ReadAllText(HistoryFile), SubscriptionJsonContext.Default.DictionaryStringListString) ?? new();
-        }
-        catch (JsonException) { /* 文件损坏时重置历史 */ }
+            var hist = new Dictionary<string, List<string>>();
+            try
+            {
+                if (File.Exists(HistoryFile))
+                    hist = JsonSerializer.Deserialize(File.ReadAllText(HistoryFile), SubscriptionJsonContext.Default.DictionaryStringListString) ?? new();
+            }
+            catch (JsonException) { /* 文件损坏时重置历史 */ }
 
-        if (!hist.TryGetValue(target, out var list)) { list = []; hist[target] = list; }
-        if (!list.Contains(aid)) list.Add(aid);
-        try
-        {
-            AtomicWrite(HistoryFile, ToJson(hist, SubscriptionJsonContext.Default.DictionaryStringListString));
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            Logger.LogWarn($"写入订阅历史失败: {ex.Message}");
+            if (!hist.TryGetValue(target, out var list)) { list = []; hist[target] = list; }
+            if (!list.Contains(aid)) list.Add(aid);
+            try
+            {
+                AtomicWrite(HistoryFile, ToJson(hist, SubscriptionJsonContext.Default.DictionaryStringListString));
+            }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+            {
+                Logger.LogWarn($"写入订阅历史失败: {ex.Message}");
+            }
         }
     }
 }

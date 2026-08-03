@@ -36,6 +36,14 @@ internal partial class Program
             pagesInfo = pagesInfo.Where(p => selectedPages.Contains(p.index.ToString())).ToList();
         }
 
+        // 选中的分P全部不存在（如 -p 99）时，空列表会让 foreach 空转后打印"任务完成"，
+        // 脚本与 serve 客户端拿到假成功。必须显式报错中止任务。
+        if (pagesInfo.Count == 0)
+        {
+            throw new InvalidOperationException(
+                $"所选分P不存在: {(selectedPages is null ? "ALL" : string.Join(",", selectedPages))}，视频共有 {pagesCount} 个分P");
+        }
+
         // 根据p数选择存储路径
         savePathFormat = string.IsNullOrEmpty(myOption.FilePattern) ? SinglePageDefaultSavePath : myOption.FilePattern;
         // 1. 多P; 2. 只有1P, 但是是番剧, 尚未完结时 按照多P处理
@@ -72,8 +80,24 @@ internal partial class Program
                 continue;
             }
 
-            var succeeded = await DownloadPageAsync(p, myOption, vInfo, pagesInfo, encodingPriority, dfnPriority, firstEncoding,
-                downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, apiType, relatedTask, cancellationToken);
+            bool succeeded;
+            try
+            {
+                succeeded = await DownloadPageAsync(p, myOption, vInfo, pagesInfo, encodingPriority, dfnPriority, firstEncoding,
+                    downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, apiType, relatedTask, cancellationToken);
+            }
+            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TaskCanceledException)
+            {
+                // 真正的用户取消/服务关停（token 已取消）必须正常中止整批，不能进失败分支续跑；
+                // HTTP 超时抛的 TaskCanceledException 其 token 未取消，会进入下方"记录失败后继续"分支。
+                if (cancellationToken.IsCancellationRequested) throw;
+                // DownloadPageAsync 内部重试 3 次耗尽后抛出：若不在此接住，异常会直接跳出
+                // foreach，剩余分P全部放弃下载，且完成通知（NotifyWebhook）与 failedPages
+                // 汇总都不再执行——与 return false 的失败路径（记录后继续）行为不一致。
+                Logger.LogError($"P{p.index} 下载失败: [{ex.GetType().Name}] {ex.Message}");
+                failedPages.Add(p.index);
+                continue;
+            }
 
             if (myOption.SaveArchivesToFile)
             {
@@ -188,7 +212,20 @@ internal partial class Program
                 }
                 if (!myOption.SkipCover && !myOption.SubOnly && !File.Exists(coverPath) && !myOption.DanmakuOnly && !myOption.CoverOnly)
                 {
-                    await BBDownDownloadUtil.DownloadFileAsync(pic == "" ? p.cover! : pic, coverPath, new BBDownDownloadUtil.DownloadConfig(), cancellationToken);
+                    // 封面是装饰性资源：下载失败只降级为警告，不应进入页面重试循环
+                    // 拖垮整批下载（与下方评论/webhook 的"非关键副作用降级"一致）。
+                    try
+                    {
+                        await BBDownDownloadUtil.DownloadFileAsync(pic == "" ? p.cover! : pic, coverPath, new BBDownDownloadUtil.DownloadConfig(), cancellationToken);
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
+                    {
+                        // 真正的取消（token 已取消）必须向上传播中止下载，不能当"封面失败（已跳过）"
+                        // 吞掉后继续执行字幕等无可取消的网络调用。HttpClient 超时抛的
+                        // TaskCanceledException 其 token 未取消，仍按封面降级处理。
+                        if (cancellationToken.IsCancellationRequested) throw;
+                        Logger.LogWarn($"封面下载失败（已跳过）: {ex.Message}");
+                    }
                 }
 
                 if (!myOption.SkipSubtitle && !myOption.DanmakuOnly && !myOption.CoverOnly)
@@ -405,7 +442,7 @@ internal partial class Program
                     var newCoverPath = Path.ChangeExtension(savePath, Path.GetExtension(coverUrl));
                     await BBDownDownloadUtil.DownloadFileAsync(coverUrl, newCoverPath, downloadConfig, cancellationToken);
                     if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0) Directory.Delete(p.aid, true);
-                    relatedTask?.SavePaths.Add(newCoverPath);
+                    relatedTask?.AddSavePath(newCoverPath);
                 }
 
                 Logger.Log($"已选择的流:");
@@ -423,7 +460,7 @@ internal partial class Program
                 if (!myOption.OnlyShowInfo && File.Exists(savePath) && new FileInfo(savePath).Length != 0)
                 {
                     Logger.Log($"{savePath}已存在, 跳过下载...");
-                    relatedTask?.SavePaths.Add(savePath);
+                    relatedTask?.AddSavePath(savePath);
                     File.Delete(coverPath);
                     if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0)
                     {
@@ -579,7 +616,7 @@ internal partial class Program
                 if (File.Exists(savePath) && new FileInfo(savePath).Length != 0)
                 {
                     Logger.Log($"{savePath}已存在, 跳过下载...");
-                    relatedTask?.SavePaths.Add(savePath);
+                    relatedTask?.AddSavePath(savePath);
                     if (selectedPagesInfo.Count == 1 && Directory.Exists(p.aid))
                     {
                         Directory.Delete(p.aid, true);
@@ -593,7 +630,7 @@ internal partial class Program
                     var link = clips[i];
                     videoPath = $"{p.aid}/{p.aid}.P{p.index}.{p.cid}.{i.ToString(pad)}.mp4";
                     Logger.Log($"开始下载P{p.index}视频, 片段({(i + 1).ToString(pad)}/{clips.Count})...");
-                    await DownloadTrackAsync(link, videoPath, downloadConfig, video: true);
+                    await DownloadTrackAsync(link, videoPath, downloadConfig, video: true, token: cancellationToken);
                     segFiles.Add(videoPath);
                 }
                 Logger.Log($"下载P{p.index}完毕");
@@ -647,7 +684,7 @@ internal partial class Program
             }
 
             if (!string.IsNullOrWhiteSpace(savePath)) {
-                relatedTask?.SavePaths.Add(savePath);
+                relatedTask?.AddSavePath(savePath);
             }
             return true; // success, exit retry loop
         }

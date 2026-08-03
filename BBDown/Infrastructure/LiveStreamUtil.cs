@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Runtime.ExceptionServices;
 using System.Text;
 using System.Text.Json;
 using BBDown.Core;
@@ -58,20 +59,86 @@ public static class LiveStreamUtil
     }
 
     /// <summary>
-    /// 把直播流持续写入本地文件，直到流结束或取消。进度回调收到累计字节数。
+    /// 把直播流持续写入本地文件，直到流结束、取消或重连耗尽。
+    /// 写入 <c>path.part</c> 临时文件，成功/取消时原子改名为最终路径：
+    /// B 站直播流地址带时效参数，长时间录制中过期是常态，网络瞬断或地址过期时
+    /// 重新解析流地址续录（最多 <see cref="ReconnectLimit"/> 次）。
+    /// 全部重连失败时保留 .part 中已录制的内容并抛错。
     /// </summary>
-    public static async Task DownloadToFileAsync(string url, string path, Action<long>? onProgress, CancellationToken token = default)
+    public static async Task DownloadToFileAsync(string roomId, string path, Action<long>? onProgress, CancellationToken token = default)
+    {
+        const int ReconnectLimit = 3;
+        var partPath = path + ".part";
+        // 清理上次录制留下的 .part（本次会话从头录制，会话内断流重连才续写）
+        if (File.Exists(partPath)) File.Delete(partPath);
+
+        long total = 0;
+        int reconnect = 0;
+
+        // 重连逻辑：重连计数递增，超限则保留 .part 并抛原异常，否则日志并等待 3 秒。
+        // HttpClient 超时（OCE 但 token 未取消）与一般瞬态故障两个 catch 共用。
+        async Task ReconnectOrThrow(Exception ex)
+        {
+            reconnect++;
+            if (reconnect > ReconnectLimit)
+            {
+                Logger.LogWarn($"直播流中断且 {ReconnectLimit} 次重连失败，已录制内容保留在 {partPath}");
+                ExceptionDispatchInfo.Capture(ex).Throw();
+            }
+            Logger.LogWarn($"直播流中断（{ex.Message}），3 秒后重连（{reconnect}/{ReconnectLimit}）...");
+            await Task.Delay(3000, token);
+        }
+
+        try
+        {
+            while (true)
+            {
+                token.ThrowIfCancellationRequested();
+                try
+                {
+                    var (url, _, _, _) = await ResolveAsync(roomId, token);
+                    total = await StreamToFileAsync(url, partPath, total, onProgress, token);
+                    break; // 流正常结束（主播下播）
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    break; // 用户取消：保留已录制内容，退出后改名保存
+                }
+                catch (OperationCanceledException ex)
+                {
+                    // HttpClient 2 分钟超时抛出的 TaskCanceledException（token 未取消）：按瞬态故障重连
+                    await ReconnectOrThrow(ex);
+                }
+                catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or JsonException)
+                {
+                    // 直播间下播（"当前未在直播"）是终结态而非可恢复故障：正常结束，走改名保存
+                    if (ex is InvalidOperationException && ex.Message.Contains("当前未在直播"))
+                        break;
+                    await ReconnectOrThrow(ex);
+                }
+            }
+        }
+        catch (OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // 取消发生在重连等待 Task.Delay 或 while 顶部检查（try 外）：先走到循环后的改名保存再退出
+        }
+
+        if (File.Exists(partPath))
+            File.Move(partPath, path, true);
+    }
+
+    /// <summary>把一条直播流写到 <paramref name="partPath"/>（追加模式，续写重连前的已录内容），返回累计字节数。</summary>
+    private static async Task<long> StreamToFileAsync(string url, string partPath, long total, Action<long>? onProgress, CancellationToken token = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.UserAgent);
         req.Headers.TryAddWithoutValidation("Referer", "https://live.bilibili.com/");
         using var response = (await HTTPUtil.AppHttpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(token);
-        await using var fs = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true);
+        await using var fs = new FileStream(partPath, FileMode.Append, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true);
         var buffer = ArrayPool<byte>.Shared.Rent(1 << 20);
         try
         {
-            long total = 0;
             while (true)
             {
                 var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), token);
@@ -80,6 +147,7 @@ public static class LiveStreamUtil
                 total += read;
                 onProgress?.Invoke(total);
             }
+            return total;
         }
         finally
         {

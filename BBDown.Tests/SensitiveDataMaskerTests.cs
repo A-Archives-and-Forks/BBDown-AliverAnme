@@ -110,6 +110,25 @@ public class SensitiveDataMaskerTests
     }
 
     [Fact]
+    public void MaskHeaderMap_MasksMetadataBinHeader()
+    {
+        // x-bili-metadata-bin 的 protobuf 里携带 access_token（可逆 base64）：
+        // 不脱敏会把凭据以可解码形式写进 debug 日志
+        var headers = new Dictionary<string, string>
+        {
+            ["x-bili-metadata-bin"] = Convert.ToBase64String(System.Text.Encoding.UTF8.GetBytes("secret-access-token-here")),
+            ["authorization"] = "identify_v1 secret-app-token-1234",
+            ["user-agent"] = "Dalvik/2.1.0",
+        };
+
+        var masked = SensitiveDataMasker.MaskHeaderMap(headers);
+
+        Assert.DoesNotContain("secret-access-token-here", masked["x-bili-metadata-bin"]);
+        Assert.DoesNotContain("secret-app-token-1234", masked["authorization"]);
+        Assert.Equal("Dalvik/2.1.0", masked["user-agent"]);
+    }
+
+    [Fact]
     public void MaskHeaders_KeepsAuthorizationScheme()
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, "https://example.com");

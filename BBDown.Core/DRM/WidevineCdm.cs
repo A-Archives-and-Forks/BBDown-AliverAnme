@@ -190,7 +190,7 @@ public sealed class WidevineCdm : IDisposable
         req.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
         req.Headers.TryAddWithoutValidation("Accept", "*/*");
 
-        var resp = await HTTPUtil.AppHttpClient.SendAsync(req);
+        using var resp = await HTTPUtil.AppHttpClient.SendAsync(req);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadAsByteArrayAsync();
     }

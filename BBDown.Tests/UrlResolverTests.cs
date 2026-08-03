@@ -106,6 +106,7 @@ public class UrlResolverTests
     // ── 额外本地解析测试 ──
 
     [Theory]
+    [Trait("Category", "Integration")] // av 前缀会经 FixAvidAsync 发起真实网络跳转检查，不能算纯本地解析
     [InlineData("av12345", "12345")]
     [InlineData("AV99999", "99999")]
     public async Task ResolveAsync_RawAvId_LocalParsing(string input, string expected)

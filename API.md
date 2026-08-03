@@ -89,6 +89,8 @@
 **Response:**
 - 无论是否能找到对应ID的任务，均返回200 OK。
 
+> 注意：`FilePattern` / `MultiFilePattern` 在服务器模式下会被忽略（见上"安全边界"），因此 `/add-task` 无法用该字段自定义保存路径；请通过 `serve` 启动时的 `--work-dir` 指定默认工作目录。
+
 ## 数据结构
 
 ### `DownloadTask` 数据结构
@@ -116,7 +118,9 @@
 
 ### `MyOption` 数据结构
 
-参考[BBDown/MyOption.cs](./BBDown/MyOption.cs)。属性和命令行参数几乎是一一对应的，相应的值填写使用命令行会使用的值即可。这个结构会随着版本变化，请参考对应版本时候的文件。
+参考[BBDown/Configuration/MyOption.cs](./BBDown/Configuration/MyOption.cs)。属性和命令行参数几乎是一一对应的，相应的值填写使用命令行会使用的值即可。这个结构会随着版本变化，请参考对应版本时候的文件。
+
+> 安全边界：`/add-task` 请求体中的 `host/epHost/tvHost/uposHost` 仅接受 B 站官方域名（其余回落默认值）；`aria2cArgs/aria2cPath/aria2cProxy/ffmpegPath/mp4boxPath/wvdPath/mp4decryptPath/workDir/notifyWebhook/userAgent/filePattern/multiFilePattern/insecure` 一律被忽略（`filePattern`/`multiFilePattern` 会作为保存路径模板被拼进输出路径，可能被用于路径穿越；`insecure` 会关闭 TLS 证书校验，可能导致携带凭据的请求被中间人截获）。任务始终保存到默认目录模板。
 
 ### 注意事项
 - 由于BBDown的下载进度回报频率所限，`TotalDownloadedBytes`会比实际下载的文件略低，大概会少等效于1秒下载速度的文件体积，如果文件本身就非常小那这个数字偏差会较大。
@@ -135,12 +139,14 @@ curl -X POST -H 'Content-Type: application/json' -d '{ "Url": "BV1qt4y1X7TW" }' 
 
 #### 下载到指定目录
 
+> 服务器模式下 `FilePattern` 字段会被忽略（见上"安全边界"），请改用 `serve` 的 `--work-dir` 指定默认工作目录，任务产物保存到该目录下的默认模板路径。示例仅供参考传统 CLI 用法：
+
 Windows:
 ```shell
-curl -X POST -H 'Content-Type: application/json' -d '{ "Url": "BV1qt4y1X7TW", "FilePattern": "C:\\Downloads\\<videoTitle>[<dfn>]" }' http://localhost:58682/add-task
+curl -X POST -H 'Content-Type: application/json' -d '{ "Url": "BV1qt4y1X7TW" }' http://localhost:58682/add-task
 ```
 
 Unix-Like:
 ```shell
-curl -X POST -H 'Content-Type: application/json' -d '{ "Url": "BV1qt4y1X7TW", "FilePattern": "/Downloads/<videoTitle>[<dfn>]" }' http://localhost:58682/add-task
+curl -X POST -H 'Content-Type: application/json' -d '{ "Url": "BV1qt4y1X7TW" }' http://localhost:58682/add-task
 ```

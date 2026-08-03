@@ -4,6 +4,36 @@
 
 ## [Unreleased]
 
+### 安全
+
+- **serve 混流命令注入**：`BBDownMuxer` 混流时对 `lang`/`author`/音轨/字幕语言等外部来源值统一转义并加引号，消除通过 `/add-task` 请求体 `language` 字段远程注入 ffmpeg/mp4box 命令行、实现宿主任意文件读写的漏洞。
+- **serve 强制 TLS 校验**：`/add-task` 请求体中的 `insecure` 字段不再被接受，serve 下无法再关闭证书校验（此前可借此让携带操作者 SESSDATA 的请求被中间人截获）。
+- **serve 路径穿越封堵**：`filePattern`/`multiFilePattern` 请求字段被忽略（可作为保存路径模板做任意目录创建/文件写入），任务一律使用默认保存模板。
+- **回调 DNS 重绑定加固**：任务完成回调在建立连接前会再次校验回调地址（`IsSafeCallbackUrl`），把 add 时校验与连接时刻之间的 DNS 重绑定窗口压缩到最小。
+
+### 修复
+
+- **直播录制超时误判**：`HttpClient` 2 分钟超时抛出的 `TaskCanceledException` 不再被当成"用户取消"静默结束录制，而是按瞬态故障进入重连；重连等待期间取消也不再留下孤儿 `.part` 文件。
+- **直播录制重连语义**：主播下播（`当前未在直播`）作为终结态正常结束并改名为最终文件，不再被当可恢复故障重试 3 次后抛错；WAF/风控返回非 JSON 的 `JsonException` 也纳入重连。
+- **ProgressBar 计时器竞态**：`Dispose` 与 `speedTimer` 回调改用同一把锁同步，消除对已释放 `Timer` 调用 `Change()` 导致的进程崩溃（serve 长驻场景）。
+- **订阅文件丢失更新**：`SubscriptionStore` 的读-改-写完整序列纳入 `_ioLock`，并发写者不再互相覆盖。
+- **批量下载超时中止**：单个分P 的 HTTP 超时（`TaskCanceledException`）不再让整批下载中止，进入"记录失败后继续"分支；封面下载不再吞掉用户取消信号。
+- **空收藏夹误导报错**：无 `-p` 时选中分P为空（空收藏夹等）改为抛可读的 `InvalidOperationException`，而非 `ArgumentNullException`。
+- **Parser 免二压丢音轨**：重请求响应带 `dash` 但缺 `audio`/`video` 数组时沿用第一轮完整轨道，不再静默丢弃。
+- **直播录制退出码**：重连耗尽保留 `.part` 并抛错，`live` 命令退出码为 1（此前对超时误判为取消会返回 0）。
+
+### 测试
+
+- 新增 `DownloadTaskSnapshotTests.AddSavePath_IsVisibleToSnapshot`；`ServeApiSecurityTests` 断言 `SanitizeUntrustedOptions` 清空 `insecure`/`filePattern`/`multiFilePattern`；`WidevineCdmTests` 非法 PSSH 用例先验证 wvd 可加载，防止静默退化为 Load 失败路径。
+- CI 两个 workflow 的 `dotnet test` 增加 `--filter "Category!=Integration"`，与 `UrlResolverTests` 的 `[Trait]` 对齐，避免每次 push/tag 触发真实网络请求阻塞发布。
+
+### 维护
+
+- `BBDownConfigParser` 的 URL 形态正则补充 `cheese/` 斜杠形式，配置合并不再把裸 `cheese/ep123` 误判。
+- `SensitiveDataMasker` 补充 `x-bili-exps-bin` 设备标识头脱敏。
+- 登录凭据文件（`BBDown.data`）创建时即按 600 权限打开，消除 umask 权限窗口。
+- `API.md`/`README.md` 更新 serve 安全边界说明与直播 `.part` 行为。
+
 ## [1.6.8] - 2026-08-01
 
 ### 安全

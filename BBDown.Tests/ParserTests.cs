@@ -79,24 +79,16 @@ public class ParserTests
 
     // ── Codec 映射验证 ──
 
-    [Fact]
-    public void CodecId_KnownMappings()
+    [Theory]
+    [InlineData("13", "AV1")]
+    [InlineData("12", "HEVC")]
+    [InlineData("7", "AVC")]
+    [InlineData("", "UNKNOWN")]
+    [InlineData("999", "UNKNOWN")]
+    public void GetVideoCodec_KnownMappings(string codecId, string expected)
     {
-        var codecs = new Dictionary<string, string>
-        {
-            ["13"] = "AV1",
-            ["12"] = "HEVC",
-            ["7"] = "AVC",
-        };
-        foreach (var (id, expected) in codecs)
-        {
-            Assert.Equal(expected, id switch
-            {
-                "13" => "AV1",
-                "12" => "HEVC",
-                "7" => "AVC",
-                _ => "UNKNOWN"
-            });
-        }
+        // 直接断言生产实现：此前测试内联了一份相同的 switch 再断言它自己，
+        // 生产映射改成什么都照样通过，纯摆设。
+        Assert.Equal(expected, Parser.GetVideoCodec(codecId));
     }
 }

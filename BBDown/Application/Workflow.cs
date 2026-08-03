@@ -48,7 +48,9 @@ internal partial class Program
         int delay = myOption.DelayPerPage;
         Config.Apply(new AppSettings(
             Cookie: myOption.Cookie,
-            Token: myOption.AccessToken.Replace("access_token=", ""),
+            // System.Text.Json 对 JSON 中显式 null 会覆盖属性初始化器，serve 请求体
+            // {"accessToken": null} 可把 AccessToken 置为 null，这里必须防空
+            Token: (myOption.AccessToken ?? "").Replace("access_token=", ""),
             DebugLog: myOption.Debug,
             Host: myOption.Host,
             EpHost: myOption.EpHost,
@@ -70,7 +72,7 @@ internal partial class Program
             myOption.AccessToken = string.IsNullOrEmpty(savedToken) ? "" : "***";
             Logger.LogDebug("运行参数：{0}", JsonSerializer.Serialize(myOption, MyOptionJsonContext.Default.MyOption));
             myOption.Cookie = savedCookie;
-            myOption.AccessToken = savedToken;
+            myOption.AccessToken = savedToken ?? "";
         }
         return (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay);
     }

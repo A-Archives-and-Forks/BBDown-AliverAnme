@@ -232,7 +232,9 @@ public static class DanmakuUtil
             };
             try
             {
-                double second = double.Parse(attrs[0]);
+                // B站弹幕时间固定为点号小数（如 "12.345"）：在 de-DE 等小数点分隔符为
+                // 逗号的区域，CurrentCulture 会把分组符吞掉解析成 12345，时间轴整体错乱
+                double second = double.Parse(attrs[0], System.Globalization.CultureInfo.InvariantCulture);
                 Second = second;
                 StartTime = ComputeTime(second);
                 EndTime = ComputeTime(second + (DanmakuMode == 1 ? MOVE_SPEND_TIME : TOP_SPEND_TIME));
@@ -244,7 +246,7 @@ public static class DanmakuUtil
             FontSize = attrs[2];
             try
             {
-                int colorD = int.Parse(attrs[3]);
+                int colorD = int.Parse(attrs[3], System.Globalization.CultureInfo.InvariantCulture);
                 Color = string.Format("{0:X6}", colorD);
             }
             // 与上方时间解析保持一致：超范围的颜色值同样只应降级为默认色，

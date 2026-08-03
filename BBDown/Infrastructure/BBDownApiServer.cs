@@ -95,41 +95,42 @@ public class BBDownApiServer
         {
             // Results.Json 的序列化发生在锁外（响应流式化阶段），必须在此快照集合，
             // 否则锁外遍历 runningTasks/finishedTasks 与并发 Add/RemoveAll 竞争，
-            // 轻则读到不完整状态，重则抛集合修改异常
+            // 轻则读到不完整状态，重则抛集合修改异常。
+            // 元素也需深拷贝：DownloadTask 被下载线程持续修改（SavePaths.Add、进度字段），
+            // 共享对象在锁外序列化时仍会与写者竞争。
             List<DownloadTask> running, finished;
             lock (_taskLock)
             {
-                running = runningTasks.ToList();
-                finished = finishedTasks.ToList();
+                running = runningTasks.Select(t => t.Snapshot()).ToList();
+                finished = finishedTasks.Select(t => t.Snapshot()).ToList();
             }
             return Results.Json(new DownloadTaskCollection(running, finished), AppJsonSerializerContext.Default.DownloadTaskCollection);
         });
         taskStatusApi.MapGet("/running", handler: () =>
         {
             List<DownloadTask> snapshot;
-            lock (_taskLock) { snapshot = runningTasks.ToList(); }
+            lock (_taskLock) { snapshot = runningTasks.Select(t => t.Snapshot()).ToList(); }
             return Results.Json(snapshot, AppJsonSerializerContext.Default.ListDownloadTask);
         });
         taskStatusApi.MapGet("/finished", handler: () =>
         {
             List<DownloadTask> snapshot;
-            lock (_taskLock) { snapshot = finishedTasks.ToList(); }
+            lock (_taskLock) { snapshot = finishedTasks.Select(t => t.Snapshot()).ToList(); }
             return Results.Json(snapshot, AppJsonSerializerContext.Default.ListDownloadTask);
         });
         taskStatusApi.MapGet("/{id}", (string id, CancellationToken token) =>
         {
-            DownloadTask? task, rtask;
+            DownloadTask? task;
             lock (_taskLock)
             {
-                task = finishedTasks.FirstOrDefault(a => a.Aid == id);
-                rtask = runningTasks.FirstOrDefault(a => a.Aid == id);
+                task = finishedTasks.FirstOrDefault(a => a.Aid == id)
+                    ?? runningTasks.FirstOrDefault(a => a.Aid == id);
             }
-            if (rtask is not null) task = rtask;
             if (task is null)
             {
                 return Results.NotFound();
             }
-            return Results.Json(task, AppJsonSerializerContext.Default.DownloadTask);
+            return Results.Json(task.Snapshot(), AppJsonSerializerContext.Default.DownloadTask);
         });
         app.MapPost("/add-task", (MyOptionBindingResult<ServeRequestOptions> bindingResult) =>
         {
@@ -242,27 +243,85 @@ public class BBDownApiServer
     }
 
     /// <summary>
-    /// 清除网络请求体中可能导致任意命令/程序执行的字段。
+    /// 清除网络请求体中可能导致任意命令/程序执行或凭据外泄的字段。
     /// Aria2cArgs 会拼入 aria2c 命令行、Aria2cPath 会覆盖静态进程路径、
     /// Aria2cProxy 会追加进 Aria2cArgs —— 三者都不允许客户端控制。
+    /// FFmpegPath/Mp4boxPath/WvdPath/Mp4decryptPath 同属"让服务器执行指定程序"的字段，
+    /// 允许客户端控制等价于选择任意已存在的可执行文件；WorkDir 会改动进程级
+    /// 工作目录，使并发任务的输出互相错乱——一并忽略。
     /// </summary>
     internal static void SanitizeUntrustedOptions(ServeRequestOptions req)
     {
         req.Aria2cArgs = "";
         req.Aria2cPath = "";
         req.Aria2cProxy = "";
+        req.FFmpegPath = "";
+        req.Mp4boxPath = "";
+        req.WvdPath = "";
+        req.Mp4decryptPath = "";
+        req.WorkDir = "";
+        // Insecure 会全局关闭 TLS 证书校验：serve 默认无 token，任意客户端 POST /add-task
+        // 携带 {"insecure":true} 即可让携带操作者 SESSDATA 的请求跳过 TLS 校验被中间人截获。
+        // serve 强制启用 TLS 校验，忽略该字段。
+        req.Insecure = false;
+        // UserAgent 是进程级静态字段：一个任务带自定义 UA 会污染此后所有任务
+        // （SetUpWork 中空值不覆盖、非空值永久改写），serve 下统一用默认 UA。
+        req.UserAgent = "";
         // NotifyWebhook 是 CLI 功能：serve 的 /add-task 请求体若携带它，会绕过
         // CallBackWebHook 的 SSRF 校验，让服务器向攻击者指定的任意地址 POST 任务数据。
         // serve 下的任务回调统一走经过 IsSafeCallbackUrl 校验的 CallBackWebHook。
         req.NotifyWebhook = "";
+        // FilePattern/MultiFilePattern 会被 SetUpWork 当作 savePathFormat 拼进保存路径，
+        // FormatSavePath 只替换占位符、字面量里的 ".." 段原样保留，BBDownMuxer 会按 savePath
+        // 建目录——攻击者可借此任意创建目录/写入文件（路径穿越面）。serve 任务一律回落默认模板。
+        req.FilePattern = "";
+        req.MultiFilePattern = "";
+
+        // host 字段决定凭据（Cookie/access_token）的发送目标：serve 默认无认证，
+        // 若不校验，任意客户端可把请求指向自己的服务器，骗取操作者保存在
+        // BBDown.data 的 B 站 Cookie（LoadCredentials 会在任务流中加载）。
+        // 仅允许 B 站官方域名，其余一律回落官方默认值。
+        req.Host = IsOfficialHost(req.Host) ? req.Host : "api.bilibili.com";
+        req.EpHost = IsOfficialHost(req.EpHost) ? req.EpHost : "api.bilibili.com";
+        req.TvHost = IsOfficialHost(req.TvHost) ? req.TvHost : "api.snm0516.aisee.tv";
+        req.UposHost = IsOfficialHost(req.UposHost) ? req.UposHost : "";
+    }
+
+    /// <summary>B 站官方域名后缀白名单（含子域）。</summary>
+    private static readonly string[] OfficialHostSuffixes =
+        { "bilibili.com", "biliapi.net", "bilibili.tv", "aisee.tv", "bilivideo.com", "hdslb.com" };
+
+    /// <summary>
+    /// host 字段是否指向 B 站官方域名。空值视为合法（回落默认）；
+    /// 支持 "api.bilibili.com" 与 "https://api.bilibili.com" 两种写法。
+    /// </summary>
+    internal static bool IsOfficialHost(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host)) return true;
+
+        string hostname = host;
+        if (Uri.TryCreate(host, UriKind.Absolute, out var uri))
+        {
+            if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
+            if (!string.IsNullOrEmpty(uri.UserInfo)) return false; // userinfo 可伪装信任域
+            hostname = uri.Host;
+        }
+
+        return OfficialHostSuffixes.Any(s =>
+            hostname.Equals(s, StringComparison.OrdinalIgnoreCase)
+            || hostname.EndsWith("." + s, StringComparison.OrdinalIgnoreCase));
     }
 
     /// <summary>
     /// 回调地址 SSRF 防护：仅允许 http/https 绝对地址，
     /// 且禁止指向回环（127.0.0.1/::1/localhost）与链路本地（169.254.x / fe80::）。
     /// 保留 RFC1918 私网段：局域网回调是 serve 模式的正常用法。
+    /// dnsResolver 供测试注入（生产用系统 DNS）。
+    /// 注意：域名在"add 时校验"与"回调时刻连接"之间存在 DNS 重绑定窗口（短 TTL 域名
+    /// 可先解析为公网通过校验、回调时改指 169.254.169.254/内网）。因此 AddDownloadTaskAsync
+    /// 在每次回调建立连接前都会再调用一次本方法复查，把窗口压缩到连接前瞬间。
     /// </summary>
-    internal static bool IsSafeCallbackUrl(string? url)
+    internal static bool IsSafeCallbackUrl(string? url, Func<string, IPAddress[]>? dnsResolver = null)
     {
         if (string.IsNullOrWhiteSpace(url)) return true; // 未配置回调视为合法
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
@@ -283,7 +342,31 @@ public class BBDownApiServer
             return true;
         }
         var host = uri.Host;
-        return !host.Equals("localhost", StringComparison.OrdinalIgnoreCase);
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return false;
+        // 域名回调的 DNS 重绑定缺口：攻击者注册解析到 169.254.169.254 / 内网地址的域名
+        // （如 metadata.google.internal），仅比对字符串会放行，任务完成时 HttpClient 才解析 DNS。
+        // 这里提前解析并校验全部地址，任一命中回环/链路本地/169.254 即拒绝。
+        try
+        {
+            var addresses = (dnsResolver ?? Dns.GetHostAddresses)(host);
+            foreach (var addr in addresses)
+            {
+                var resolvedIp = addr.IsIPv4MappedToIPv6 ? addr.MapToIPv4() : addr;
+                if (IPAddress.IsLoopback(resolvedIp)) return false;
+                if (resolvedIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+                {
+                    var b = resolvedIp.GetAddressBytes();
+                    if (b.Length == 4 && b[0] == 169 && b[1] == 254) return false;
+                }
+                if (resolvedIp.IsIPv6LinkLocal) return false;
+            }
+            return true;
+        }
+        catch (System.Net.Sockets.SocketException)
+        {
+            // 域名无法解析：回调必然失败，按不安全处理
+            return false;
+        }
     }
 
     private async Task<DownloadTask> AddDownloadTaskAsync(MyOption option, string? callBackWebHook = null, CancellationToken cancellationToken = default)
@@ -383,14 +466,24 @@ public class BBDownApiServer
         // Webhook 回调
         if (!string.IsNullOrEmpty(callBackWebHook))
         {
-            string? jsonContent = JsonSerializer.Serialize(task, AppJsonSerializerContext.Default.DownloadTask);
-            try
+            // 回调时刻复查 SSRF：add 时 IsSafeCallbackUrl 解析的 DNS 在分钟级窗口内可能已被
+            // 攻击者改指 169.254.169.254 / 内网（短 TTL 域名重绑定）。此处把窗口压缩到
+            // 连接建立前瞬间再解析一次，命中即跳过本次回调；add 时校验仍保留（防手误配置）。
+            if (!IsSafeCallbackUrl(callBackWebHook))
             {
-                await HTTPUtil.AppHttpClient.PostAsync(callBackWebHook, new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json"));
+                Logger.LogWarn($"回调地址不合法，已跳过本次回调: {callBackWebHook}");
             }
-            catch (Exception e) when (e is HttpRequestException)
+            else
             {
-                Logger.LogDebug("回调失败: {0}", e.Message);
+                string? jsonContent = JsonSerializer.Serialize(task, AppJsonSerializerContext.Default.DownloadTask);
+                try
+                {
+                    await HTTPUtil.AppHttpClient.PostAsync(callBackWebHook, new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json"));
+                }
+                catch (Exception e) when (e is HttpRequestException)
+                {
+                    Logger.LogDebug("回调失败: {0}", e.Message);
+                }
             }
         }
 
@@ -421,6 +514,41 @@ public record DownloadTask(string Aid, string Url, long TaskCreateTime)
 
     [JsonInclude]
     public List<string> SavePaths = new();
+
+    // 保护 SavePaths 的读写锁：下载线程持续 Add，而 /get-tasks 的 Snapshot 深拷贝会枚举
+    // SavePaths，若撞上并发 Add 抛 InvalidOperationException（List 版本变更）。
+    // 写者一律经 AddSavePath 走这把锁；_savePathLock 不能是 primary constructor 属性。
+    private readonly object _savePathLock = new();
+
+    /// <summary>受控写入口：与 Snapshot 的深拷贝在同一把锁下，避免枚举期间被并发修改。</summary>
+    public void AddSavePath(string path)
+    {
+        lock (_savePathLock) { SavePaths.Add(path); }
+    }
+
+    /// <summary>
+    /// 深拷贝快照：下载线程会持续修改本对象的 Progress/SavePaths 等字段，
+    /// /get-tasks 在锁外序列化共享对象时，SavePaths.Add 撞上枚举会抛
+    /// InvalidOperationException。快照的 SavePaths 是独立副本，序列化即安全。
+    /// </summary>
+    public DownloadTask Snapshot()
+    {
+        List<string> paths;
+        lock (_savePathLock) { paths = new List<string>(SavePaths); }
+        return new(Aid, Url, TaskCreateTime)
+        {
+            Title = Title,
+            Pic = Pic,
+            VideoPubTime = VideoPubTime,
+            TaskFinishTime = TaskFinishTime,
+            Progress = Progress,
+            DownloadSpeed = DownloadSpeed,
+            TotalDownloadedBytes = TotalDownloadedBytes,
+            IsSuccessful = IsSuccessful,
+            ErrorMessage = ErrorMessage,
+            SavePaths = paths,
+        };
+    }
 };
 public record DownloadTaskCollection(List<DownloadTask> Running, List<DownloadTask> Finished);
 

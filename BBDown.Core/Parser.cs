@@ -72,7 +72,12 @@ public static partial class Parser
             {
                 string webUrl = "https://www.bilibili.com/bangumi/play/ep" + epId;
                 string webSource = await HTTPUtil.GetWebSourceAsync(webUrl);
-                webJson = PlayerJsonRegex().Match(webSource).Groups[1].Value;
+                var match = PlayerJsonRegex().Match(webSource);
+                // 页面不含 window.__playinfo__（登录墙/错误页/风控页）时 Groups[1] 为空串，
+                // 下游 JsonDocument.Parse("") 会抛与真实原因无关的裸 JsonException
+                if (!match.Success || string.IsNullOrEmpty(match.Groups[1].Value))
+                    throw new InvalidOperationException("大会员回退失败：网页源码中未找到播放信息（可能是登录墙或风控页）");
+                webJson = match.Groups[1].Value;
             }
         }
         return webJson;
@@ -134,7 +139,11 @@ public static partial class Parser
                     {
                         if (dashVideo.GetValueAsStringSafe("base_url") != "")
                         {
-                            var videoId = stream.GetPropertySafe("stream_info").GetValueAsStringSafe("quality");
+                            // 与上方 data/video_info/stream_list 的防御风格一致：某条流缺
+                            // stream_info 时跳过该流而不是抛 KeyNotFoundException 中断整次解析
+                            var streamInfo = stream.TryGetPropertySafe("stream_info");
+                            if (streamInfo is not { ValueKind: JsonValueKind.Object }) continue;
+                            var videoId = streamInfo.Value.GetValueAsStringSafe("quality");
                             var urlList = new List<string>() { dashVideo.GetValueAsStringSafe("base_url") };
                             urlList.AddRange(dashVideo.EnumerateArraySafe("backup_url").Select(i => i.ToString()));
                             Video v = new()
@@ -173,10 +182,20 @@ public static partial class Parser
 
         var respJson = JsonDocument.Parse(parsedResult.WebJsonString);
         var data = respJson.RootElement;
-        ThrowIfPlayLimited(data);
-        // UGC 的播放限制通过顶层业务 code 表达（区域限制 -86038、风控 -412、视频失效 -404 等），
-        // 而 play_check 只在 pgc 响应的 result 节点出现、对 UGC 不可达，这里统一兜底
-        ThrowIfBizError(data);
+        try
+        {
+            ThrowIfPlayLimited(data);
+            // UGC 的播放限制通过顶层业务 code 表达（区域限制 -86038、风控 -412、视频失效 -404 等），
+            // 而 play_check 只在 pgc 响应的 result 节点出现、对 UGC 不可达，这里统一兜底
+            ThrowIfBizError(data);
+        }
+        catch
+        {
+            // 校验抛出的异常路径不会走到方法末尾的 respJson.Dispose()：
+            // JsonDocument 内部租用 ArrayPool 缓冲，不释放会造成池化内存积压
+            respJson.Dispose();
+            throw;
+        }
         // 根据API版本自动定位数据节点
         JsonElement root;
         if (data.TryGetProperty("result", out var resultElem) && resultElem.ValueKind == JsonValueKind.Object)
@@ -221,16 +240,34 @@ public static partial class Parser
             //免二压视频需要重新请求
             for (int reparsePass = 0; reparsePass < 2; reparsePass++)
             {
+            // 第二轮若直接 respJson.Dispose() 再取值，重请求响应（未经业务校验，
+            // 风控/错误页时可能无 dash）会让 video/audio 引用已释放文档抛
+            // ObjectDisposedException。改为：新响应带 dash 才接管并退役旧文档，
+            // 否则丢弃新响应、沿用第一轮结果降级。
             if (reparsePass == 1)
             {
                 if (appApi) break; //只有非APP接口需要免二压
                 parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn());
-                respJson.Dispose();
-                respJson = JsonDocument.Parse(parsedResult.WebJsonString);
-                var newRoot = respJson.RootElement;
-                root = newRoot.TryGetProperty("result", out var rr) && rr.ValueKind == JsonValueKind.Object && rr.TryGetProperty("video_info", out var vvii) ? vvii :
+                var newResp = JsonDocument.Parse(parsedResult.WebJsonString);
+                var newRoot = newResp.RootElement;
+                var pickedRoot = newRoot.TryGetProperty("result", out var rr) && rr.ValueKind == JsonValueKind.Object && rr.TryGetProperty("video_info", out var vvii) ? vvii :
                        newRoot.TryGetProperty("result", out var rr2) && rr2.ValueKind == JsonValueKind.Object ? rr2 :
                        newRoot.TryGetProperty("data", out var dd) ? dd : newRoot;
+                if (pickedRoot.TryGetProperty("dash", out var newDash) && newDash.TryGetProperty("video", out _) && newDash.TryGetProperty("audio", out _))
+                {
+                    respJson.Dispose(); // 旧文档退役，新文档接管生命周期
+                    respJson = newResp;
+                    root = pickedRoot;
+                    video = audio = null;
+                    if (newDash.TryGetProperty("video", out var newVidArr)) video = newVidArr.EnumerateArray().ToList();
+                    if (newDash.TryGetProperty("audio", out var newAudArr)) audio = newAudArr.EnumerateArray().ToList();
+                }
+                else
+                {
+                    // 重请求响应无 dash 或缺 video/audio（风控/错误页等）：沿用第一轮结果，不替换 root，
+                    // 避免第二轮缺 audio 数组时把第一轮已解析的完整音轨静默丢弃
+                    newResp.Dispose();
+                }
             }
             if (root.TryGetProperty("dash", out var dash) && dash.TryGetProperty("video", out var vidArr))
                 video = vidArr.EnumerateArray().ToList();
@@ -539,7 +576,7 @@ public static partial class Parser
     /// </summary>
     /// <param name="code"></param>
     /// <returns></returns>
-    private static string GetVideoCodec(string code)
+    internal static string GetVideoCodec(string code)
     {
         return code switch
         {

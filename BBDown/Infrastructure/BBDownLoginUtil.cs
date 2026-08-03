@@ -71,8 +71,26 @@ internal static class BBDownLoginUtil
                     string cc = successDoc.RootElement.GetPropertySafe("data").GetStringSafe("url")!;
                     Logger.Log("登录成功: SESSDATA=" + SensitiveDataMasker.MaskValue(BBDownUtil.GetQueryString("SESSDATA", cc)));
                     //导出cookie, 转义英文逗号 否则部分场景会出问题
+                    // URL 不含 ? 时 IndexOf 返回 -1，会误把整条 URL 当 cookie 写入凭据文件
+                    var queryIdx = cc.IndexOf('?');
+                    var cookieQuery = queryIdx >= 0 ? cc[(queryIdx + 1)..] : "";
+                    if (cookieQuery == "")
+                    {
+                        Logger.LogError("登录成功但回调 URL 未包含 query（无 cookie 参数），登录结果未保存");
+                        return false;
+                    }
                     var cookiePath = Path.Combine(Program.APP_DIR, "BBDown.data");
-                    await File.WriteAllTextAsync(cookiePath, cc[(cc.IndexOf('?') + 1)..].Replace("&", ";").Replace(",", "%2C"));
+                    // 创建文件时即以 owner 读写权限打开（Unix 上避免先以 umask 默认权限落盘再收紧的两步窗口）
+                    var opts = new FileStreamOptions
+                    {
+                        Mode = FileMode.Create,
+                        Access = FileAccess.Write,
+                    };
+                    if (!OperatingSystem.IsWindows())
+                        opts.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+                    await using (var fs = new FileStream(cookiePath, opts))
+                    using (var writer = new StreamWriter(fs))
+                        await writer.WriteAsync(cookieQuery.Replace("&", ";").Replace(",", "%2C"));
                     SetOwnerOnlyPermission(cookiePath);
                     return true;
                 }

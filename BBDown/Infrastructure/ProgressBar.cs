@@ -156,6 +156,14 @@ class ProgressBar : IDisposable, IProgress<double>
 		{
 			disposed = true;
 			UpdateText(string.Empty);
+			// 两个 Timer 持有原生句柄，不 Dispose 只能等 GC 终结：
+			// serve 是长驻进程，大量下载后未释放的计时器对象会持续堆积。
+			// 在对应锁内 Dispose：保证在途回调要么先完成 Change()，要么读到 disposed=true 提前返回。
+			timer.Dispose();
+		}
+		lock (speedTimer)
+		{
+			speedTimer.Dispose();
 		}
 	}
 }

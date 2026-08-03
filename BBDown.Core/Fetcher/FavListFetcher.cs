@@ -75,7 +75,14 @@ public class FavListFetcher : IFetcher
                                 cover = tmpInfo.Pic,
                                 desc = m.GetValueAsStringSafe("intro")
                             };
-                            if (!pagesInfo.Contains(p)) pagesInfo.Add(p);
+                            // 翻页边界条目重复出现时 index 已自增：命中重复需回退一位，
+                            // 否则 Page.index 出现空洞（与 MediaListFetcher/SeriesListFetcher 一致）
+                            if (pagesInfo.Contains(p))
+                            {
+                                index--;
+                                continue;
+                            }
+                            pagesInfo.Add(p);
                         }
                     }
                     // 单个多P稿件失效（删除/私密/风控）不应中断整个收藏夹解析
@@ -99,7 +106,8 @@ public class FavListFetcher : IFetcher
                         m.GetValueAsStringSafe("intro"),
                         m.GetPropertySafe("upper").GetValueAsStringSafe("name"),
                         m.GetPropertySafe("upper").GetValueAsStringSafe("mid"));
-                    if (!pagesInfo.Contains(p)) pagesInfo.Add(p);
+                    if (pagesInfo.Contains(p)) { index--; continue; }
+                    pagesInfo.Add(p);
                 }
             }
         }

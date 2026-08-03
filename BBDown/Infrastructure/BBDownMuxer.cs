@@ -56,6 +56,13 @@ static partial class BBDownMuxer
 
     private static int MuxByMp4box(string url, string videoPath, string audioPath, string outPath, string desc, string title, string author, string episodeId, string pic, string lang, List<Subtitle>? subs, bool audioOnly, bool videoOnly, List<ViewPoint>? points)
     {
+        // 与 ffmpeg 分支的 MuxAV 一致：多P/嵌套路径模板下输出目录可能尚不存在，
+        // mp4box 打不开不存在的父目录下的输出文件，返回非零导致"合并失败"。
+        // 杜比视界 + ffmpeg<5.0 会自动切到 mp4box，无弹幕的多P下载稳定踩中此缺陷。
+        var outDir = Path.GetDirectoryName(outPath);
+        if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
+            Directory.CreateDirectory(outDir);
+
         StringBuilder inputArg = new();
         StringBuilder metaArg = new();
         int nowId = 0;
@@ -67,46 +74,64 @@ static partial class BBDownMuxer
         }
         if (!string.IsNullOrEmpty(audioPath))
         {
-            inputArg.Append($" -add \"{audioPath}:lang={(lang == "" ? "und" : lang)}\" ");
+            inputArg.Append($" -add \"{audioPath}:lang=\"{ (lang == "" ? "und" : lang) }\"\" ");
             nowId++;
         }
-        if (points != null && points.Any())
+        string? metaFile = null;
+        try
         {
-            var meta = BBDownUtil.GetMp4boxMetaString(points);
-            var baseDir = Path.GetDirectoryName(string.IsNullOrEmpty(videoPath) ? audioPath : videoPath);
-            if (string.IsNullOrEmpty(baseDir))
-                baseDir = ".";
-            var metaFile = Path.Combine(baseDir, "chapters");
-            File.WriteAllText(metaFile, meta);
-            inputArg.Append($" -chap  \"{metaFile}\"  ");
-        }
-        if (!string.IsNullOrEmpty(pic))
-            metaArg.Append($":cover=\"{pic}\"");
-        if (!string.IsNullOrEmpty(episodeId))
-            metaArg.Append($":album=\"{title}\":title=\"{episodeId}\"");
-        else
-            metaArg.Append($":title=\"{title}\"");
-        metaArg.Append($":sdesc=\"{desc}\"");
-        metaArg.Append($":comment=\"{url}\"");
-        metaArg.Append($":artist=\"{author}\"");
-
-        if (subs != null)
-        {
-            for (int i = 0; i < subs.Count; i++)
+            if (points != null && points.Any())
             {
-                if (File.Exists(subs[i].path) && File.ReadAllText(subs[i].path!) != "")
+                var meta = BBDownUtil.GetMp4boxMetaString(points);
+                var baseDir = Path.GetDirectoryName(string.IsNullOrEmpty(videoPath) ? audioPath : videoPath);
+                if (string.IsNullOrEmpty(baseDir))
+                    baseDir = ".";
+                // 固定名 "chapters" 会让并发混流互相覆盖（后写者的章节被先写者读到）；
+                // 用输出文件派生唯一名，并在结束后清理。
+                metaFile = Path.Combine(baseDir, $"chapters-{Path.GetFileNameWithoutExtension(outPath)}");
+                File.WriteAllText(metaFile, meta);
+                inputArg.Append($" -chap  \"{metaFile}\"  ");
+            }
+            if (!string.IsNullOrEmpty(pic))
+                metaArg.Append($":cover=\"{pic}\"");
+            if (!string.IsNullOrEmpty(episodeId))
+                metaArg.Append($":album=\"{title}\":title=\"{episodeId}\"");
+            else
+                metaArg.Append($":title=\"{title}\"");
+            metaArg.Append($":sdesc=\"{desc}\"");
+            metaArg.Append($":comment=\"{url}\"");
+            metaArg.Append($":artist=\"{author}\"");
+
+            if (subs != null)
+            {
+                for (int i = 0; i < subs.Count; i++)
                 {
-                    nowId++;
-                    inputArg.Append($" -add \"{subs[i].path}#trackID=1:name=:hdlr=sbtl:lang={SubUtil.GetSubtitleCode(subs[i].lan).Item1}\" ");
-                    inputArg.Append($" -udta {nowId}:type=name:str=\"{SubUtil.GetSubtitleCode(subs[i].lan).Item2}\" ");
+                    if (File.Exists(subs[i].path) && File.ReadAllText(subs[i].path!) != "")
+                    {
+                        nowId++;
+                        var (subLangCode, subLangName) = SubUtil.GetSubtitleCode(subs[i].lan);
+                        inputArg.Append($" -add \"{subs[i].path}#trackID=1:name=\"{EscapeString(subLangName)}\":hdlr=sbtl:lang=\"{EscapeString(subLangCode)}\"\" ");
+                        inputArg.Append($" -udta {nowId}:type=name:str=\"{EscapeString(subLangName)}\" ");
+                    }
+                }
+            }
+
+            //----分析完毕
+            var arguments = (Config.Current.DebugLog ? " -v " : "") + inputArg + (metaArg.ToString() == "" ? "" : " -itags tool=" + metaArg) + $" -new -- \"{outPath}\"";
+            Logger.LogDebug("mp4box命令: {0}", arguments);
+            return RunExe(MP4BOX, arguments);
+        }
+        finally
+        {
+            if (metaFile != null && File.Exists(metaFile))
+            {
+                try { File.Delete(metaFile); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    Logger.LogDebug("清理章节文件失败: {0}", ex.Message);
                 }
             }
         }
-
-        //----分析完毕
-        var arguments = (Config.Current.DebugLog ? " -v " : "") + inputArg + (metaArg.ToString() == "" ? "" : " -itags tool=" + metaArg) + $" -new -- \"{outPath}\"";
-        Logger.LogDebug("mp4box命令: {0}", arguments);
-        return RunExe(MP4BOX, arguments);
     }
 
     public static int MuxAV(bool useMp4box, string bvid, string videoPath, string audioPath, List<AudioMaterial> audioMaterial, string outPath, string desc = "", string title = "", string author = "", string episodeId = "", string pic = "", string lang = "", List<Subtitle>? subs = null, bool audioOnly = false, bool videoOnly = false, List<ViewPoint>? points = null, long pubTime = 0, bool simplyMux = false, bool isHevc = false)
@@ -118,6 +143,8 @@ static partial class BBDownMuxer
         desc = EscapeString(desc);
         title = EscapeString(title);
         episodeId = EscapeString(episodeId);
+        author = EscapeString(author);
+        lang = EscapeString(lang);
         var url = $"https://www.bilibili.com/video/{bvid}/";
 
         if (useMp4box)
@@ -125,6 +152,7 @@ static partial class BBDownMuxer
             return MuxByMp4box(url, videoPath, audioPath, outPath, desc, title, author, episodeId, pic, lang, subs, audioOnly, videoOnly, points);
         }
 
+        string? metaFile = null;
         var outDir = Path.GetDirectoryName(outPath);
         if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
             Directory.CreateDirectory(outDir);
@@ -150,8 +178,8 @@ static partial class BBDownMuxer
                 inputCount++;
                 audioCount++;
                 inputArg.Append($"-i \"{audio.path}\" ");
-                if (!string.IsNullOrWhiteSpace(audio.title)) metaArg.Append($"-metadata:s:a:{audioCount} title=\"{audio.title}\" ");
-                if (!string.IsNullOrWhiteSpace(audio.personName)) metaArg.Append($"-metadata:s:a:{audioCount} artist=\"{audio.personName}\" ");
+                if (!string.IsNullOrWhiteSpace(audio.title)) metaArg.Append($"-metadata:s:a:{audioCount} title=\"{EscapeString(audio.title)}\" ");
+                if (!string.IsNullOrWhiteSpace(audio.personName)) metaArg.Append($"-metadata:s:a:{audioCount} artist=\"{EscapeString(audio.personName)}\" ");
             }
         }
 
@@ -169,7 +197,8 @@ static partial class BBDownMuxer
                 {
                     inputCount++;
                     inputArg.Append($"-i \"{subs[i].path}\" ");
-                    metaArg.Append($"-metadata:s:s:{i} title=\"{SubUtil.GetSubtitleCode(subs[i].lan).Item2}\" -metadata:s:s:{i} language={SubUtil.GetSubtitleCode(subs[i].lan).Item1} ");
+                    var (subLangCode, subLangName) = SubUtil.GetSubtitleCode(subs[i].lan);
+                    metaArg.Append($"-metadata:s:s:{i} title=\"{EscapeString(subLangName)}\" -metadata:s:s:{i} language=\"{EscapeString(subLangCode)}\" ");
                 }
             }
         }
@@ -184,7 +213,8 @@ static partial class BBDownMuxer
             var baseDir = Path.GetDirectoryName(string.IsNullOrEmpty(videoPath) ? audioPath : videoPath);
             if (string.IsNullOrEmpty(baseDir))
                 baseDir = ".";
-            var metaFile = Path.Combine(baseDir, "chapters");
+            // 与 mp4box 分支一致：避免并发混流用固定名互相覆盖章节文件，用后即删
+            metaFile = Path.Combine(baseDir, $"chapters-{Path.GetFileNameWithoutExtension(outPath)}");
             File.WriteAllText(metaFile, meta);
             inputArg.Append($"-i \"{metaFile}\" -map_chapters {inputCount} ");
         }
@@ -199,7 +229,7 @@ static partial class BBDownMuxer
         if (!simplyMux) {
             argsBuilder.Append($"-metadata title=\"{(episodeId == "" ? title : episodeId)}\" ");
             argsBuilder.Append($"-metadata comment=\"{url}\" ");
-            if (lang != "") argsBuilder.Append($"-metadata:s:a:0 language={lang} ");
+            if (lang != "") argsBuilder.Append($"-metadata:s:a:0 language=\"{lang}\" ");
             if (!string.IsNullOrWhiteSpace(desc)) argsBuilder.Append($"-metadata description=\"{desc}\" ");
             if (!string.IsNullOrEmpty(author)) argsBuilder.Append($"-metadata artist=\"{author}\" ");
             if (episodeId != "") argsBuilder.Append($"-metadata album=\"{title}\" ");
@@ -215,7 +245,21 @@ static partial class BBDownMuxer
         string arguments = argsBuilder.ToString();
 
         Logger.LogDebug("ffmpeg命令: {0}", arguments);
-        return RunExe(FFMPEG, arguments);
+        try
+        {
+            return RunExe(FFMPEG, arguments);
+        }
+        finally
+        {
+            if (metaFile != null && File.Exists(metaFile))
+            {
+                try { File.Delete(metaFile); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+                {
+                    Logger.LogDebug("清理章节文件失败: {0}", ex.Message);
+                }
+            }
+        }
     }
 
     public static void MergeFLV(string[] files, string outPath)

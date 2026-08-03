@@ -179,7 +179,7 @@ internal static class BBDownDownloadUtil
         if (!string.IsNullOrEmpty(desDir) && !Directory.Exists(desDir)) Directory.CreateDirectory(desDir);
         if (config.UseAria2c)
         {
-            await BBDownAria2c.DownloadFileByAria2cAsync(url, path, config.Aria2cArgs);
+            await BBDownAria2c.DownloadFileByAria2cAsync(url, path, config.Aria2cArgs, token);
             if (File.Exists(path + ".aria2") || !File.Exists(path))
                 throw new InvalidOperationException("aria2下载可能存在错误");
             Console.WriteLine();
@@ -244,7 +244,7 @@ internal static class BBDownDownloadUtil
         Logger.LogDebug("Start downloading: {0}", url);
         if (config.UseAria2c)
         {
-            await BBDownAria2c.DownloadFileByAria2cAsync(url, path, config.Aria2cArgs);
+            await BBDownAria2c.DownloadFileByAria2cAsync(url, path, config.Aria2cArgs, token);
             if (File.Exists(path + ".aria2") || !File.Exists(path))
                 throw new InvalidOperationException("aria2下载可能存在错误");
             Console.WriteLine();

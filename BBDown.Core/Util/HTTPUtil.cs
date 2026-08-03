@@ -14,19 +14,25 @@ public static class HTTPUtil
             AutomaticDecompression = DecompressionMethods.All,
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
         };
-        if (Config.Current.SkipSslCheck)
+        // 注意：不能在客户端创建时把 SkipSslCheck 固化成闭包。CLI 的更新检查
+        // （CheckUpdateAsync）会先于 SetUpWork 的 Config.Apply 触发本 Lazy 初始化，
+        // 固化会导致 --insecure 永不生效；serve 模式下每个任务流的取值还可能不同。
+        // 因此在每次证书校验时读取当前流（AsyncLocal）的配置。
+        handler.SslOptions = new System.Net.Security.SslClientAuthenticationOptions
         {
-            handler.SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+            RemoteCertificateValidationCallback = (sender, cert, chain, errors) =>
             {
-                RemoteCertificateValidationCallback = (sender, cert, chain, errors) =>
+                if (Config.Current.SkipSslCheck)
                 {
                     if (errors != System.Net.Security.SslPolicyErrors.None)
                         Logger.LogDebug("SSL 证书验证被跳过，证书错误: {0}", errors);
                     return true;
-                },
-            };
+                }
+                return errors == System.Net.Security.SslPolicyErrors.None;
+            },
+        };
+        if (Config.Current.SkipSslCheck)
             Logger.LogDebug("SSL 证书验证已禁用");
-        }
         return new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(2) };
     }
 
@@ -71,7 +77,9 @@ public static class HTTPUtil
         using var webResponse = (await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
 
         string htmlCode = await webResponse.Content.ReadAsStringAsync(token);
-        Logger.LogDebug("Response: {0}", htmlCode);
+        // 响应体可达数 MB（如 intl 回退抓取的整张 HTML 页面），翻页类 fetcher 会放大几十倍，
+        // 全部落盘会把日志文件灌满；截断到前 1KB 即可排查问题。
+        Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
         return htmlCode;
     }
 

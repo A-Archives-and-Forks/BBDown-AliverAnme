@@ -9,11 +9,69 @@ using Spectre.Console.Cli;
 
 namespace BBDown;
 
-internal static class BBDownConfigParser
+internal static partial class BBDownConfigParser
 {
+    /// <summary>命令行位置参数（下载 URL）的形态特征，用于识别 URL 冲突。</summary>
+    [System.Text.RegularExpressions.GeneratedRegex(
+        @"^(https?://|av\d+|bv[0-9A-Za-z]+|av:|bv:|ep\d+|ep:|ss\d+|ss:|md\d+|md:|cheese[:/]|mid:|favId:|listBizId:|seriesBizId:)",
+        System.Text.RegularExpressions.RegexOptions.IgnoreCase)]
+    private static partial System.Text.RegularExpressions.Regex UrlLikeToken();
+
+    /// <summary>已注册的子命令名：其 Settings 只声明各自少量选项，不能承受下载选项全集。</summary>
+    private static readonly string[] SubCommandNames =
+        { "login", "logintv", "serve", "live", "article", "watchlater", "sub" };
+
+    /// <summary>不消耗值的选项（bool 开关）的规范属性名。</summary>
+    private static readonly HashSet<string> FlagOptionCanonicals = BuildFlagCanonicals();
+
+    private static HashSet<string> BuildFlagCanonicals()
+    {
+        var flags = new HashSet<string>(StringComparer.Ordinal);
+        void ScanType([System.Diagnostics.CodeAnalysis.DynamicallyAccessedMembers(System.Diagnostics.CodeAnalysis.DynamicallyAccessedMemberTypes.PublicProperties)] Type type)
+        {
+            foreach (var prop in type.GetProperties(BindingFlags.Public | BindingFlags.Instance))
+            {
+                if (prop.GetCustomAttribute<CommandOptionAttribute>() != null && prop.PropertyType == typeof(bool))
+                    flags.Add(prop.Name);
+            }
+        }
+        ScanType(typeof(MyOption));
+        ScanType(typeof(Commands.ServeSettings));
+        return flags;
+    }
+
+    /// <summary>
+    /// 判断本次调用是否是子命令。子命令总是第一个位置参数；
+    /// 需要值的选项会吞掉下一个 token，扫描时必须跳过，否则
+    /// "--config-file <path> sub list" 的 path 会被误判为位置参数。
+    /// </summary>
+    internal static bool IsSubCommandInvocation(string[] args)
+    {
+        var aliasMap = BuildAliasMap();
+        for (int i = 0; i < args.Length; i++)
+        {
+            var arg = args[i];
+            if (!arg.StartsWith('-'))
+                return SubCommandNames.Contains(arg, StringComparer.OrdinalIgnoreCase);
+
+            var token = arg;
+            var eq = token.IndexOf('=');
+            if (eq > 0) continue; // "--opt=value"：值已含在 token 内，不消耗下一项
+            if (aliasMap.TryGetValue(token, out var canonical) && !FlagOptionCanonicals.Contains(canonical))
+                i++; // 该选项需要值：下一 token 是它的值，跳过
+        }
+        return false;
+    }
+
     public static List<string> MergeWithConfig(string[] cliArgs)
     {
         var result = new List<string>(cliArgs);
+
+        // 配置合并只服务默认下载命令：子命令的 Settings（SubListSettings、LiveSettings 等）
+        // 只声明各自少量选项，把配置文件里的下载选项全集合并进去会被 Spectre
+        // 以 unknown option 拒绝，导致"存在 BBDown.config 时 sub/live 等命令整体不可用"。
+        if (IsSubCommandInvocation(cliArgs))
+            return result;
 
         // 同时支持 "--config-file path" 与 "--config-file=path" 两种写法；
         // 旧实现只认空格写法，等号写法会被忽略而回落到默认配置路径。
@@ -40,21 +98,42 @@ internal static class BBDownConfigParser
 
         Logger.Log($"加载配置文件: {configPath}");
 
-        var configArgs = File.ReadAllLines(configPath)
-            .Where(s => !string.IsNullOrWhiteSpace(s) && !s.TrimStart().StartsWith('#'))
-            .SelectMany(line =>
+        // 加载发生在 Main 的异常处理器建立之前，裸异常会直接打印堆栈崩溃：
+        // File.Exists 对目录也返回 true，ReadAllLines 会抛 UnauthorizedAccessException。
+        List<string> configArgs;
+        try
+        {
+            if (Directory.Exists(configPath))
             {
-                var trim = line.Trim();
-                if (trim.StartsWith('-') && trim.Contains(' '))
+                Logger.LogWarn($"配置文件路径是一个目录，已忽略: {configPath}");
+                return result;
+            }
+            configArgs = File.ReadAllLines(configPath)
+                .Where(s => !string.IsNullOrWhiteSpace(s) && !s.TrimStart().StartsWith('#'))
+                .SelectMany(line =>
                 {
-                    var idx = trim.IndexOf(' ');
-                    return new[] { trim[..idx], trim[idx..].Trim().Trim('"') };
-                }
-                return new[] { trim.Trim('"') };
-            })
-            .ToList();
+                    var trim = line.Trim();
+                    if (trim.StartsWith('-') && trim.Contains(' '))
+                    {
+                        var idx = trim.IndexOf(' ');
+                        return new[] { trim[..idx], trim[idx..].Trim().Trim('"') };
+                    }
+                    return new[] { trim.Trim('"') };
+                })
+                .ToList();
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Logger.LogWarn($"读取配置文件失败（已忽略）: {ex.Message}");
+            return result;
+        }
 
         var aliasMap = BuildAliasMap();
+
+        // 命令行已显式给出 URL 时，配置文件里的位置参数（URL）不再合并，
+        // 否则 MyOption 只声明一个 <URL> 位置参数，Spectre 会报 unexpected positional argument。
+        // 与"命令行显式给出的选项必须压过配置文件"的合并原则保持一致。
+        bool cliHasUrl = cliArgs.Any(a => UrlLikeToken().IsMatch(a));
 
         var explicitOptions = new HashSet<string>();
         for (int i = 0; i < cliArgs.Length; i++)
@@ -76,7 +155,7 @@ internal static class BBDownConfigParser
             var name = configArgs[i];
             if (!name.StartsWith('-'))
             {
-                result.Add(name);
+                if (!cliHasUrl) result.Add(name);
                 i++;
                 continue;
             }

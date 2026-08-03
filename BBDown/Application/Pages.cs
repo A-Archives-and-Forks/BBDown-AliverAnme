@@ -49,8 +49,11 @@ internal partial class Program
             }
             catch (ArgumentException e)
             {
+                // 解析失败绝不能回退为 null（null 的语义是下载 ALL）：
+                // 用户输入 -p 10-1 / -p abc 时静默下载全部分P，批量场景可能触发数 GB 的非预期下载。
+                // 直接中止任务，让调用方以错误退出码暴露问题。
                 Logger.LogError($"解析分P参数失败: {e.Message}");
-                selectedPages = null;
+                throw;
             }
         }
 

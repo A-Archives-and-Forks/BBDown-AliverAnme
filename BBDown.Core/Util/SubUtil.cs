@@ -269,16 +269,15 @@ public static partial class SubUtil
             {
                 var lan = sub.GetValueAsStringSafe("key");
                 var url = sub.GetValueAsStringSafe("url").Replace("\\\\/", "/");
+                // 空 URL 的条目无法下载：跳过该条目而不是抛异常。
+                // 此前的 ArgumentException 不在本方法 catch 过滤内，会一路抛出并终止整个下载。
+                if (string.IsNullOrEmpty(url)) continue;
                 Subtitle subtitle = new()
                 {
                     url = url,
                     lan = lan,
                     path = $"{aid}/{aid}.{cid}.{lan}{(url.Contains(".json") ? ".srt" : ".ass")}"
                 };
-
-                //有空的URL 不合法
-                if (subtitles.Any(s => string.IsNullOrEmpty(s.url)))
-                    throw new ArgumentException("Bad url");
 
                 subtitles.Add(subtitle);
             }
@@ -303,18 +302,17 @@ public static partial class SubUtil
             foreach (var sub in subs)
             {
                 var lan = sub.GetValueAsStringSafe("lan");
+                var subtitleUrl = sub.GetValueAsStringSafe("subtitle_url");
+                // 空 URL 的条目无法下载：跳过该条目而不是抛异常（同 GetIntlSubtitlesFromApi2）
+                if (string.IsNullOrEmpty(subtitleUrl)) continue;
                 Subtitle subtitle = new()
                 {
-                    url = sub.GetValueAsStringSafe("subtitle_url"),
+                    url = subtitleUrl,
                     lan = lan,
                     path = $"{aid}/{aid}.{cid}.{lan}.srt"
                 };
                 subtitles.Add(subtitle);
             }
-
-            //有空的URL 不合法
-            if (subtitles.Any(s => string.IsNullOrEmpty(s.url)))
-                throw new ArgumentException("Bad url");
 
             //无字幕片源 但是字幕没上导致的空列表，尝试从国际接口获取
             //if (subtitles.Count == 0 && !string.IsNullOrEmpty(epId))
@@ -342,18 +340,17 @@ public static partial class SubUtil
             foreach (var sub in subs)
             {
                 var lan = sub.GetValueAsStringSafe("lan");
+                var subtitleUrl = sub.GetValueAsStringSafe("subtitle_url");
+                // 空 URL 的条目无法下载：跳过该条目而不是抛异常（同 GetIntlSubtitlesFromApi2）
+                if (string.IsNullOrEmpty(subtitleUrl)) continue;
                 Subtitle subtitle = new()
                 {
-                    url = sub.GetValueAsStringSafe("subtitle_url"),
+                    url = subtitleUrl,
                     lan = lan,
                     path = $"{aid}/{aid}.{cid}.{lan}.srt"
                 };
                 subtitles.Add(subtitle);
             }
-
-            //有空的URL 不合法
-            if (subtitles.Any(s => string.IsNullOrEmpty(s.url)))
-                throw new ArgumentException("Bad url");
 
             return subtitles;
         }
@@ -391,15 +388,15 @@ public static partial class SubUtil
 
             if (resp.Subtitle != null && resp.Subtitle.Subtitles != null)
             {
-                subtitles.AddRange(resp.Subtitle.Subtitles.Select(item => new Subtitle() {
-                    url = item.SubtitleUrl,
-                    lan = item.Lan,
-                    path = $"{aid}/{aid}.{cid}.{item.Lan}.srt"
-                }));
+                // 空 URL 的条目无法下载：跳过该条目而不是抛异常（同 GetIntlSubtitlesFromApi2）
+                subtitles.AddRange(resp.Subtitle.Subtitles
+                    .Where(item => !string.IsNullOrEmpty(item.SubtitleUrl))
+                    .Select(item => new Subtitle() {
+                        url = item.SubtitleUrl,
+                        lan = item.Lan,
+                        path = $"{aid}/{aid}.{cid}.{item.Lan}.srt"
+                    }));
             }
-            //有空的URL 不合法
-            if (subtitles.Any(s => string.IsNullOrEmpty(s.url)))
-                throw new ArgumentException("Bad url");
 
             return subtitles;
         }

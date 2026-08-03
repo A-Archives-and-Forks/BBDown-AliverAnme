@@ -26,6 +26,11 @@ public static class SensitiveDataMasker
     private static readonly HashSet<string> OpaqueSecretHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
         "Authorization", "X-Bili-Access-Key",
+        // gRPC 请求头：x-bili-metadata-bin 的 protobuf 里携带 access_token（可逆 base64），
+        // 其余 bin 头含 buvid 等设备信息，同样不写入日志。
+        "x-bili-metadata-bin", "x-bili-device-bin", "x-bili-network-bin",
+        "x-bili-locale-bin", "x-bili-restriction-bin", "x-bili-fawkes-req-bin",
+        "x-bili-exps-bin",
     };
 
     private const string Redacted = "***";

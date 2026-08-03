@@ -82,4 +82,36 @@ public class ConfigMergeTests
 
         Assert.Equal("-access-token-value", EffectiveValue(merged, "--access-token"));
     }
+
+    [Fact]
+    public void SubCommandInvocation_SkipsConfigMerge()
+    {
+        // 子命令的 Settings 只声明各自少量选项：把配置文件里的下载选项全集合并进去，
+        // Spectre 会以 unknown option 拒绝解析——存在 BBDown.config 时 sub/live 等命令
+        // 必须仍然可用。合并结果应原样等于命令行参数。
+        var cfg = WriteConfig("--dfn-priority\n1080P 高清\n--cookie\nSESSDATA=abc\n");
+        var merged = BBDownConfigParser.MergeWithConfig(["--config-file", cfg, "sub", "list"]);
+        File.Delete(cfg);
+
+        Assert.Equal(["--config-file", cfg, "sub", "list"], merged);
+        Assert.True(BBDownConfigParser.IsSubCommandInvocation(["sub", "list"]));
+        Assert.True(BBDownConfigParser.IsSubCommandInvocation(["serve", "-l", "http://0.0.0.0:23333"]));
+        Assert.True(BBDownConfigParser.IsSubCommandInvocation(["--debug", "live"]));
+        Assert.False(BBDownConfigParser.IsSubCommandInvocation(["https://www.bilibili.com/video/BV1qt4y1X7TW"]));
+        Assert.False(BBDownConfigParser.IsSubCommandInvocation(["-p", "2", "URL"]));
+    }
+
+    [Fact]
+    public void CliUrl_Present_ConfigUrlIsSkipped()
+    {
+        // 命令行已给 URL 时，配置文件里的 URL 不再合并：
+        // 两个位置参数会让 MyOption 解析失败（unexpected positional argument）
+        var cfg = WriteConfig("https://www.bilibili.com/video/BV1AAAAAAAAAA\n--dfn-priority\n1080P 高清\n");
+        var merged = BBDownConfigParser.MergeWithConfig(
+            ["--config-file", cfg, "https://www.bilibili.com/video/BV1qt4y1X7TW"]);
+        File.Delete(cfg);
+
+        Assert.Single(merged, a => a.StartsWith("https://"));
+        Assert.Contains("--dfn-priority", merged);
+    }
 }

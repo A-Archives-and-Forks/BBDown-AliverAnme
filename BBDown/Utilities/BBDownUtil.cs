@@ -264,7 +264,8 @@ public static partial class BBDownUtil
             sb.AppendLine($"TIMEBASE=1/{time}");
             sb.AppendLine($"START={p.start * time}");
             sb.AppendLine($"END={p.end * time}");
-            sb.AppendLine($"title={p.title}");
+            // 标题含换行可伪造额外章节行（如 "1\n[CHAPTER]..."），来源是 B 站内容，需净化
+            sb.AppendLine($"title={p.title.Replace('\n', ' ').Replace('\r', ' ')}");
             sb.AppendLine();
         }
         return sb.ToString();
@@ -280,7 +281,8 @@ public static partial class BBDownUtil
         StringBuilder sb = new();
         foreach (var p in points)
         {
-            sb.AppendLine($"{FormatTime(p.start, true)} {p.title}");
+            // 标题含换行可注入伪造章节行，来源是 B 站内容，需净化（同 GetFFmpegMetaString）
+            sb.AppendLine($"{FormatTime(p.start, true)} {p.title.Replace('\n', ' ').Replace('\r', ' ')}");
         }
         return sb.ToString();
     }

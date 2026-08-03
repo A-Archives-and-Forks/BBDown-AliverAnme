@@ -30,13 +30,14 @@ public class LiveCommand : Command<LiveSettings>
             try
             {
                 Logger.Log($"正在解析直播间 {settings.RoomId}...");
-                var (url, title, uname, _) = await LiveStreamUtil.ResolveAsync(settings.RoomId, cancellationToken);
+                var (_, title, uname, _) = await LiveStreamUtil.ResolveAsync(settings.RoomId, cancellationToken);
                 Logger.Log($"直播间: {title} (UP: {uname})");
                 string path = settings.Output ?? $"{LiveStreamUtil.SanitizeFileName(title)}_直播录制_{DateTime.Now:yyyyMMdd_HHmmss}.flv";
-                Logger.Log($"开始录制直播流: {path} (Ctrl+C 停止)");
+                Logger.Log($"开始录制直播流: {path} (Ctrl+C 停止，断流自动重连)");
 
                 DateTime lastLog = DateTime.MinValue;
-                await LiveStreamUtil.DownloadToFileAsync(url, path, total =>
+                // 传 roomId：断流/地址过期时内部重新解析流地址续录
+                await LiveStreamUtil.DownloadToFileAsync(settings.RoomId, path, total =>
                 {
                     if (DateTime.Now - lastLog >= TimeSpan.FromSeconds(5))
                     {

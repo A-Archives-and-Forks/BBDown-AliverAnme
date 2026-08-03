@@ -43,6 +43,16 @@ public class SeriesListFetcher : IFetcher
             json = await HTTPUtil.GetWebSourceAsync(listApi);
             using var listJson = JsonDocument.Parse(json);
             data = listJson.RootElement.GetPropertySafe("data");
+            // 分页接口返回业务错误（data 为 null / code != 0，如系列中途被删除、风控）时，
+            // GetBooleanSafe 会静默返回 false 无声结束循环，用户拿到残缺 VInfo。
+            // 与 MediaListFetcher 的同一场景保持一致：显式抛出可读错误。
+            if (data.ValueKind != JsonValueKind.Object)
+            {
+                var listRoot = listJson.RootElement;
+                var code = listRoot.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0;
+                var message = listRoot.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.String ? msg.GetString() : "未知错误";
+                throw new InvalidOperationException($"获取系列分页列表失败(code={code}): {message}");
+            }
             hasMore = data.GetBooleanSafe("has_more");
             // 游标必须记录本页最后一条 id，无论是否被 attr 过滤；否则整页失效时
             // oid 不推进，重复请求同一页造成死循环。

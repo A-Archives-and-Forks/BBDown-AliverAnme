@@ -136,6 +136,10 @@ BBDown 会在开始下载前识别这种情况并中止，避免产出一个被�
 | `login` | APP 扫码登录 WEB 账号 |
 | `logintv` | APP 扫码登录 TV 账号 |
 | `serve` | 以 API 服务器模式运行 |
+| `live` | 录制 B 站直播流（断流自动重连，录制内容先写入 `.part` 临时文件，结束/取消时改名为最终文件） |
+| `article` | 下载 B 站专栏文章为 Markdown |
+| `watchlater` | 批量下载稍后再看列表（需登录） |
+| `sub` | 订阅管理：`sub add/list/remove/check`，检查并增量下载新内容 |
 
 `serve` 子选项：
 
@@ -143,6 +147,9 @@ BBDown 会在开始下载前识别这种情况并中止，避免产出一个被�
 |--------|--------|------|
 | `-l` | `--listen` | 监听地址（默认 `http://0.0.0.0:23333`） |
 | | `--max-concurrent` | 最大并发下载数（默认 3） |
+| | `--serve-token` | 可选认证令牌，配置后所有任务/查询端点要求 `X-Serve-Token` 请求头，否则 401 |
+
+> 安全提示：`/add-task` 请求体中可能引发命令执行、凭据外泄或路径穿越的字段会被一律忽略（如 `ffmpegPath`、`aria2cArgs`、`host` 白名单、`filePattern`、`insecure` 等），详见 [API.md](./API.md)。`serve` 默认监听 `0.0.0.0` 且无认证，仅建议在可信网络内使用。
 
 ### 常用命令
 
@@ -303,7 +310,7 @@ BBDown -a --access-token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
 BBDown serve -l http://0.0.0.0:12450
 ```
 
-API 服务器不支持 HTTPS 配置，如有需要请使用 nginx 等反向代理。
+> 安全提示：默认监听所有网卡且无认证，`/add-task` 提交的 `host/epHost/tvHost` 仅接受 B 站官方域名、执行路径/代理/工作目录字段一律忽略。对外网开放时务必使用 `--serve-token` 并配置反向代理（API 服务器不支持 HTTPS，如有需要请使用 nginx 等反向代理）。
 
 API 详细说明请参考 [API.md](./API.md)。
 
