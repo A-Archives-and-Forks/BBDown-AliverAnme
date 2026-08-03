@@ -52,6 +52,14 @@ public class ServeApiSecurityTests
 
         IPAddress[] ResolveToLoopback(string _) => [IPAddress.Parse("127.0.0.1")];
         Assert.False(BBDownApiServer.IsSafeCallbackUrl("http://rebind.test/cb", ResolveToLoopback));
+
+        // 域名解析到 RFC1918 内网也应拒绝：内网地址只允许"字面 IP"显式配置，
+        // 域名重绑定打内网是 SSRF 横向面（攻击者注册域名解析到 10.0.0.x）
+        IPAddress[] ResolveToPrivate(string _) => [IPAddress.Parse("10.0.0.5")];
+        Assert.False(BBDownApiServer.IsSafeCallbackUrl("http://rebind-to-private.test/cb", ResolveToPrivate));
+
+        // 字面 IP 的 RFC1918 仍放行（局域网回调是 serve 的正常用法）
+        Assert.True(BBDownApiServer.IsSafeCallbackUrl("http://10.0.0.5:9000/cb"));
     }
 
     [Fact]
@@ -87,6 +95,9 @@ public class ServeApiSecurityTests
             // （路径穿越面），serve 下必须回落默认模板
             FilePattern = "../../../evil/out.mp4",
             MultiFilePattern = "/tmp/evil/multi.mp4",
+            // DrmKeyHex/DrmKidHex 会经 mp4decrypt 参与解密，是客户端可控的密钥注入点
+            DrmKeyHex = "4141414141414141414141414141414141414141414141414141414141414141",
+            DrmKidHex = "42424242424242424242424242424242",
         };
         BBDownApiServer.SanitizeUntrustedOptions(req);
         Assert.Equal("", req.Aria2cArgs);
@@ -102,6 +113,39 @@ public class ServeApiSecurityTests
         Assert.False(req.Insecure);
         Assert.Equal("", req.FilePattern);
         Assert.Equal("", req.MultiFilePattern);
+        Assert.Equal("", req.DrmKeyHex);
+        Assert.Equal("", req.DrmKidHex);
+    }
+
+    [Fact]
+    public void SanitizeUntrustedOptions_EmptyHost_FallsBackToOfficial()
+    {
+        // host 为空/null 时也必须回落官方默认，否则番剧/TV/intl URL 拼成 https:///... 抛 UriFormatException
+        var req = new ServeRequestOptions { Host = "", EpHost = null, TvHost = "   ", UposHost = "" };
+        BBDownApiServer.SanitizeUntrustedOptions(req);
+        Assert.Equal("api.bilibili.com", req.Host);
+        Assert.Equal("api.bilibili.com", req.EpHost);
+        Assert.Equal("api.snm0516.aisee.tv", req.TvHost);
+        Assert.Equal("", req.UposHost);
+    }
+
+    [Fact]
+    public void IsOfficialHost_SlashConfusion_Rejected()
+    {
+        // 斜杠协议混淆：纯后缀匹配会放行 "evil.com/.bilibili.com"，规范化后必须拒绝
+        Assert.False(BBDownApiServer.IsOfficialHost("evil.com/.bilibili.com"));
+        Assert.False(BBDownApiServer.IsOfficialHost("https://evil.com/.bilibili.com"));
+        Assert.False(BBDownApiServer.IsOfficialHost("evil.com@bilibili.com"));
+        Assert.False(BBDownApiServer.IsOfficialHost("bilibili.com.evil.com"));
+        Assert.False(BBDownApiServer.IsOfficialHost("https://bilibili.com.evil.com"));
+        // 官方域名（含子域）仍应放行
+        Assert.True(BBDownApiServer.IsOfficialHost("api.bilibili.com"));
+        Assert.True(BBDownApiServer.IsOfficialHost("https://api.bilibili.com"));
+        Assert.True(BBDownApiServer.IsOfficialHost("upos-sz-mirrorcoso1.bilivideo.com"));
+        Assert.True(BBDownApiServer.IsOfficialHost("https://grpc.biliapi.net"));
+        // 空值视为合法（回落默认）
+        Assert.True(BBDownApiServer.IsOfficialHost(null));
+        Assert.True(BBDownApiServer.IsOfficialHost(""));
     }
 
     [Fact]

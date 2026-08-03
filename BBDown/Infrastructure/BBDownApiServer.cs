@@ -212,7 +212,7 @@ public class BBDownApiServer
         try
         {
             List<DownloadTask> snapshot;
-            lock (_taskLock) { snapshot = finishedTasks.ToList(); }
+            lock (_taskLock) { snapshot = finishedTasks.Select(t => t.Snapshot()).ToList(); }
             var json = JsonSerializer.Serialize(snapshot, AppJsonSerializerContext.Default.ListDownloadTask);
             lock (_persistLock) { File.WriteAllText(_taskFile, json); }
         }
@@ -276,15 +276,20 @@ public class BBDownApiServer
         // 建目录——攻击者可借此任意创建目录/写入文件（路径穿越面）。serve 任务一律回落默认模板。
         req.FilePattern = "";
         req.MultiFilePattern = "";
+        // DrmKeyHex/DrmKidHex 会经 DecryptDrmAsync 写入 mp4decrypt 的 key-file 参与解密，
+        // 是客户端可控的密钥注入点。serve 任务一律回落 device.wvd 自动取钥；
+        // 需要手动 --key/--kid 的操作者应使用 CLI 而非 API。
+        req.DrmKeyHex = "";
+        req.DrmKidHex = "";
 
         // host 字段决定凭据（Cookie/access_token）的发送目标：serve 默认无认证，
         // 若不校验，任意客户端可把请求指向自己的服务器，骗取操作者保存在
         // BBDown.data 的 B 站 Cookie（LoadCredentials 会在任务流中加载）。
-        // 仅允许 B 站官方域名，其余一律回落官方默认值。
-        req.Host = IsOfficialHost(req.Host) ? req.Host : "api.bilibili.com";
-        req.EpHost = IsOfficialHost(req.EpHost) ? req.EpHost : "api.bilibili.com";
-        req.TvHost = IsOfficialHost(req.TvHost) ? req.TvHost : "api.snm0516.aisee.tv";
-        req.UposHost = IsOfficialHost(req.UposHost) ? req.UposHost : "";
+        // 仅允许 B 站官方域名；空值/非官方一律回落官方默认值。
+        req.Host = (string.IsNullOrWhiteSpace(req.Host) || !IsOfficialHost(req.Host)) ? "api.bilibili.com" : req.Host;
+        req.EpHost = (string.IsNullOrWhiteSpace(req.EpHost) || !IsOfficialHost(req.EpHost)) ? "api.bilibili.com" : req.EpHost;
+        req.TvHost = (string.IsNullOrWhiteSpace(req.TvHost) || !IsOfficialHost(req.TvHost)) ? "api.snm0516.aisee.tv" : req.TvHost;
+        req.UposHost = (string.IsNullOrWhiteSpace(req.UposHost) || !IsOfficialHost(req.UposHost)) ? "" : req.UposHost;
     }
 
     /// <summary>B 站官方域名后缀白名单（含子域）。</summary>
@@ -294,6 +299,9 @@ public class BBDownApiServer
     /// <summary>
     /// host 字段是否指向 B 站官方域名。空值视为合法（回落默认）；
     /// 支持 "api.bilibili.com" 与 "https://api.bilibili.com" 两种写法。
+    /// 只接受规范化的纯主机名：带路径/斜杠/用户信息/非默认端口等形态一律拒绝，
+    /// 防止攻击者用 "evil.com/.bilibili.com" 这类斜杠混淆串在纯后缀匹配下被放行，
+    /// 使携带操作者 SESSDATA 的请求发往攻击者主机。
     /// </summary>
     internal static bool IsOfficialHost(string? host)
     {
@@ -302,9 +310,19 @@ public class BBDownApiServer
         string hostname = host;
         if (Uri.TryCreate(host, UriKind.Absolute, out var uri))
         {
+            // 带 scheme 的写法：必须 http/https、无 userinfo、无路径/query/fragment、默认端口
             if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
             if (!string.IsNullOrEmpty(uri.UserInfo)) return false; // userinfo 可伪装信任域
+            if (uri.AbsolutePath.Length > 1) return false;         // 非空路径（含 "/" 以外的路径段）
+            if (!string.IsNullOrEmpty(uri.Query) || !string.IsNullOrEmpty(uri.Fragment)) return false;
+            if (!uri.IsDefaultPort) return false;
             hostname = uri.Host;
+        }
+        else if (host.Contains('/') || host.Contains('\\') || host.Contains('@') ||
+                 host.Contains('?') || host.Contains('#') || host.Contains(':') || host.Contains('['))
+        {
+            // 非绝对 URL 却含协议/路径/用户信息/端口/IPv6 字面量等分隔符：不是合法纯主机名，拒绝
+            return false;
         }
 
         return OfficialHostSuffixes.Any(s =>
@@ -314,8 +332,10 @@ public class BBDownApiServer
 
     /// <summary>
     /// 回调地址 SSRF 防护：仅允许 http/https 绝对地址，
-    /// 且禁止指向回环（127.0.0.1/::1/localhost）与链路本地（169.254.x / fe80::）。
-    /// 保留 RFC1918 私网段：局域网回调是 serve 模式的正常用法。
+    /// 且禁止指向回环（127.0.0.1/::1/localhost）、链路本地（169.254.x / fe80::）与
+    /// 云元数据面（169.254.0.0/16）。RFC1918 私网段仅在回调 URL 是**字面 IP** 时放行
+    /// （操作者直接配置的局域网回调是 serve 正常用法）；经域名解析出的内网地址一律拒绝，
+    /// 防止攻击者用解析到内网的域名（DNS 重绑定）把回调打向内网。
     /// dnsResolver 供测试注入（生产用系统 DNS）。
     /// 注意：域名在"add 时校验"与"回调时刻连接"之间存在 DNS 重绑定窗口（短 TTL 域名
     /// 可先解析为公网通过校验、回调时改指 169.254.169.254/内网）。因此 AddDownloadTaskAsync
@@ -326,39 +346,40 @@ public class BBDownApiServer
         if (string.IsNullOrWhiteSpace(url)) return true; // 未配置回调视为合法
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
         if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
-        if (IPAddress.TryParse(uri.Host, out var ip))
+
+        bool hostIsLiteralIp = IPAddress.TryParse(uri.Host, out var literalIp);
+
+        if (hostIsLiteralIp)
         {
             // IPv4-mapped IPv6（如 [::ffff:169.254.169.254]）会把下方的 169.254 检查绕过
-            // （其 AddressFamily 是 InterNetworkV6），统一映射回 IPv4 后再做回环/链路本地检查
-            if (ip.IsIPv4MappedToIPv6) ip = ip.MapToIPv4();
-
-            if (IPAddress.IsLoopback(ip)) return false;
-            if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+            // （其 AddressFamily 是 InterNetworkV6），统一映射回 IPv4 后再做检查。
+            if (literalIp.IsIPv4MappedToIPv6) literalIp = literalIp.MapToIPv4();
+            // 字面 IP 是操作者显式配置的地址：仅拦回环/链路本地/云元数据。
+            // RFC1918 内网字面 IP 放行（局域网回调是 serve 正常用法），
+            // 因为字面 IP 不涉及 DNS 重绑定，攻击者无法借它打内网。
+            if (IPAddress.IsLoopback(literalIp)) return false;
+            if (literalIp.IsIPv6LinkLocal) return false;
+            if (literalIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
             {
-                var b = ip.GetAddressBytes();
+                var b = literalIp.GetAddressBytes();
                 if (b.Length == 4 && b[0] == 169 && b[1] == 254) return false; // 169.254.0.0/16 云元数据面
             }
-            if (ip.IsIPv6LinkLocal) return false;
             return true;
         }
+
         var host = uri.Host;
         if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return false;
         // 域名回调的 DNS 重绑定缺口：攻击者注册解析到 169.254.169.254 / 内网地址的域名
         // （如 metadata.google.internal），仅比对字符串会放行，任务完成时 HttpClient 才解析 DNS。
-        // 这里提前解析并校验全部地址，任一命中回环/链路本地/169.254 即拒绝。
+        // 这里提前解析并校验全部地址；域名解析出的任一地址命中回环/链路本地/169.254/RFC1918/ULA
+        // 即拒绝——内网地址只允许"字面 IP"形式的显式配置，域名一律要求公网可达。
         try
         {
             var addresses = (dnsResolver ?? Dns.GetHostAddresses)(host);
             foreach (var addr in addresses)
             {
                 var resolvedIp = addr.IsIPv4MappedToIPv6 ? addr.MapToIPv4() : addr;
-                if (IPAddress.IsLoopback(resolvedIp)) return false;
-                if (resolvedIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
-                {
-                    var b = resolvedIp.GetAddressBytes();
-                    if (b.Length == 4 && b[0] == 169 && b[1] == 254) return false;
-                }
-                if (resolvedIp.IsIPv6LinkLocal) return false;
+                if (IsBlockedAddress(resolvedIp)) return false;
             }
             return true;
         }
@@ -367,6 +388,37 @@ public class BBDownApiServer
             // 域名无法解析：回调必然失败，按不安全处理
             return false;
         }
+    }
+
+    /// <summary>
+    /// 判定地址是否属于应拒绝的敏感/内网段：回环、链路本地、云元数据（169.254/16）、
+    /// RFC1918 私网段（10/8、172.16/12、192.168/16）、CGNAT（100.64/10）与 IPv6 ULA（fc00::/7）。
+    /// </summary>
+    private static bool IsBlockedAddress(IPAddress ip)
+    {
+        if (IPAddress.IsLoopback(ip)) return true;
+        if (ip.IsIPv6LinkLocal) return true;
+        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
+        {
+            var b = ip.GetAddressBytes();
+            if (b.Length != 4) return false;
+            // 169.254.0.0/16 云元数据面
+            if (b[0] == 169 && b[1] == 254) return true;
+            // RFC1918：10.0.0.0/8、172.16.0.0/12、192.168.0.0/16
+            if (b[0] == 10) return true;
+            if (b[0] == 172 && b[1] >= 16 && b[1] <= 31) return true;
+            if (b[0] == 192 && b[1] == 168) return true;
+            // CGNAT 100.64.0.0/10
+            if (b[0] == 100 && b[1] >= 64 && b[1] <= 127) return true;
+            return false;
+        }
+        // IPv6 ULA fc00::/7
+        if (ip.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+        {
+            var b = ip.GetAddressBytes();
+            return b.Length == 16 && (b[0] & 0xfe) == 0xfc;
+        }
+        return false;
     }
 
     private async Task<DownloadTask> AddDownloadTaskAsync(MyOption option, string? callBackWebHook = null, CancellationToken cancellationToken = default)
@@ -475,7 +527,9 @@ public class BBDownApiServer
             }
             else
             {
-                string? jsonContent = JsonSerializer.Serialize(task, AppJsonSerializerContext.Default.DownloadTask);
+                // 序列化共享对象前用 Snapshot() 深拷贝：与 /get-tasks 查询端点一致，
+                // 避免未来任何并发写者在序列化期间修改 SavePaths 引发竞态。
+                string? jsonContent = JsonSerializer.Serialize(task.Snapshot(), AppJsonSerializerContext.Default.DownloadTask);
                 try
                 {
                     await HTTPUtil.AppHttpClient.PostAsync(callBackWebHook, new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json"));

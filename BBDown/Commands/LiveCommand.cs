@@ -49,7 +49,10 @@ public class LiveCommand : Command<LiveSettings>
                 Logger.Log($"录制已保存: {path}");
                 return 0;
             }
-            catch (OperationCanceledException)
+            // 仅真正的用户取消返回 0；HttpClient 超时/重连耗尽抛出的
+            // TaskCanceledException（token 未取消）必须落到下方失败分支返回 1，
+            // 否则录制实际失败却以成功码退出，脚本/CI 拿不到失败信号。
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
                 Logger.LogWarn("录制已取消");
                 return 0;

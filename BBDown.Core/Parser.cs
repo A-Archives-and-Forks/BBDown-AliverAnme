@@ -253,19 +253,24 @@ public static partial class Parser
                 var pickedRoot = newRoot.TryGetProperty("result", out var rr) && rr.ValueKind == JsonValueKind.Object && rr.TryGetProperty("video_info", out var vvii) ? vvii :
                        newRoot.TryGetProperty("result", out var rr2) && rr2.ValueKind == JsonValueKind.Object ? rr2 :
                        newRoot.TryGetProperty("data", out var dd) ? dd : newRoot;
-                if (pickedRoot.TryGetProperty("dash", out var newDash) && newDash.TryGetProperty("video", out _) && newDash.TryGetProperty("audio", out _))
+                if (pickedRoot.TryGetProperty("dash", out var newDash) && newDash.TryGetProperty("video", out _))
                 {
+                    // 新 dash 带 video 即可接管（保留免二压的高清视频轨）。
+                    // 不要求 audio 数组同时存在：杜比/FLAC-only 片源的普通 audio 数组本就缺失，
+                    // 音轨在其 dash.dolby.audio / dash.flac.audio 节点，由下方"处理杜比/Hi-Res"
+                    // 分支补出。仅当新响应连 video 都缺（风控/错误页）才整体沿用第一轮。
                     respJson.Dispose(); // 旧文档退役，新文档接管生命周期
                     respJson = newResp;
                     root = pickedRoot;
-                    video = audio = null;
-                    if (newDash.TryGetProperty("video", out var newVidArr)) video = newVidArr.EnumerateArray().ToList();
-                    if (newDash.TryGetProperty("audio", out var newAudArr)) audio = newAudArr.EnumerateArray().ToList();
+                    video = newDash.TryGetProperty("video", out var newVidArr) ? newVidArr.EnumerateArray().ToList() : null;
+                    // 新 dash 无 audio 数组时置 null：若其带 dolby/flac 则下方补出音轨；
+                    // 若完全无音频信息则退化为纯视频（优于整体降级第一轮低清）。
+                    audio = newDash.TryGetProperty("audio", out var newAudArr) ? newAudArr.EnumerateArray().ToList() : null;
                 }
                 else
                 {
-                    // 重请求响应无 dash 或缺 video/audio（风控/错误页等）：沿用第一轮结果，不替换 root，
-                    // 避免第二轮缺 audio 数组时把第一轮已解析的完整音轨静默丢弃
+                    // 重请求响应无 dash 或缺 video（风控/错误页等）：沿用第一轮结果，不替换 root，
+                    // 避免第二轮异常响应把第一轮已解析的完整轨道静默丢弃
                     newResp.Dispose();
                 }
             }
@@ -284,14 +289,12 @@ public static partial class Parser
             //处理杜比音频
             try
             {
-                if (audio != null)
+                if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("dolby", out JsonElement dolby))
                 {
-                    if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("dolby", out JsonElement dolby))
+                    if (dolby.TryGetProperty("audio", out JsonElement db))
                     {
-                        if (dolby.TryGetProperty("audio", out JsonElement db))
-                        {
-                            audio.AddRange(db.EnumerateArray());
-                        }
+                        audio ??= new List<JsonElement>();
+                        audio.AddRange(db.EnumerateArray());
                     }
                 }
             }
@@ -301,14 +304,14 @@ public static partial class Parser
             //处理Hi-Res无损
             try
             {
-                if (audio != null)
+                if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("flac", out JsonElement hiRes))
                 {
-                    if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("flac", out JsonElement hiRes))
+                    if (hiRes.TryGetProperty("audio", out JsonElement db))
                     {
-                        if (hiRes.TryGetProperty("audio", out JsonElement db))
+                        if (db.ValueKind != JsonValueKind.Null)
                         {
-                            if (db.ValueKind != JsonValueKind.Null)
-                                audio.Add(db);
+                            audio ??= new List<JsonElement>();
+                            audio.Add(db);
                         }
                     }
                 }

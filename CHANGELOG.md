@@ -4,6 +4,18 @@
 
 ## [Unreleased]
 
+### 修复（发布前回归审查）
+
+- **mp4box 字幕参数分裂**：字幕 `:name=` 内嵌含空格语言名（如 "Aymar aru"）时，在 Unix 上被 .NET 拆成两个 argv 导致混流失败。改为把名称/语言代码放在外层引号内（EscapeString 后保持单 token）。
+- **mp4box 音频 lang 引号结构**：音频轨 `:lang=` 的不平衡内层引号在 Windows CRT 下会破坏含引号的 lang 值，改为去掉内层引号、值留在外层引号内。
+- **直播录制失败退出码**：重连耗尽抛出的 HTTP 超时 OCE 不再被 `LiveCommand` 误判为"用户取消"返回 0，改为落到失败分支返回 1（`catch` 加 `when (cancellationToken.IsCancellationRequested)`）。
+- **serve host 白名单斜杠绕过**：`IsOfficialHost` 不再对含路径/斜杠/用户信息/非默认端口的串做纯后缀匹配（此前 `evil.com/.bilibili.com` 可被放行，使携带 SESSDATA 的请求发往攻击者主机），改为只接受规范化的纯主机名。
+- **serve host 空值回落**：`host`/`epHost`/`tvHost` 为空或显式 null 时不再原样保留（否则番剧/TV/intl URL 拼成 `https:///...` 抛 `UriFormatException`），统一回落官方默认。
+- **serve 回调 RFC1918 内网封堵**：域名解析出的 RFC1918/ULA/CGNAT 地址一律拒绝（DNS 重绑定打内网）；字面 IP 的内网地址仍放行（局域网回调用法）。
+- **serve 密钥注入封堵**：`/add-task` 请求体的 `drmKeyHex`/`drmKidHex` 字段被忽略（此前可控制 mp4decrypt 的 key-file 内容）。
+- **免二压取最高画质回归**：`Parser` 重请求接管守卫不再要求新响应同时含 `video`+`audio` 数组（杜比/FLAC-only 片源会被整体降级到低画质），只要求 `video` 存在即接管，音轨缺失时从新 dash 的 dolby/flac 节点补出。
+- **TV 登录凭据文件权限**：`BBDownTV.data` 与 `BBDown.data` 一致，创建时即以 600 权限打开，消除 umask 两步窗口。
+
 ### 安全
 
 - **serve 混流命令注入**：`BBDownMuxer` 混流时对 `lang`/`author`/音轨/字幕语言等外部来源值统一转义并加引号，消除通过 `/add-task` 请求体 `language` 字段远程注入 ffmpeg/mp4box 命令行、实现宿主任意文件读写的漏洞。

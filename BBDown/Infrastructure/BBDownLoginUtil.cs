@@ -166,7 +166,18 @@ internal static class BBDownLoginUtil
                     Logger.Log("登录成功: AccessToken=" + SensitiveDataMasker.MaskValue(cc));
                     //导出cookie
                     var tvTokenPath = Path.Combine(Program.APP_DIR, "BBDownTV.data");
-                    await File.WriteAllTextAsync(tvTokenPath, "access_token=" + cc);
+                    // 与 WEB 登录一致：创建文件时即以 owner 读写权限打开，
+                    // 避免先以 umask 默认权限落盘再收紧的两步窗口
+                    var tvOpts = new FileStreamOptions
+                    {
+                        Mode = FileMode.Create,
+                        Access = FileAccess.Write,
+                    };
+                    if (!OperatingSystem.IsWindows())
+                        tvOpts.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
+                    await using (var tvFs = new FileStream(tvTokenPath, tvOpts))
+                    using (var tvWriter = new StreamWriter(tvFs))
+                        await tvWriter.WriteAsync("access_token=" + cc);
                     SetOwnerOnlyPermission(tvTokenPath);
                     return true;
                 }

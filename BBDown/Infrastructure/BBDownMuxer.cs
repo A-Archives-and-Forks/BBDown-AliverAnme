@@ -74,7 +74,9 @@ static partial class BBDownMuxer
         }
         if (!string.IsNullOrEmpty(audioPath))
         {
-            inputArg.Append($" -add \"{audioPath}:lang=\"{ (lang == "" ? "und" : lang) }\"\" ");
+            // lang 已由 MuxAV 入口 EscapeString，值直接放在外层引号内：
+            // 内层引号会造成不平衡引号结构，Windows CRT 下含引号/空格的 lang 会被破坏或拆参。
+            inputArg.Append($" -add \"{audioPath}:lang={(lang == "" ? "und" : lang)}\" ");
             nowId++;
         }
         string? metaFile = null;
@@ -110,7 +112,10 @@ static partial class BBDownMuxer
                     {
                         nowId++;
                         var (subLangCode, subLangName) = SubUtil.GetSubtitleCode(subs[i].lan);
-                        inputArg.Append($" -add \"{subs[i].path}#trackID=1:name=\"{EscapeString(subLangName)}\":hdlr=sbtl:lang=\"{EscapeString(subLangCode)}\"\" ");
+                        // name/lang 值都放在外层引号内：SubUtil 的名称表含空格（如 "Aymar aru"），
+                        // 若内嵌内层引号，.NET/Unix 会把含空格名称拆成两个 argv，mp4box 解析失败。
+                        // EscapeString 已转义 " 与 \，值留在外层引号内保持单 token 且安全。
+                        inputArg.Append($" -add \"{subs[i].path}#trackID=1:name={EscapeString(subLangName)}:hdlr=sbtl:lang={EscapeString(subLangCode)}\" ");
                         inputArg.Append($" -udta {nowId}:type=name:str=\"{EscapeString(subLangName)}\" ");
                     }
                 }
