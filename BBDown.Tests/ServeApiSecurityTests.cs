@@ -39,6 +39,8 @@ public class ServeApiSecurityTests
     [InlineData("http://[fe80::1]/cb")]         // IPv6 链路本地
     [InlineData("http://[::ffff:169.254.169.254]/cb")] // IPv4-mapped IPv6：映射前是 InterNetworkV6，会绕过下方 169.254 检查
     [InlineData("http://[::ffff:127.0.0.1]/cb")]        // IPv4-mapped IPv6 回环
+    [InlineData("http://0.0.0.0/cb")]           // 全零地址连接时绑定回环
+    [InlineData("http://[::]/cb")]              // IPv6 全零
     public void IsSafeCallbackUrl_LoopbackOrLinkLocal_Rejected(string url)
         => Assert.False(BBDownApiServer.IsSafeCallbackUrl(url));
 
@@ -121,7 +123,7 @@ public class ServeApiSecurityTests
     public void SanitizeUntrustedOptions_EmptyHost_FallsBackToOfficial()
     {
         // host 为空/null 时也必须回落官方默认，否则番剧/TV/intl URL 拼成 https:///... 抛 UriFormatException
-        var req = new ServeRequestOptions { Host = "", EpHost = null, TvHost = "   ", UposHost = "" };
+        var req = new ServeRequestOptions { Host = "", EpHost = "", TvHost = "   ", UposHost = "" };
         BBDownApiServer.SanitizeUntrustedOptions(req);
         Assert.Equal("api.bilibili.com", req.Host);
         Assert.Equal("api.bilibili.com", req.EpHost);

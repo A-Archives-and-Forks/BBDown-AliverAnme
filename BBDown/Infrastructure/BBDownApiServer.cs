@@ -37,6 +37,16 @@ public class BBDownApiServer
     // 已完成任务持久化：serve 是长驻进程，任务记录只留在内存会在重启后丢失
     private static readonly string _taskFile = Path.Combine(Environment.CurrentDirectory, "bbdown-tasks.json");
 
+    // webhook 回调专用客户端：关闭自动重定向。共享的 AppHttpClient（AllowAutoRedirect=true）
+    // 会在回调时跟随攻击者可控的 Location 重定向到内网/元数据地址，绕过 IsSafeCallbackUrl
+    // 的地址校验。专用 handler 让回调只连 IsSafeCallbackUrl 校验过的原始地址。
+    private static readonly HttpClient _callbackClient = new(new SocketsHttpHandler
+    {
+        AllowAutoRedirect = false,
+        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+    })
+    { Timeout = TimeSpan.FromMinutes(2) };
+
     public BBDownApiServer(int maxConcurrent = 3, string? serveToken = null)
     {
         // 防御：maxConcurrent <= 0 会让 SemaphoreSlim 构造抛 ArgumentOutOfRangeException，
@@ -347,22 +357,30 @@ public class BBDownApiServer
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
         if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
 
-        bool hostIsLiteralIp = IPAddress.TryParse(uri.Host, out var literalIp);
+        bool hostIsLiteralIp = IPAddress.TryParse(uri.Host, out var literalIp) && literalIp is not null;
 
         if (hostIsLiteralIp)
         {
             // IPv4-mapped IPv6（如 [::ffff:169.254.169.254]）会把下方的 169.254 检查绕过
             // （其 AddressFamily 是 InterNetworkV6），统一映射回 IPv4 后再做检查。
-            if (literalIp.IsIPv4MappedToIPv6) literalIp = literalIp.MapToIPv4();
+            if (literalIp!.IsIPv4MappedToIPv6) literalIp = literalIp.MapToIPv4();
             // 字面 IP 是操作者显式配置的地址：仅拦回环/链路本地/云元数据。
             // RFC1918 内网字面 IP 放行（局域网回调是 serve 正常用法），
-            // 因为字面 IP 不涉及 DNS 重绑定，攻击者无法借它打内网。
+            // 因为字面 IP 不涉及 DNS 重绑定，攻击者无法借它打内网——攻击者构造的
+            // "域名回调"永远走下方 DNS 解析分支（RFC1918 已拒绝）。若需进一步收紧，
+            // 局域网回调用户应配置 --serve-token 或前置反向代理。
             if (IPAddress.IsLoopback(literalIp)) return false;
             if (literalIp.IsIPv6LinkLocal) return false;
             if (literalIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetwork)
             {
                 var b = literalIp.GetAddressBytes();
                 if (b.Length == 4 && b[0] == 169 && b[1] == 254) return false; // 169.254.0.0/16 云元数据面
+                if (b.All(x => x == 0)) return false; // 0.0.0.0：连接时绑定到回环
+            }
+            else if (literalIp.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6)
+            {
+                var b6 = literalIp.GetAddressBytes();
+                if (b6.Length == 16 && b6.All(x => x == 0)) return false; // [::]
             }
             return true;
         }
@@ -532,7 +550,7 @@ public class BBDownApiServer
                 string? jsonContent = JsonSerializer.Serialize(task.Snapshot(), AppJsonSerializerContext.Default.DownloadTask);
                 try
                 {
-                    await HTTPUtil.AppHttpClient.PostAsync(callBackWebHook, new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json"));
+                    await _callbackClient.PostAsync(callBackWebHook, new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json"));
                 }
                 catch (Exception e) when (e is HttpRequestException)
                 {
