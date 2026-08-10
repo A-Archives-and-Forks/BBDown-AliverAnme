@@ -12,7 +12,7 @@ public static partial class UrlResolver
     /// <summary>
     /// 解析用户输入（URL、BV号、AV号、EP号等）为统一格式的 avid 标识符。
     /// </summary>
-    public static async Task<string> ResolveAsync(string input)
+    public static async Task<string> ResolveAsync(string input, CancellationToken token = default)
     {
         var avid = input;
         // 大小写不敏感：用户可能输入 HTTPS:// 或 Http://
@@ -21,7 +21,7 @@ public static partial class UrlResolver
             var lowerInput = input.ToLowerInvariant();
             if (input.Contains("b23.tv"))
             {
-                string tmp = await HTTPUtil.GetWebLocationAsync(input);
+                string tmp = await HTTPUtil.GetWebLocationAsync(input, token);
                 if (tmp == input) throw new InvalidOperationException("无限重定向");
                 input = tmp;
                 lowerInput = input.ToLowerInvariant();
@@ -43,7 +43,7 @@ public static partial class UrlResolver
                 }
                 else if (input.Contains("/ss"))
                 {
-                    epId = await GetEpidBySSIdAsync(SsRegex().Match(input).Groups[1].Value);
+                    epId = await GetEpidBySSIdAsync(SsRegex().Match(input).Groups[1].Value, token);
                 }
                 avid = $"cheese:{epId}";
             }
@@ -54,7 +54,7 @@ public static partial class UrlResolver
             }
             else if (input.Contains("/ss"))
             {
-                string epId = await GetEpIdByBangumiSSIdAsync(SsRegex().Match(input).Groups[1].Value);
+                string epId = await GetEpIdByBangumiSSIdAsync(SsRegex().Match(input).Groups[1].Value, token);
                 avid = $"ep:{epId}";
             }
             else if (input.Contains("/medialist/") && input.Contains("business_id=") && input.Contains("business=space_collection")) // 列表类型是合集
@@ -116,12 +116,12 @@ public static partial class UrlResolver
             else if (BangumiMdRegex().Match(input).Success)
             {
                 string mdId = BangumiMdRegex().Match(input).Groups[1].Value;
-                string epId = await GetEpIdByMDAsync(mdId);
+                string epId = await GetEpIdByMDAsync(mdId, token);
                 avid = $"ep:{epId}";
             }
             else
             {
-                string web = await HTTPUtil.GetWebSourceAsync(input);
+                string web = await HTTPUtil.GetWebSourceAsync(input, token: token);
                 Regex regex = StateRegex();
                 string json = regex.Match(web).Groups[1].Value;
                 // 页面未含 __INITIAL_STATE__ 时 json 为空，JsonDocument.Parse("") 会抛底层 JsonException；
@@ -161,7 +161,7 @@ public static partial class UrlResolver
             }
             else if (input.Contains("/ss"))
             {
-                epId = await GetEpidBySSIdAsync(SsRegex().Match(input).Groups[1].Value);
+                epId = await GetEpidBySSIdAsync(SsRegex().Match(input).Groups[1].Value, token);
             }
             avid = $"cheese:{epId}";
         }
@@ -175,13 +175,13 @@ public static partial class UrlResolver
         {
             try
             {
-                string epId = await GetEpIdByBangumiSSIdAsync(input[2..].TrimStart(':'));
+                string epId = await GetEpIdByBangumiSSIdAsync(input[2..].TrimStart(':'), token);
                 avid = $"ep:{epId}";
             }
             catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException)
             {
                 Core.Logger.LogWarn($"番剧 SS 解析失败，尝试课程 SS: {ex.Message}");
-                string epId = await GetEpidBySSIdAsync(input[2..].TrimStart(':'));
+                string epId = await GetEpidBySSIdAsync(input[2..].TrimStart(':'), token);
                 avid = $"cheese:{epId}";
             }
         }
@@ -190,24 +190,24 @@ public static partial class UrlResolver
             string mdId = input[2..].TrimStart(':');
             if (mdId == "")
                 throw new ArgumentException($"输入有误：无法识别的专栏 ID，当前值: '{input}'");
-            string epId = await GetEpIdByMDAsync(mdId);
+            string epId = await GetEpIdByMDAsync(mdId, token);
             avid = $"ep:{epId}";
         }
         else
         {
             throw new ArgumentException("输入有误：无法识别的视频 URL 或 ID");
         }
-        return await FixAvidAsync(avid);
+        return await FixAvidAsync(avid, token);
     }
 
-    private static async Task<string> FixAvidAsync(string avid)
+    private static async Task<string> FixAvidAsync(string avid, CancellationToken token = default)
     {
         if (!avid.All(char.IsDigit))
             return avid;
         try
         {
             string api = $"https://www.bilibili.com/video/av{avid}/";
-            string location = await HTTPUtil.GetWebLocationAsync(api);
+            string location = await HTTPUtil.GetWebLocationAsync(api, token);
             return location.Contains("/ep") ? $"ep:{EpRegex().Match(location).Groups[1].Value}" : avid;
         }
         catch (Exception ex) when (ex is HttpRequestException)
@@ -234,10 +234,10 @@ public static partial class UrlResolver
         }
     }
 
-    private static async Task<string> GetEpidBySSIdAsync(string ssid)
+    private static async Task<string> GetEpidBySSIdAsync(string ssid, CancellationToken token = default)
     {
         string api = $"https://api.bilibili.com/pugv/view/web/season?season_id={ssid}";
-        string json = await HTTPUtil.GetWebSourceAsync(api);
+        string json = await HTTPUtil.GetWebSourceAsync(api, token: token);
         using var jDoc = JsonDocument.Parse(json);
         var episodes = jDoc.RootElement.GetPropertySafe("data").EnumerateArraySafe("episodes");
         var firstEp = episodes.FirstOrDefault();
@@ -246,10 +246,10 @@ public static partial class UrlResolver
         return firstEp.GetValueAsStringSafe("id");
     }
 
-    private static async Task<string> GetEpIdByBangumiSSIdAsync(string ssId)
+    private static async Task<string> GetEpIdByBangumiSSIdAsync(string ssId, CancellationToken token = default)
     {
         string api = $"https://{Core.Config.Current.EpHost}/pgc/view/web/season?season_id={ssId}";
-        string json = await HTTPUtil.GetWebSourceAsync(api);
+        string json = await HTTPUtil.GetWebSourceAsync(api, token: token);
         using var jDoc = JsonDocument.Parse(json);
         var episodes = jDoc.RootElement.GetPropertySafe("result").EnumerateArraySafe("episodes");
         var firstEp = episodes.FirstOrDefault();
@@ -258,10 +258,10 @@ public static partial class UrlResolver
         return firstEp.GetValueAsStringSafe("id");
     }
 
-    private static async Task<string> GetEpIdByMDAsync(string mdId)
+    private static async Task<string> GetEpIdByMDAsync(string mdId, CancellationToken token = default)
     {
         string api = $"https://api.bilibili.com/pgc/review/user?media_id={mdId}";
-        string json = await HTTPUtil.GetWebSourceAsync(api);
+        string json = await HTTPUtil.GetWebSourceAsync(api, token: token);
         using var jDoc = JsonDocument.Parse(json);
         return jDoc.RootElement.GetPropertySafe("result").GetPropertySafe("media").GetPropertySafe("new_ep").GetValueAsStringSafe("id");
     }

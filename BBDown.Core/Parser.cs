@@ -1,4 +1,4 @@
-﻿using System.Text;
+using System.Text;
 using BBDown.Core.Util;
 using System.Text.RegularExpressions;
 using System.Text.Json;
@@ -15,11 +15,11 @@ public static partial class Parser
         return $"{api}&w_rid=" + Convert.ToHexStringLower(MD5.HashData(Encoding.UTF8.GetBytes(api + Config.Current.Wbi)));
     }
 
-    private static async Task<string> GetPlayJsonAsync(string encoding, string aidOri, string aid, string cid, string epId, bool tvApi, bool intl, bool appApi, bool wantDrm, string qn = "0")
+    private static async Task<string> GetPlayJsonAsync(string encoding, string aidOri, string aid, string cid, string epId, bool tvApi, bool intl, bool appApi, bool wantDrm, string qn = "0", CancellationToken token = default)
     {
         Logger.LogDebug("aid={0},cid={1},epId={2},tvApi={3},IntlApi={4},appApi={5},qn={6}", aid, cid, epId, tvApi, intl, appApi, qn);
 
-        if (intl) return await GetPlayJsonAsync(aid, cid, epId, qn);
+        if (intl) return await GetPlayJsonAsync(aid, cid, epId, qn, token: token);
 
 
         bool cheese = aidOri.StartsWith("cheese:");
@@ -61,7 +61,7 @@ public static partial class Parser
         if (cheese) api = api.Replace("/pgc/player/web/v2/playurl", "/pugv/player/web/playurl");
 
         //Console.WriteLine(api);
-        string webJson = await HTTPUtil.GetWebSourceAsync(api);
+        string webJson = await HTTPUtil.GetWebSourceAsync(api, token: token);
         //以下情况从网页源代码尝试解析
         if (webJson.Contains("\"大会员专享限制\""))
         {
@@ -71,7 +71,7 @@ public static partial class Parser
             if (!string.IsNullOrEmpty(epId))
             {
                 string webUrl = "https://www.bilibili.com/bangumi/play/ep" + epId;
-                string webSource = await HTTPUtil.GetWebSourceAsync(webUrl);
+                string webSource = await HTTPUtil.GetWebSourceAsync(webUrl, token: token);
                 var match = PlayerJsonRegex().Match(webSource);
                 // 页面不含 window.__playinfo__（登录墙/错误页/风控页）时 Groups[1] 为空串，
                 // 下游 JsonDocument.Parse("") 会抛与真实原因无关的裸 JsonException
@@ -83,7 +83,7 @@ public static partial class Parser
         return webJson;
     }
 
-    private static async Task<string> GetPlayJsonAsync(string aid, string cid, string epId, string qn, string code = "0")
+    private static async Task<string> GetPlayJsonAsync(string aid, string cid, string epId, string qn, string code = "0", CancellationToken token = default)
     {
         bool isBiliPlus = Config.Current.Host != "api.bilibili.com";
         string api = $"https://{(isBiliPlus ? Config.Current.Host : "api.biliintl.com")}/intl/gateway/v2/ogv/playurl?";
@@ -99,16 +99,16 @@ public static partial class Parser
         string param = paramBuilder.ToString();
         api += (isBiliPlus ? $"{param}&sign={GetSign(param, true)}" : param);
 
-        string webJson = await HTTPUtil.GetWebSourceAsync(api);
+        string webJson = await HTTPUtil.GetWebSourceAsync(api, token: token);
         return webJson;
     }
 
-    public static async Task<ParsedResult> ExtractTracksAsync(string aidOri, string aid, string cid, string epId, bool tvApi, bool intlApi, bool appApi, string encoding, bool wantDrm = false, string qn = "0")
+    public static async Task<ParsedResult> ExtractTracksAsync(string aidOri, string aid, string cid, string epId, bool tvApi, bool intlApi, bool appApi, string encoding, bool wantDrm = false, string qn = "0", CancellationToken token = default)
     {
         ParsedResult parsedResult = new();
 
         //调用解析
-        parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, qn);
+        parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, qn, token);
 
         Logger.LogDebug(parsedResult.WebJsonString);
 
@@ -118,7 +118,7 @@ public static partial class Parser
             foreach (var code in new[] { "0", "1" })
             {
                 if (code == "1")
-                    parsedResult.WebJsonString = await GetPlayJsonAsync(aid, cid, epId, qn, code);
+                    parsedResult.WebJsonString = await GetPlayJsonAsync(aid, cid, epId, qn, code, token);
 
                 using var intlJson = JsonDocument.Parse(parsedResult.WebJsonString);
                 // intl 接口某次请求可能不返回 video_info / stream_list（code=0 与 code=1 返回结构不同），
@@ -240,134 +240,134 @@ public static partial class Parser
             //免二压视频需要重新请求
             for (int reparsePass = 0; reparsePass < 2; reparsePass++)
             {
-            // 第二轮若直接 respJson.Dispose() 再取值，重请求响应（未经业务校验，
-            // 风控/错误页时可能无 dash）会让 video/audio 引用已释放文档抛
-            // ObjectDisposedException。改为：新响应带 dash 才接管并退役旧文档，
-            // 否则丢弃新响应、沿用第一轮结果降级。
-            if (reparsePass == 1)
-            {
-                if (appApi) break; //只有非APP接口需要免二压
-                parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn());
-                var newResp = JsonDocument.Parse(parsedResult.WebJsonString);
-                var newRoot = newResp.RootElement;
-                var pickedRoot = newRoot.TryGetProperty("result", out var rr) && rr.ValueKind == JsonValueKind.Object && rr.TryGetProperty("video_info", out var vvii) ? vvii :
-                       newRoot.TryGetProperty("result", out var rr2) && rr2.ValueKind == JsonValueKind.Object ? rr2 :
-                       newRoot.TryGetProperty("data", out var dd) ? dd : newRoot;
-                if (pickedRoot.TryGetProperty("dash", out var newDash) && newDash.TryGetProperty("video", out _))
+                // 第二轮若直接 respJson.Dispose() 再取值，重请求响应（未经业务校验，
+                // 风控/错误页时可能无 dash）会让 video/audio 引用已释放文档抛
+                // ObjectDisposedException。改为：新响应带 dash 才接管并退役旧文档，
+                // 否则丢弃新响应、沿用第一轮结果降级。
+                if (reparsePass == 1)
                 {
-                    // 新 dash 带 video 即可接管（保留免二压的高清视频轨）。
-                    // 不要求 audio 数组同时存在：杜比/FLAC-only 片源的普通 audio 数组本就缺失，
-                    // 音轨在其 dash.dolby.audio / dash.flac.audio 节点，由下方"处理杜比/Hi-Res"
-                    // 分支补出。仅当新响应连 video 都缺（风控/错误页）才整体沿用第一轮。
-                    respJson.Dispose(); // 旧文档退役，新文档接管生命周期
-                    respJson = newResp;
-                    root = pickedRoot;
-                    video = newDash.TryGetProperty("video", out var newVidArr) ? newVidArr.EnumerateArray().ToList() : null;
-                    // 新 dash 无 audio 数组时置 null：若其带 dolby/flac 则下方补出音轨；
-                    // 若完全无音频信息则退化为纯视频（优于整体降级第一轮低清）。
-                    audio = newDash.TryGetProperty("audio", out var newAudArr) ? newAudArr.EnumerateArray().ToList() : null;
-                }
-                else
-                {
-                    // 重请求响应无 dash 或缺 video（风控/错误页等）：沿用第一轮结果，不替换 root，
-                    // 避免第二轮异常响应把第一轮已解析的完整轨道静默丢弃
-                    newResp.Dispose();
-                }
-            }
-            if (root.TryGetProperty("dash", out var dash) && dash.TryGetProperty("video", out var vidArr))
-                video = vidArr.EnumerateArray().ToList();
-            if (root.TryGetProperty("dash", out dash) && dash.TryGetProperty("audio", out var audArr))
-                audio = audArr.EnumerateArray().ToList();
-
-            if (appApi && bangumi)
-            {
-                if (data.TryGetProperty("dubbing_info", out var dub) && dub.TryGetProperty("background_audio", out var bgArr))
-                    backgroundAudio = bgArr.EnumerateArray().ToList();
-                if (data.TryGetProperty("dubbing_info", out dub) && dub.TryGetProperty("role_audio_list", out var roleArr))
-                    roleAudio = roleArr.EnumerateArray().ToList();
-            }
-            //处理杜比音频
-            try
-            {
-                if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("dolby", out JsonElement dolby))
-                {
-                    if (dolby.TryGetProperty("audio", out JsonElement db))
+                    if (appApi) break; //只有非APP接口需要免二压
+                    parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn(), token);
+                    var newResp = JsonDocument.Parse(parsedResult.WebJsonString);
+                    var newRoot = newResp.RootElement;
+                    var pickedRoot = newRoot.TryGetProperty("result", out var rr) && rr.ValueKind == JsonValueKind.Object && rr.TryGetProperty("video_info", out var vvii) ? vvii :
+                           newRoot.TryGetProperty("result", out var rr2) && rr2.ValueKind == JsonValueKind.Object ? rr2 :
+                           newRoot.TryGetProperty("data", out var dd) ? dd : newRoot;
+                    if (pickedRoot.TryGetProperty("dash", out var newDash) && newDash.TryGetProperty("video", out _))
                     {
-                        audio ??= new List<JsonElement>();
-                        audio.AddRange(db.EnumerateArray());
+                        // 新 dash 带 video 即可接管（保留免二压的高清视频轨）。
+                        // 不要求 audio 数组同时存在：杜比/FLAC-only 片源的普通 audio 数组本就缺失，
+                        // 音轨在其 dash.dolby.audio / dash.flac.audio 节点，由下方"处理杜比/Hi-Res"
+                        // 分支补出。仅当新响应连 video 都缺（风控/错误页）才整体沿用第一轮。
+                        respJson.Dispose(); // 旧文档退役，新文档接管生命周期
+                        respJson = newResp;
+                        root = pickedRoot;
+                        video = newDash.TryGetProperty("video", out var newVidArr) ? newVidArr.EnumerateArray().ToList() : null;
+                        // 新 dash 无 audio 数组时置 null：若其带 dolby/flac 则下方补出音轨；
+                        // 若完全无音频信息则退化为纯视频（优于整体降级第一轮低清）。
+                        audio = newDash.TryGetProperty("audio", out var newAudArr) ? newAudArr.EnumerateArray().ToList() : null;
+                    }
+                    else
+                    {
+                        // 重请求响应无 dash 或缺 video（风控/错误页等）：沿用第一轮结果，不替换 root，
+                        // 避免第二轮异常响应把第一轮已解析的完整轨道静默丢弃
+                        newResp.Dispose();
                     }
                 }
-            }
-            catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException)
-            { Logger.LogDebug("杜比音频解析失败: {0}", e.Message); }
+                if (root.TryGetProperty("dash", out var dash) && dash.TryGetProperty("video", out var vidArr))
+                    video = vidArr.EnumerateArray().ToList();
+                if (root.TryGetProperty("dash", out dash) && dash.TryGetProperty("audio", out var audArr))
+                    audio = audArr.EnumerateArray().ToList();
 
-            //处理Hi-Res无损
-            try
-            {
-                if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("flac", out JsonElement hiRes))
+                if (appApi && bangumi)
                 {
-                    if (hiRes.TryGetProperty("audio", out JsonElement db))
+                    if (data.TryGetProperty("dubbing_info", out var dub) && dub.TryGetProperty("background_audio", out var bgArr))
+                        backgroundAudio = bgArr.EnumerateArray().ToList();
+                    if (data.TryGetProperty("dubbing_info", out dub) && dub.TryGetProperty("role_audio_list", out var roleArr))
+                        roleAudio = roleArr.EnumerateArray().ToList();
+                }
+                //处理杜比音频
+                try
+                {
+                    if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("dolby", out JsonElement dolby))
                     {
-                        if (db.ValueKind != JsonValueKind.Null)
+                        if (dolby.TryGetProperty("audio", out JsonElement db))
                         {
                             audio ??= new List<JsonElement>();
-                            audio.Add(db);
+                            audio.AddRange(db.EnumerateArray());
                         }
                     }
                 }
-            }
-            catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException)
-            { Logger.LogDebug("Hi-Res音频解析失败: {0}", e.Message); }
+                catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException)
+                { Logger.LogDebug("杜比音频解析失败: {0}", e.Message); }
 
-            if (video != null)
-            {
-                foreach (var node in video)
+                //处理Hi-Res无损
+                try
                 {
-                    var urlList = new List<string>() { node.GetValueAsStringSafe("base_url") };
-                    if (node.TryGetProperty("backup_url", out JsonElement element) && element.ValueKind != JsonValueKind.Null)
+                    if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("flac", out JsonElement hiRes))
                     {
-                        urlList.AddRange(element.EnumerateArray().Select(i => i.ToString()));
-                    }
-                    var videoId = node.GetValueAsStringSafe("id");
-                    Video v = new()
-                    {
-                        dur = pDur,
-                        id = videoId,
-                        dfn = AppSettings.QualityMap.GetValueOrDefault(videoId, $"未知({videoId})"),
-                        bandwidth = node.GetInt64Safe("bandwidth") / 1000,
-                        baseUrl = urlList.FirstOrDefault(i => !BaseUrlRegex().IsMatch(i), urlList.First()),
-                        codecs = GetVideoCodec(node.GetValueAsStringSafe("codecid")),
-                        size = node.GetDoubleSafe("size")
-                    };
-                    if (!tvApi && !appApi)
-                    {
-                        v.res = node.GetValueAsStringSafe("width") + "x" + node.GetValueAsStringSafe("height");
-                        v.fps = node.GetValueAsStringSafe("frame_rate");
-                    }
-                    if (!parsedResult.VideoTracks.Contains(v)) parsedResult.VideoTracks.Add(v);
-                }
-
-                if (parsedResult.IsDrm && string.IsNullOrEmpty(parsedResult.KidHex))
-                {
-                    try
-                    {
-                        var firstVideo = video.FirstOrDefault();
-                        if (firstVideo.ValueKind == System.Text.Json.JsonValueKind.Undefined)
-                            throw new InvalidOperationException("视频轨道为空，无法提取 DRM 信息");
-                        if (firstVideo.TryGetProperty("bilidrm_uri", out var drmUri))
+                        if (hiRes.TryGetProperty("audio", out JsonElement db))
                         {
-                            var uri = drmUri.GetString() ?? "";
-                            var lastSlash = uri.LastIndexOf("//", StringComparison.Ordinal);
-                            if (lastSlash >= 0)
-                                parsedResult.KidHex = uri[(lastSlash + 2)..];
+                            if (db.ValueKind != JsonValueKind.Null)
+                            {
+                                audio ??= new List<JsonElement>();
+                                audio.Add(db);
+                            }
                         }
-                        if (firstVideo.TryGetProperty("widevine_pssh", out var pssh) && pssh.GetString() is string ps && ps.Length > 0)
-                            parsedResult.PsshBase64 = ps;
                     }
-                    catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
-                    { Logger.LogWarn($"DRM license info extraction error: {ex.Message}"); }
                 }
-            }
+                catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException)
+                { Logger.LogDebug("Hi-Res音频解析失败: {0}", e.Message); }
+
+                if (video != null)
+                {
+                    foreach (var node in video)
+                    {
+                        var urlList = new List<string>() { node.GetValueAsStringSafe("base_url") };
+                        if (node.TryGetProperty("backup_url", out JsonElement element) && element.ValueKind != JsonValueKind.Null)
+                        {
+                            urlList.AddRange(element.EnumerateArray().Select(i => i.ToString()));
+                        }
+                        var videoId = node.GetValueAsStringSafe("id");
+                        Video v = new()
+                        {
+                            dur = pDur,
+                            id = videoId,
+                            dfn = AppSettings.QualityMap.GetValueOrDefault(videoId, $"未知({videoId})"),
+                            bandwidth = node.GetInt64Safe("bandwidth") / 1000,
+                            baseUrl = urlList.FirstOrDefault(i => !BaseUrlRegex().IsMatch(i), urlList.First()),
+                            codecs = GetVideoCodec(node.GetValueAsStringSafe("codecid")),
+                            size = node.GetDoubleSafe("size")
+                        };
+                        if (!tvApi && !appApi)
+                        {
+                            v.res = node.GetValueAsStringSafe("width") + "x" + node.GetValueAsStringSafe("height");
+                            v.fps = node.GetValueAsStringSafe("frame_rate");
+                        }
+                        if (!parsedResult.VideoTracks.Contains(v)) parsedResult.VideoTracks.Add(v);
+                    }
+
+                    if (parsedResult.IsDrm && string.IsNullOrEmpty(parsedResult.KidHex))
+                    {
+                        try
+                        {
+                            var firstVideo = video.FirstOrDefault();
+                            if (firstVideo.ValueKind == System.Text.Json.JsonValueKind.Undefined)
+                                throw new InvalidOperationException("视频轨道为空，无法提取 DRM 信息");
+                            if (firstVideo.TryGetProperty("bilidrm_uri", out var drmUri))
+                            {
+                                var uri = drmUri.GetString() ?? "";
+                                var lastSlash = uri.LastIndexOf("//", StringComparison.Ordinal);
+                                if (lastSlash >= 0)
+                                    parsedResult.KidHex = uri[(lastSlash + 2)..];
+                            }
+                            if (firstVideo.TryGetProperty("widevine_pssh", out var pssh) && pssh.GetString() is string ps && ps.Length > 0)
+                                parsedResult.PsshBase64 = ps;
+                        }
+                        catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
+                        { Logger.LogWarn($"DRM license info extraction error: {ex.Message}"); }
+                    }
+                }
 
             } // end for reparsePass
 
@@ -452,7 +452,7 @@ public static partial class Parser
         else if (root.TryGetProperty("durl", out _)) //flv
         {
             //默认以最高清晰度解析
-            parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn());
+            parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn(), token);
             respJson.Dispose();
             respJson = JsonDocument.Parse(parsedResult.WebJsonString);
             var newData = respJson.RootElement;
@@ -511,11 +511,11 @@ public static partial class Parser
             if (root.TryGetProperty("clip_info_list", out JsonElement clipList))
             {
                 parsedResult.ExtraPoints.AddRange(clipList.EnumerateArray().Select(clip => new ViewPoint()
-                    {
-                        title = clip.GetValueAsStringSafe("toastText").Replace("即将跳过", ""),
-                        start = clip.GetInt32Safe("start"),
-                        end = clip.GetInt32Safe("end")
-                    })
+                {
+                    title = clip.GetValueAsStringSafe("toastText").Replace("即将跳过", ""),
+                    start = clip.GetInt32Safe("start"),
+                    end = clip.GetInt32Safe("end")
+                })
                 );
                 parsedResult.ExtraPoints.Sort((p1, p2) => p1.start.CompareTo(p2.start));
                 var newPoints = new List<ViewPoint>();

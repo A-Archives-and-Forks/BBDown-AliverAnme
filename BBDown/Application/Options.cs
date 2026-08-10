@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
@@ -119,7 +119,7 @@ internal partial class Program
             Logger.LogError($"包含不支持的下载弹幕格式：{myOption.DownloadDanmakuFormats}");
             return BBDownDanmakuFormatInfo.DefaultFormats;
         }
-        
+
         return formats.Select(BBDownDanmakuFormatInfo.FromFormatName).ToArray();
     }
 

@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Buffers;
 using BBDown.Core.Util;
 using BBDown.Core;
@@ -209,26 +209,26 @@ internal static class BBDownDownloadUtil
         int maxRetry = Config.Current.MaxRetryCount;
         while (retry < maxRetry)
         {
-        try
-        {
-            using var progress = new ProgressBar(config.RelatedTask);
-            await RangeDownloadToTmpAsync(0, url, tmpName, 0, null, (_, downloaded, total) => progress.Report((double)downloaded / total, downloaded), token: token);
-            File.Move(tmpName, path, true);
-            break;
-        }
-        catch (Exception ex) when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
-        {
-            throw; // non-retryable: bad input, unsupported feature, logic error
-        }
-        catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
-        {
-            // 退避基数用 retry + 1：否则首次重试的等待时间为 0，
-            // 面对限流的服务器会立刻再打一次
-            int backoffMs = (retry + 1) * Config.Current.RetryDelayMs;
-            Logger.LogDebug("下载失败(第{0}次重试, {1}ms后): {2}", retry + 1, backoffMs, ex.Message);
-            await Task.Delay(backoffMs, token);
-            if (++retry == maxRetry) throw;
-        }
+            try
+            {
+                using var progress = new ProgressBar(config.RelatedTask);
+                await RangeDownloadToTmpAsync(0, url, tmpName, 0, null, (_, downloaded, total) => progress.Report((double)downloaded / total, downloaded), token: token);
+                File.Move(tmpName, path, true);
+                break;
+            }
+            catch (Exception ex) when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
+            {
+                throw; // non-retryable: bad input, unsupported feature, logic error
+            }
+            catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
+            {
+                // 退避基数用 retry + 1：否则首次重试的等待时间为 0，
+                // 面对限流的服务器会立刻再打一次
+                int backoffMs = (retry + 1) * Config.Current.RetryDelayMs;
+                Logger.LogDebug("下载失败(第{0}次重试, {1}ms后): {2}", retry + 1, backoffMs, ex.Message);
+                await Task.Delay(backoffMs, token);
+                if (++retry == maxRetry) throw;
+            }
         }
     }
 
@@ -289,35 +289,35 @@ internal static class BBDownDownloadUtil
             string tmp = Path.Combine(Path.GetDirectoryName(path)!, clip.index.ToString("00000") + "_" + Path.GetFileNameWithoutExtension(path) + (Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip"));
             while (retry < maxRetry)
             {
-            try
-            {
-                await RangeDownloadToTmpAsync(clip.index, url, tmp, clip.from, clip.to == -1 ? null : clip.to, (index, downloaded, _) =>
+                try
                 {
-                    // 同一分片的回调只在它自己的任务里串行发生，
-                    // 因此这里只需保证跨分片累加的原子性
-                    var previous = Interlocked.Exchange(ref clipProgress[index], downloaded);
-                    var current = Interlocked.Add(ref downloadedTotal, downloaded - previous);
-                    progress.Report(fileSize > 0 ? (double)current / fileSize : 0, current);
-                }, true, _);
-                break;
-            }
-            catch (NotSupportedException)
-            {
-                // 次数与其他分支统一用 maxRetry，原先硬编码的 3 会随配置变化而偏多或偏少
-                if (++retry == maxRetry) throw new NotSupportedException("服务器可能并不支持多线程下载, 请使用 --multi-thread false 关闭多线程");
-                await Task.Delay(retry * Config.Current.RetryDelayMs, _);
-            }
-            catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
-            {
-                throw; // non-retryable
-            }
-            catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
-            {
-                int backoffMs = (retry + 1) * Config.Current.RetryDelayMs;
-                Logger.LogDebug("分段下载失败(第{0}次重试, {1}ms后): {2}", retry + 1, backoffMs, ex.Message);
-                await Task.Delay(backoffMs, _);
-                if (++retry == maxRetry) throw new IOException($"分段 {clip.index} 下载失败，请检查网络或关闭多线程重试", ex);
-            }
+                    await RangeDownloadToTmpAsync(clip.index, url, tmp, clip.from, clip.to == -1 ? null : clip.to, (index, downloaded, _) =>
+                    {
+                        // 同一分片的回调只在它自己的任务里串行发生，
+                        // 因此这里只需保证跨分片累加的原子性
+                        var previous = Interlocked.Exchange(ref clipProgress[index], downloaded);
+                        var current = Interlocked.Add(ref downloadedTotal, downloaded - previous);
+                        progress.Report(fileSize > 0 ? (double)current / fileSize : 0, current);
+                    }, true, _);
+                    break;
+                }
+                catch (NotSupportedException)
+                {
+                    // 次数与其他分支统一用 maxRetry，原先硬编码的 3 会随配置变化而偏多或偏少
+                    if (++retry == maxRetry) throw new NotSupportedException("服务器可能并不支持多线程下载, 请使用 --multi-thread false 关闭多线程");
+                    await Task.Delay(retry * Config.Current.RetryDelayMs, _);
+                }
+                catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+                {
+                    throw; // non-retryable
+                }
+                catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
+                {
+                    int backoffMs = (retry + 1) * Config.Current.RetryDelayMs;
+                    Logger.LogDebug("分段下载失败(第{0}次重试, {1}ms后): {2}", retry + 1, backoffMs, ex.Message);
+                    await Task.Delay(backoffMs, _);
+                    if (++retry == maxRetry) throw new IOException($"分段 {clip.index} 下载失败，请检查网络或关闭多线程重试", ex);
+                }
             }
         });
     }

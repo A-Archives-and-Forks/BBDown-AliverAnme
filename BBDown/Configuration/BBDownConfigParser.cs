@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using BBDown.Core;
 using System.Collections.Generic;
 using System.Diagnostics.CodeAnalysis;

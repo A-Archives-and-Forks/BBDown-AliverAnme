@@ -1,4 +1,4 @@
-﻿using static BBDown.Core.Entity.Entity;
+using static BBDown.Core.Entity.Entity;
 
 namespace BBDown.Core.Entity;
 

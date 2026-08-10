@@ -90,6 +90,9 @@ public class ServeApiSecurityTests
             UserAgent = "EvilUA/1.0",
             // NotifyWebhook 会绕过 CallBackWebHook 的 SSRF 校验向任意地址 POST
             NotifyWebhook = "http://evil.example/hook",
+            // CallBackWebHook：任务回调改为服务端 allowlist（--notify-webhook），
+            // 客户端请求体中的回调字段必须被清零，防止任意客户端驱动本机 POST
+            CallBackWebHook = "http://evil.example/client-callback",
             // Insecure 会全局关闭 TLS 校验：serve 下必须忽略，否则任意客户端可让携带
             // 操作者 SESSDATA 的请求跳过证书校验被 MITM 截获
             Insecure = true,
@@ -112,6 +115,7 @@ public class ServeApiSecurityTests
         Assert.Equal("", req.WorkDir);
         Assert.Equal("", req.UserAgent);
         Assert.Equal("", req.NotifyWebhook);
+        Assert.Equal("", req.CallBackWebHook);
         Assert.False(req.Insecure);
         Assert.Equal("", req.FilePattern);
         Assert.Equal("", req.MultiFilePattern);

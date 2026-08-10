@@ -1,4 +1,4 @@
-﻿using BBDown.Core.Fetcher;
+using BBDown.Core.Fetcher;
 
 namespace BBDown.Core;
 

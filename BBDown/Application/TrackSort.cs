@@ -20,7 +20,7 @@ internal partial class Program
             .ThenBy(v => videoAscending ? v.bandwidth : -v.bandwidth)
             .ToList();
     }
-    
+
     private static List<Audio> SortTracks(List<Audio> audioTracks, Dictionary<string, byte> encodingPriority, bool audioAscending)
     {
         return audioTracks

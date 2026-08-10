@@ -1,4 +1,4 @@
-﻿using BBDown.Core.Protobuf;
+using BBDown.Core.Protobuf;
 using BBDown.Core.Util;
 using Google.Protobuf;
 using System.Buffers.Binary;

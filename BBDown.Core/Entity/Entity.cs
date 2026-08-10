@@ -1,4 +1,4 @@
-﻿using BBDown.Core.Util;
+using BBDown.Core.Util;
 using System.Diagnostics.CodeAnalysis;
 
 namespace BBDown.Core.Entity;

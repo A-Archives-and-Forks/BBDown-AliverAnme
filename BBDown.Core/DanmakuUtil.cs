@@ -113,7 +113,7 @@ public static class DanmakuUtil
         sb.AppendLine($"Style: BBDOWN_Style, 黑体, {FONT_SIZE}, &H00FFFFFF, &H00FFFFFF, &H00000000, &H00000000, 0, 0, 0, 0, 100, 100, 0.00, 0.00, 1, 2, 0, 7, 0, 0, 0, 0");
         sb.AppendLine("[Events]");
         sb.AppendLine("Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text");
-            
+
         PositionController controller = new();   // 弹幕位置控制器
         Array.Sort(danmakus, comparer);
         foreach (DanmakuItem danmaku in danmakus)

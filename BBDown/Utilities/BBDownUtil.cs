@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using BBDown.Core.Util;
 using BBDown.Core;
 using System.Collections.Generic;
@@ -220,13 +220,13 @@ public static partial class BBDownUtil
     /// <param name="cid"></param>
     /// <param name="aid"></param>
     /// <returns></returns>
-    public static async Task<List<ViewPoint>> FetchPointsAsync(string cid, string aid)
+    public static async Task<List<ViewPoint>> FetchPointsAsync(string cid, string aid, CancellationToken token = default)
     {
         var points = new List<ViewPoint>();
         try
         {
             string api = $"https://api.bilibili.com/x/player/wbi/v2?cid={cid}&aid={aid}";
-            string json = await HTTPUtil.GetWebSourceAsync(api);
+            string json = await HTTPUtil.GetWebSourceAsync(api, token: token);
             using var infoJson = JsonDocument.Parse(json);
             if (infoJson.RootElement.TryGetPropertySafe("data")?.TryGetProperty("view_points", out JsonElement vPoint) == true)
             {
@@ -298,7 +298,7 @@ public static partial class BBDownUtil
 
     private static string GetMixinKey(string orig)
     {
-        byte[] mixinKeyEncTab = 
+        byte[] mixinKeyEncTab =
         [
             46, 47, 18, 2, 53, 8, 23, 32, 15, 50, 10, 31, 58, 3, 45, 35,
             27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13
@@ -312,12 +312,12 @@ public static partial class BBDownUtil
         return tmp.ToString();
     }
 
-    public static async Task<(bool isLoggedIn, bool cookieExpired)> CheckLoginWithDetails(string cookie)
+    public static async Task<(bool isLoggedIn, bool cookieExpired)> CheckLoginWithDetails(string cookie, CancellationToken token = default)
     {
         try
         {
             var api = "https://api.bilibili.com/x/web-interface/nav";
-            var source = await HTTPUtil.GetWebSourceAsync(api);
+            var source = await HTTPUtil.GetWebSourceAsync(api, token: token);
             using var navDoc = JsonDocument.Parse(source);
             var json = navDoc.RootElement;
             int code = json.GetPropertySafe("code").GetInt32();

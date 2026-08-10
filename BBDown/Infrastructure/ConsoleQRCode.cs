@@ -1,4 +1,4 @@
-﻿using QRCoder;
+using QRCoder;
 using System;
 
 namespace BBDown;

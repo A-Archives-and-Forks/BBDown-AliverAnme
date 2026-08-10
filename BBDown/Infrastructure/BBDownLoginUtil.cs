@@ -1,4 +1,4 @@
-﻿using QRCoder;
+using QRCoder;
 using BBDown.Core;
 using System;
 using System.IO;

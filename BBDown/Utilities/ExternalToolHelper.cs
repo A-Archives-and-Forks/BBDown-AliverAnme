@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using BBDown.Core;
 using System.Diagnostics;
 using System.IO;
@@ -44,7 +44,7 @@ public static class ExternalToolHelper
     public static string? FindExecutable(string name)
     {
         var fileExt = OperatingSystem.IsWindows() ? ".exe" : "";
-        var searchPath = new [] { Environment.CurrentDirectory, Program.APP_DIR };
+        var searchPath = new[] { Environment.CurrentDirectory, Program.APP_DIR };
         var envPath = Environment.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];
         return searchPath.Concat(envPath).Select(p => Path.Combine(p, name + fileExt)).FirstOrDefault(File.Exists);
     }

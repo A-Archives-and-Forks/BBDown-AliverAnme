@@ -1,0 +1,17 @@
+# 统一换行符为 LF：仓库基线应为 LF，避免跨平台 diff 噪音。
+# git 会在检入时把文本文件规范为 LF；二进制文件（如 device.wvd）不受影响。
+# 与 .editorconfig 的 end_of_line = lf 保持一致。
+* text=auto eol=lf
+
+# 明确标记二进制文件，防止被当作文本做行尾归一化
+*.wvd binary
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.ico binary
+*.woff binary
+*.woff2 binary
+*.ttf binary
+*.zip binary
+*.7z binary

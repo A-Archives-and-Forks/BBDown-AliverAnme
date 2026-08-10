@@ -16,7 +16,7 @@ namespace BBDown;
 
 internal partial class Program
 {
-    private static async Task DecryptDrmAsync(ParsedResult parsed, string videoPath, string audioPath, MyOption myOption)
+    private static async Task DecryptDrmAsync(ParsedResult parsed, string videoPath, string audioPath, MyOption myOption, CancellationToken token = default)
     {
         Logger.Log("检测到DRM加密，正在获取解密密钥...");
 
@@ -32,49 +32,49 @@ internal partial class Program
         {
             try
             {
-            if (parsed.DrmTechType == 2)
-            {
-                if (!string.IsNullOrEmpty(parsed.PsshBase64))
+                if (parsed.DrmTechType == 2)
                 {
-                    var wvd = !string.IsNullOrEmpty(myOption.WvdPath) && File.Exists(myOption.WvdPath)
-                        ? myOption.WvdPath
-                        : FindTool("device.wvd") ?? Path.Combine(AppContext.BaseDirectory, "device.wvd");
-                    if (File.Exists(wvd))
+                    if (!string.IsNullOrEmpty(parsed.PsshBase64))
                     {
-                        var keyResult = await DrmDecryptor.GetKeyWidevineAsync(parsed.PsshBase64, wvd);
-                        if (keyResult != null)
+                        var wvd = !string.IsNullOrEmpty(myOption.WvdPath) && File.Exists(myOption.WvdPath)
+                            ? myOption.WvdPath
+                            : FindTool("device.wvd") ?? Path.Combine(AppContext.BaseDirectory, "device.wvd");
+                        if (File.Exists(wvd))
                         {
-                            parsed.KeyHex = keyResult.Value.keyHex;
-                            parsed.KidHex = keyResult.Value.kid;
+                            var keyResult = await DrmDecryptor.GetKeyWidevineAsync(parsed.PsshBase64, wvd);
+                            if (keyResult != null)
+                            {
+                                parsed.KeyHex = keyResult.Value.keyHex;
+                                parsed.KidHex = keyResult.Value.kid;
+                            }
+                        }
+                        else
+                        {
+                            Logger.LogWarn("Widevine DRM 需要 device.wvd 文件，请放置到程序目录");
                         }
                     }
-                    else
-                    {
-                        Logger.LogWarn("Widevine DRM 需要 device.wvd 文件，请放置到程序目录");
-                    }
+                }
+                else
+                {
+                    Logger.LogWarn("当前DRM类型不支持自动解密，请使用 --key --kid 手动提供密钥");
                 }
             }
-            else
+            catch (Exception ex) when (ex is IOException or InvalidOperationException or FormatException)
             {
-                Logger.LogWarn("当前DRM类型不支持自动解密，请使用 --key --kid 手动提供密钥");
+                Logger.LogWarn($"自动密钥提取异常: {ex.Message}");
             }
-        }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or FormatException)
-        {
-            Logger.LogWarn($"自动密钥提取异常: {ex.Message}");
-        }
 
-        if (string.IsNullOrEmpty(parsed.KeyHex))
-        {
-            Logger.LogWarn("============================================");
-            Logger.LogWarn("自动密钥提取失败，文件将保持加密状态。");
-            Logger.LogWarn("");
-            Logger.LogWarn("解决方案：");
-            Logger.LogWarn("  1. 确保 device.wvd 文件放置在程序目录下");
-            Logger.LogWarn($"  2. 或手动指定: BBDown <url> --key <KEY_HEX> --kid {parsed.KidHex}");
-            Logger.LogWarn("============================================");
-            return;
-        }
+            if (string.IsNullOrEmpty(parsed.KeyHex))
+            {
+                Logger.LogWarn("============================================");
+                Logger.LogWarn("自动密钥提取失败，文件将保持加密状态。");
+                Logger.LogWarn("");
+                Logger.LogWarn("解决方案：");
+                Logger.LogWarn("  1. 确保 device.wvd 文件放置在程序目录下");
+                Logger.LogWarn($"  2. 或手动指定: BBDown <url> --key <KEY_HEX> --kid {parsed.KidHex}");
+                Logger.LogWarn("============================================");
+                return;
+            }
         }
 
         Logger.Log($"密钥获取成功: KEY={parsed.KeyHex[..Math.Min(8, parsed.KeyHex.Length)]}...");
@@ -92,7 +92,7 @@ internal partial class Program
         {
             Logger.Log("解密视频流...");
             var tmpVideo = videoPath + ".dec";
-            await RunDecryptAsync(mp4decrypt, parsed.KidHex, parsed.KeyHex, videoPath, tmpVideo);
+            await RunDecryptAsync(mp4decrypt, parsed.KidHex, parsed.KeyHex, videoPath, tmpVideo, token);
             if (File.Exists(tmpVideo) && new FileInfo(tmpVideo).Length > 0)
             {
                 File.Delete(videoPath);
@@ -105,7 +105,7 @@ internal partial class Program
         {
             Logger.Log("解密音频流...");
             var tmpAudio = audioPath + ".dec";
-            await RunDecryptAsync(mp4decrypt, parsed.KidHex, parsed.KeyHex, audioPath, tmpAudio);
+            await RunDecryptAsync(mp4decrypt, parsed.KidHex, parsed.KeyHex, audioPath, tmpAudio, token);
             if (File.Exists(tmpAudio) && new FileInfo(tmpAudio).Length > 0)
             {
                 File.Delete(audioPath);
@@ -115,14 +115,14 @@ internal partial class Program
         }
     }
 
-    private static async Task RunDecryptAsync(string mp4decrypt, string kid, string key, string input, string output)
+    private static async Task RunDecryptAsync(string mp4decrypt, string kid, string key, string input, string output, CancellationToken token = default)
     {
         // Write key to a temp file to avoid exposing it on the command line
         // (visible via ps aux / /proc/<pid>/cmdline to other local users)
         var keyFile = Path.GetTempFileName();
         try
         {
-            await File.WriteAllTextAsync(keyFile, $"{kid}:{key}");
+            await File.WriteAllTextAsync(keyFile, $"{kid}:{key}", token);
 
             var psi = new ProcessStartInfo
             {
@@ -137,7 +137,16 @@ internal partial class Program
             using var proc = Process.Start(psi);
             if (proc == null) return;
             var stderrTask = proc.StandardError.ReadToEndAsync();
-            await proc.WaitForExitAsync();
+            try
+            {
+                await proc.WaitForExitAsync(token);
+            }
+            catch (OperationCanceledException)
+            {
+                // 用户取消：进程仍在运行，必须 Kill 掉，避免留下孤儿 mp4decrypt。
+                try { proc.Kill(true); } catch { /* 进程可能已自行退出 */ }
+                throw;
+            }
 
             if (proc.ExitCode != 0)
             {
