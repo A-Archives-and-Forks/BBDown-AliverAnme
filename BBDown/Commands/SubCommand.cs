@@ -151,7 +151,7 @@ public class SubCheckCommand : Command<SubCheckSettings>
                     if (string.IsNullOrEmpty(resolved)) continue;
 
                     var fetcher = FetcherFactory.CreateFetcher(resolved, settings.UseIntlApi);
-                    var vInfo = await fetcher.FetchAsync(resolved);
+                    var vInfo = await fetcher.FetchAsync(resolved, cancellationToken);
 
                     var allAids = vInfo.PagesInfo.Select(p => p.aid).Where(a => !string.IsNullOrEmpty(a)).Distinct().ToList();
                     var history = SubscriptionStore.LoadHistory(sub.Target);

@@ -1,4 +1,4 @@
-﻿using BBDown.Core.Entity;
+using BBDown.Core.Entity;
 using BBDown.Core.Util;
 using System.Text.Json;
 using static BBDown.Core.Entity.Entity;
@@ -13,7 +13,7 @@ namespace BBDown.Core.Fetcher;
 /// </summary>
 public class FavListFetcher : IFetcher
 {
-    public async Task<VInfo> FetchAsync(string id)
+    public async Task<VInfo> FetchAsync(string id, CancellationToken cancellationToken = default)
     {
         id = id[6..];
         var parts = id.Split(':', 2);
@@ -24,7 +24,7 @@ public class FavListFetcher : IFetcher
         if (favId == "")
         {
             var favListApi = $"https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid={mid}";
-            using var favDoc = JsonDocument.Parse(await HTTPUtil.GetWebSourceAsync(favListApi));
+            using var favDoc = JsonDocument.Parse(await HTTPUtil.GetWebSourceAsync(favListApi, token: cancellationToken));
             var list = favDoc.RootElement.GetPropertySafe("data").EnumerateArraySafe("list");
             var firstFav = list.FirstOrDefault();
             if (firstFav.ValueKind == System.Text.Json.JsonValueKind.Undefined)
@@ -37,7 +37,7 @@ public class FavListFetcher : IFetcher
         List<Page> pagesInfo = new();
 
         var api = $"https://api.bilibili.com/x/v3/fav/resource/list?media_id={favId}&pn=1&ps={pageSize}&order=mtime&type=2&tid=0&platform=web";
-        var json = await HTTPUtil.GetWebSourceAsync(api);
+        var json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
         var data = infoJson.RootElement.GetPropertySafe("data");
         var favInfo = data.GetPropertySafe("info");
@@ -66,7 +66,7 @@ public class FavListFetcher : IFetcher
                 {
                     try
                     {
-                        var tmpInfo = await new NormalInfoFetcher().FetchAsync(m.GetValueAsStringSafe("id"));
+                        var tmpInfo = await new NormalInfoFetcher().FetchAsync(m.GetValueAsStringSafe("id"), cancellationToken);
                         foreach (var item in tmpInfo.PagesInfo)
                         {
                             Page p = new(index++, item)
@@ -116,7 +116,7 @@ public class FavListFetcher : IFetcher
         for (int page = 2; page <= totalPage; page++)
         {
             api = $"https://api.bilibili.com/x/v3/fav/resource/list?media_id={favId}&pn={page}&ps={pageSize}&order=mtime&type=2&tid=0&platform=web";
-            json = await HTTPUtil.GetWebSourceAsync(api);
+            json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
             using var jsonDoc = JsonDocument.Parse(json);
             await ProcessPageAsync(jsonDoc.RootElement.GetPropertySafe("data"));
         }

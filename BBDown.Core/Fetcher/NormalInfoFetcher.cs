@@ -1,4 +1,4 @@
-﻿using BBDown.Core.Entity;
+using BBDown.Core.Entity;
 using BBDown.Core.Util;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -9,10 +9,10 @@ namespace BBDown.Core.Fetcher;
 
 public partial class NormalInfoFetcher : IFetcher
 {
-    public async Task<VInfo> FetchAsync(string id)
+    public async Task<VInfo> FetchAsync(string id, CancellationToken cancellationToken = default)
     {
         string api = $"https://api.bilibili.com/x/web-interface/view?aid={id}";
-        string json = await HTTPUtil.GetWebSourceAsync(api);
+        string json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
         int code = infoJson.RootElement.GetInt32Safe("code");
         if (code != 0)
@@ -68,10 +68,10 @@ public partial class NormalInfoFetcher : IFetcher
         if (isSteinGate == 1) // 互动视频获取分P信息
         {
             var playerSoApi = $"https://api.bilibili.com/x/player.so?bvid={bvid}&id=cid:{cid}";
-            var playerSoText = await HTTPUtil.GetWebSourceAsync(playerSoApi);
+            var playerSoText = await HTTPUtil.GetWebSourceAsync(playerSoApi, token: cancellationToken);
             var playerSoXml = new XmlDocument();
             playerSoXml.LoadXml($"<root>{playerSoText}</root>");
-                
+
             var interactionNode = playerSoXml.SelectSingleNode("//interaction");
 
             if (interactionNode is { InnerText.Length: > 0 })
@@ -79,7 +79,7 @@ public partial class NormalInfoFetcher : IFetcher
                 using var graphDoc = JsonDocument.Parse(interactionNode.InnerText);
                 var graphVersion = graphDoc.RootElement.GetInt64Safe("graph_version");
                 var edgeInfoApi = $"https://api.bilibili.com/x/stein/edgeinfo_v2?graph_version={graphVersion}&bvid={bvid}";
-                var edgeInfoJson = await HTTPUtil.GetWebSourceAsync(edgeInfoApi);
+                var edgeInfoJson = await HTTPUtil.GetWebSourceAsync(edgeInfoApi, token: cancellationToken);
                 using var edgeDoc = JsonDocument.Parse(edgeInfoJson);
                 var edgeInfoData = edgeDoc.RootElement.GetPropertySafe("data");
                 var questions = edgeInfoData.GetPropertySafe("edges").EnumerateArraySafe("questions")

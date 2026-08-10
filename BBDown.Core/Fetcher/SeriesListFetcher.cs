@@ -1,4 +1,4 @@
-﻿using BBDown.Core.Entity;
+using BBDown.Core.Entity;
 using BBDown.Core.Util;
 using System.Text.Json;
 using static BBDown.Core.Entity.Entity;
@@ -11,13 +11,13 @@ namespace BBDown.Core.Fetcher;
 /// </summary>
 public class SeriesListFetcher : IFetcher
 {
-    public async Task<VInfo> FetchAsync(string id)
+    public async Task<VInfo> FetchAsync(string id, CancellationToken cancellationToken = default)
     {
         //套用BBDownMediaListFetcher.cs的代码
         //只修改id = id.Substring(12);以及api地址的type=5
         id = id[12..];
         var api = $"https://api.bilibili.com/x/v1/medialist/info?type=5&biz_id={id}&tid=0";
-        var json = await HTTPUtil.GetWebSourceAsync(api);
+        var json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
         var infoRoot = infoJson.RootElement;
         var data = infoRoot.GetPropertySafe("data");
@@ -40,7 +40,7 @@ public class SeriesListFetcher : IFetcher
         while (hasMore)
         {
             var listApi = $"https://api.bilibili.com/x/v2/medialist/resource/list?type=5&oid={oid}&otype=2&biz_id={id}&bvid=&with_current=true&mobi_app=web&ps=20&direction=false&sort_field=1&tid=0&desc=true";
-            json = await HTTPUtil.GetWebSourceAsync(listApi);
+            json = await HTTPUtil.GetWebSourceAsync(listApi, token: cancellationToken);
             using var listJson = JsonDocument.Parse(json);
             data = listJson.RootElement.GetPropertySafe("data");
             // 分页接口返回业务错误（data 为 null / code != 0，如系列中途被删除、风控）时，

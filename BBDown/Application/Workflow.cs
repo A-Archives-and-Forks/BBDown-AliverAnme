@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Threading.Tasks;
@@ -77,7 +77,7 @@ internal partial class Program
         return (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay);
     }
 
-    public static async Task<(string fetchedAid, VInfo vInfo, string apiType)> GetVideoInfoAsync(MyOption myOption, string aidOri, string input)
+    public static async Task<(string fetchedAid, VInfo vInfo, string apiType)> GetVideoInfoAsync(MyOption myOption, string aidOri, string input, CancellationToken cancellationToken = default)
     {
         // 加载认证信息
         LoadCredentials(myOption);
@@ -86,7 +86,7 @@ internal partial class Program
         if (myOption is { UseIntlApi: false, UseTvApi: false } && Config.Current.Area == "")
         {
             Logger.Log("检测账号登录...");
-            var (isLoggedIn, cookieExpired) = await BBDownUtil.CheckLoginWithDetails(Config.Current.Cookie);
+            var (isLoggedIn, cookieExpired) = await BBDownUtil.CheckLoginWithDetails(Config.Current.Cookie, cancellationToken);
             if (!isLoggedIn)
             {
                 if (cookieExpired)
@@ -111,7 +111,7 @@ internal partial class Program
         }
 
         Logger.Log("获取aid...");
-        aidOri = await UrlResolver.ResolveAsync(input);
+        aidOri = await UrlResolver.ResolveAsync(input, cancellationToken);
         Logger.Log($"获取aid结束: {aidOri}");
 
         if (string.IsNullOrEmpty(aidOri))
@@ -126,7 +126,7 @@ internal partial class Program
         // 只输入 EP/SS 时优先按番剧查找，如果找不到则尝试按课程查找
         try
         {
-            vInfo = await fetcher.FetchAsync(aidOri);
+            vInfo = await fetcher.FetchAsync(aidOri, cancellationToken);
         }
         // 回退只对 ep: 前缀成立：其余输入（mid:、favlist:、listBizId: 等）与课程无关，
         // 此前它们同样会走进这里，打印"未找到此 EP/SS 对应番剧信息"这类无关提示，
@@ -147,7 +147,7 @@ internal partial class Program
 
             Logger.Log("获取视频信息...");
             fetcher = FetcherFactory.CreateFetcher(aidOri, myOption.UseIntlApi);
-            vInfo = await fetcher.FetchAsync(aidOri);
+            vInfo = await fetcher.FetchAsync(aidOri, cancellationToken);
         }
 
         string title = vInfo.Title;

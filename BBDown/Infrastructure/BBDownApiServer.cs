@@ -3,8 +3,10 @@ using System.Collections.Generic;
 using System.Data;
 using System.Linq;
 using System.Net;
+using System.Net.Sockets;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
 using System.Text.Json.Serialization.Metadata;
@@ -28,31 +30,38 @@ public class BBDownApiServer
     private readonly string? _serveToken;
 
     /// <summary>
+    /// 服务端固定的任务完成回调地址（serve 启动时经 --notify-webhook 配置）。
+    /// 只接受管理员在启动参数里显式配置的地址；客户端请求体中的回调字段一律忽略，
+    /// 防止任意客户端让本机服务器向攻击者指定的地址 POST 任务数据（SSRF 横向面）。
+    /// </summary>
+    private readonly string? _notifyWebhook;
+
+    /// <summary>
+    /// 服务器就绪信号：Kestrel 开始监听后触发。测试用它等待服务器真正可连，
+    /// 避免 WebApplication 启动慢（如 CI 首次运行）时测试立即发请求撞上
+    /// Connection refused 竞态。生产代码不依赖此信号，仅作同步点。
+    /// </summary>
+    internal readonly TaskCompletionSource Ready = new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+    /// <summary>
     /// 下载任务的生命周期 token。必须独立于 HTTP 请求：
     /// Minimal API 注入的 CancellationToken 是 HttpContext.RequestAborted，
     /// 它在响应写完后即失效，会让后台下载在客户端拿到 200 的瞬间被取消。
     /// 该 token 只在服务器关停时触发。
     /// </summary>
     private readonly CancellationTokenSource _serverLifetimeCts = new();
-    // 已完成任务持久化：serve 是长驻进程，任务记录只留在内存会在重启后丢失
-    private static readonly string _taskFile = Path.Combine(Environment.CurrentDirectory, "bbdown-tasks.json");
+    // 已完成任务持久化：serve 是长驻进程，任务记录只留在内存会在重启后丢失。
+    // 默认写到进程当前目录；测试可通过构造函数注入临时路径，避免多实例互相污染
+    private readonly string _taskFile;
 
-    // webhook 回调专用客户端：关闭自动重定向。共享的 AppHttpClient（AllowAutoRedirect=true）
-    // 会在回调时跟随攻击者可控的 Location 重定向到内网/元数据地址，绕过 IsSafeCallbackUrl
-    // 的地址校验。专用 handler 让回调只连 IsSafeCallbackUrl 校验过的原始地址。
-    private static readonly HttpClient _callbackClient = new(new SocketsHttpHandler
-    {
-        AllowAutoRedirect = false,
-        PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-    })
-    { Timeout = TimeSpan.FromMinutes(2) };
-
-    public BBDownApiServer(int maxConcurrent = 3, string? serveToken = null)
+    public BBDownApiServer(int maxConcurrent = 3, string? serveToken = null, string? taskFilePath = null, string? notifyWebhook = null)
     {
         // 防御：maxConcurrent <= 0 会让 SemaphoreSlim 构造抛 ArgumentOutOfRangeException，
         // serve 作为长驻进程应以可读错误退出而非崩溃
         _concurrencyLimiter = new SemaphoreSlim(Math.Max(1, maxConcurrent), Math.Max(1, maxConcurrent));
         _serveToken = serveToken;
+        _notifyWebhook = notifyWebhook;
+        _taskFile = taskFilePath ?? Path.Combine(Environment.CurrentDirectory, "bbdown-tasks.json");
     }
 
     public void SetUpServer()
@@ -64,26 +73,18 @@ public class BBDownApiServer
         {
             options.SerializerOptions.TypeInfoResolver = JsonTypeInfoResolver.Combine(options.SerializerOptions.TypeInfoResolver, AppJsonSerializerContext.Default);
         });
-        builder.Services.AddCors((options) =>
-        {
-            options.AddPolicy("AllowAnyOrigin",
-                policy =>
-                {
-                    policy.AllowAnyOrigin()
-                          .AllowAnyMethod()
-                          .AllowAnyHeader();
-                });
-        });
         app = builder.Build();
         // 服务器关停时取消仍在进行的下载，避免进程挂在未完成的任务上
         app.Lifetime.ApplicationStopping.Register(() =>
         {
             if (!_serverLifetimeCts.IsCancellationRequested) _serverLifetimeCts.Cancel();
         });
-        app.UseCors("AllowAnyOrigin");
-        // 可选 token 认证：serve 默认监听 0.0.0.0 且 CORS 全放开，
-        // 配置了 --serve-token 后所有任务/查询端点要求 X-Serve-Token 匹配，否则 401。
-        // 未配置 token 时保持向后兼容（仅本地信任环境）。
+        // 服务器就绪信号：Kestrel 实际开始监听后触发，测试据此等待可连接
+        app.Lifetime.ApplicationStarted.Register(() => Ready.TrySetResult());
+        // 可选 token 认证：serve 配置了 --serve-token 后所有任务/查询端点要求
+        // X-Serve-Token 匹配，否则 401。非回环监听（0.0.0.0/具体网卡 IP）在 Run 阶段
+        // 强制要求 token（见 Run 内的回环检查），本地回环监听未配置 token 时保持
+        // 向后兼容（仅本机信任环境）。
         if (!string.IsNullOrEmpty(_serveToken))
         {
             app.Use(async (context, next) =>
@@ -91,6 +92,7 @@ public class BBDownApiServer
                 var path = context.Request.Path;
                 bool isApi = path.StartsWithSegments("/get-tasks")
                     || path.StartsWithSegments("/add-task")
+                    || path.StartsWithSegments("/cancel")
                     || path.StartsWithSegments("/remove-finished");
                 if (isApi && context.Request.Headers["X-Serve-Token"] != _serveToken)
                 {
@@ -133,8 +135,9 @@ public class BBDownApiServer
             DownloadTask? task;
             lock (_taskLock)
             {
-                task = finishedTasks.FirstOrDefault(a => a.Aid == id)
-                    ?? runningTasks.FirstOrDefault(a => a.Aid == id);
+                // 匹配顺序：JobId 优先（/add-task 现在返回的是 JobId GUID，旧持久化记录
+                // 无 JobId 时为空串）；其次回退到 Aid / 提交 Url，兼容旧客户端与旧记录。
+                task = FindTaskByIdLocked(id, includeFinished: true, includeRunning: true);
             }
             if (task is null)
             {
@@ -153,33 +156,57 @@ public class BBDownApiServer
             // Aria2cArgs 会被拼入 aria2c 命令行、Aria2cPath 会覆盖静态进程路径，
             // 允许客户端控制这些字段等价于任意命令/程序执行（RCE）。
             SanitizeUntrustedOptions(req);
-            if (!IsSafeCallbackUrl(req.CallBackWebHook))
-            {
-                return Results.BadRequest("回调地址不合法：仅支持 http/https 且禁止指向回环或链路本地地址");
-            }
+            // 任务完成回调只由服务端启动配置（--notify-webhook）决定，客户端请求体
+            // 中的 CallBackWebHook 已被 SanitizeUntrustedOptions 清零，这里不再读取。
             // 使用服务器生命周期 token 而非请求 token，否则下载会随响应结束一同被取消。
-            // AddDownloadTaskAsync 内部已收敛所有异常，此处兜底避免遗漏变成无人观察的 Task 异常
-            _ = AddDownloadTaskAsync(req, req.CallBackWebHook, _serverLifetimeCts.Token)
+            // ProcessDownloadTaskAsync 内部已收敛所有异常，此处兜底避免遗漏变成无人观察的 Task 异常。
+            // 返回 JobId（GUID）：客户端可据此查询 /get-tasks/{id} 或取消 /cancel/{id}。
+            // JobId 在任务入队时即生成，与 URL 解析出的 Aid 无关——完整 URL 提交后仍可查询/取消。
+            // 用源生成上下文 + 202：Results.Accepted 走 Web 默认 camelCase 序列化，
+            // 与 API 其余端点（PascalCase 源生成）不一致，且无法用 AOT 上下文类型化。
+            // 先入队拿到 JobId：任何解析/下载都在锁外的后台任务中异步推进，
+            // 客户端拿到 202 + JobId 后即可通过 /get-tasks/{id} 或 /cancel/{id} 命中。
+            var task = EnqueueDownloadTask(req);
+            _ = ProcessDownloadTaskAsync(req, task, _notifyWebhook, _serverLifetimeCts.Token)
                 .ContinueWith(t => Logger.LogError($"任务异常终止: {t.Exception?.GetBaseException().Message}"),
                     TaskContinuationOptions.OnlyOnFaulted);
+            return Results.Json(new AddTaskAccepted(task.JobId), AppJsonSerializerContext.Default.AddTaskAccepted, statusCode: StatusCodes.Status202Accepted);
+        });
+        // 取消任务：仅对 running/queued 生效（finished 任务不可取消）。
+        // 单独 Cts 触发后，正在下载的分片会经 CancellationToken 中止，队列中等待的
+        // 任务会在占位释放后直接标记 Cancelled。
+        // Cancel() 必须在 _taskLock 内调用：后台完成路径在同一把锁内 Dispose 该 CTS，
+        // 若在锁外 Cancel 可能撞上已释放的令牌源抛 ObjectDisposedException。
+        app.MapPost("/cancel/{id}", (string id) =>
+        {
+            DownloadTask? task;
+            lock (_taskLock)
+            {
+                // 匹配顺序与 /get-tasks/{id} 一致：JobId 优先，其次 Aid / Url 回退。
+                // Cancel() 必须在 _taskLock 内调用：后台完成路径在同一把锁内 Dispose 该 CTS，
+                // 若在锁外 Cancel 可能撞上已释放的令牌源抛 ObjectDisposedException。
+                task = FindTaskByIdLocked(id, includeFinished: false, includeRunning: true);
+                if (task is null) return Results.NotFound();
+                task.CancelCts.Cancel();
+            }
             return Results.Ok();
         });
         var finishedRemovalApi = app.MapGroup("remove-finished");
-        finishedRemovalApi.MapGet("/", () =>
+        finishedRemovalApi.MapDelete("/", () =>
         {
             lock (_taskLock) { finishedTasks.RemoveAll(t => true); }
             PersistFinishedTasks();
             return Results.Ok();
         });
-        finishedRemovalApi.MapGet("/failed", () =>
+        finishedRemovalApi.MapDelete("/failed", () =>
         {
             lock (_taskLock) { finishedTasks.RemoveAll(t => !t.IsSuccessful); }
             PersistFinishedTasks();
             return Results.Ok();
         });
-        finishedRemovalApi.MapGet("/{id}", (string id) =>
+        finishedRemovalApi.MapDelete("/{id}", (string id) =>
         {
-            lock (_taskLock) { finishedTasks.RemoveAll(t => t.Aid == id); }
+            lock (_taskLock) { finishedTasks.RemoveAll(t => MatchesTaskId(t, id)); }
             PersistFinishedTasks();
             return Results.Ok();
         });
@@ -198,6 +225,15 @@ public class BBDownApiServer
             // 导致监听地址无效时进程仍以 0 退出。ServeCommand 捕获后返回非零退出码。
             throw new ArgumentException($"{url} 不是合法的 http URL");
         }
+        // 默认安全边界：非回环监听（0.0.0.0 / :: / 具体网卡 IP 等）会把任务提交/查询/取消
+        // 端点暴露到局域网甚至公网，未配置 --serve-token 时任意来源都能提交下载任务并
+        // 触碰本机磁盘。这里在启动前强制要求 token，拒绝以不安全配置启动。
+        // 回环（127.0.0.1 / localhost / [::1] / ::1）仍是受信任的本地边界，保持向后兼容。
+        if (!IsLoopbackListenAddress(uriResult!) && string.IsNullOrEmpty(_serveToken))
+        {
+            throw new InvalidOperationException(
+                $"监听地址 {url} 不是回环地址（0.0.0.0 / :: / 具体网卡 IP 等），必须配置 --serve-token 才能启动，否则任意客户端都能提交任务并访问本机文件。");
+        }
         app.Urls.Add(url);
         try
         {
@@ -209,22 +245,62 @@ public class BBDownApiServer
         }
     }
 
+    /// <summary>
+    /// 监听地址是否属于本机回环：127.0.0.1、localhost、[::1]、::1。
+    /// 通配监听 0.0.0.0 / :: 与具体网卡 IP 一律视为非回环。
+    /// 用 DnsSafeHost（IPv6 字面量不带方括号）以便 IPAddress.TryParse 解析 [::1]。
+    /// </summary>
+    private static bool IsLoopbackListenAddress(Uri listenUri)
+    {
+        var host = listenUri.DnsSafeHost;
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        if (IPAddress.TryParse(host, out var ip)) return IPAddress.IsLoopback(ip);
+        return false;
+    }
+
     // 串行化任务文件的写入：多任务并发完成时若直接 File.WriteAllText，
-    // 后写者会因 FileShare.None 抛 IOException 被吞成日志，丢失刚完成任务的记录
+    // 后写者会因 FileShare.None 抛 IOException 被吞成日志，丢失刚完成任务的记录。
+    // 快照生成也在该锁内进行（见 PersistFinishedTasks），锁顺序固定为 _persistLock → _taskLock。
     private static readonly object _persistLock = new();
+
+    // 保留策略：已完成任务列表最多保留条数 / 最大保留天数。
+    // serve 是长驻进程，任务记录无限累积会让 bbdown-tasks.json 无限膨胀。
+    private const int MaxFinishedTasks = 1000;
+    private static readonly TimeSpan FinishedTaskRetention = TimeSpan.FromDays(30);
 
     /// <summary>
     /// 把已完成任务快照写入磁盘，serve 重启后可恢复。
+    /// 原子写：先写临时文件、flush 到磁盘，再 File.Move 覆盖正式文件，
+    /// 中途进程崩溃/断电不会留下半截 JSON 覆盖掉上一份有效状态。
     /// 写失败只降级为日志，不影响下载流程。
+    /// 锁顺序：快照生成（Trim + 拷贝）与写盘都在 _persistLock 内完成，先取 _persistLock
+    /// 再取 _taskLock。所有 PersistFinishedTasks() 调用点都发生在 _taskLock 释放之后，
+    /// 因此与调用方持有的 _taskLock 不构成循环等待，不会死锁。
     /// </summary>
     private void PersistFinishedTasks()
     {
         try
         {
-            List<DownloadTask> snapshot;
-            lock (_taskLock) { snapshot = finishedTasks.Select(t => t.Snapshot()).ToList(); }
-            var json = JsonSerializer.Serialize(snapshot, AppJsonSerializerContext.Default.ListDownloadTask);
-            lock (_persistLock) { File.WriteAllText(_taskFile, json); }
+            lock (_persistLock)
+            {
+                List<DownloadTask> snapshot;
+                lock (_taskLock)
+                {
+                    // 写盘前先按保留策略截断，避免列表膨胀
+                    TrimFinishedTasksLocked();
+                    snapshot = finishedTasks.Select(t => t.Snapshot()).ToList();
+                }
+                var json = JsonSerializer.Serialize(snapshot, AppJsonSerializerContext.Default.ListDownloadTask);
+                var tmpFile = _taskFile + ".tmp";
+                using (var fs = new FileStream(tmpFile, FileMode.Create, FileAccess.Write, FileShare.None))
+                using (var writer = new StreamWriter(fs, new UTF8Encoding(encoderShouldEmitUTF8Identifier: false)))
+                {
+                    writer.Write(json);
+                    writer.Flush();
+                    fs.Flush(flushToDisk: true);
+                }
+                File.Move(tmpFile, _taskFile, overwrite: true);
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
@@ -233,7 +309,25 @@ public class BBDownApiServer
     }
 
     /// <summary>
-    /// serve 启动时恢复上次运行留下的已完成任务记录。文件损坏时静默忽略。
+    /// 在 <see cref="_taskLock"/> 持锁前提下，按保留策略截断已完成任务列表：
+    /// 超龄记录与超出 <see cref="MaxFinishedTasks"/> 的溢出记录被移除。
+    /// </summary>
+    private void TrimFinishedTasksLocked()
+    {
+        if (finishedTasks.Count == 0) return;
+        long now = DateTimeOffset.Now.ToUnixTimeSeconds();
+        // 超龄优先移除；保留下来的仍超过上限则按创建时间保留最新的
+        var cutoff = now - (long)FinishedTaskRetention.TotalSeconds;
+        finishedTasks.RemoveAll(t => t.TaskCreateTime < cutoff);
+        if (finishedTasks.Count > MaxFinishedTasks)
+        {
+            finishedTasks.RemoveRange(0, finishedTasks.Count - MaxFinishedTasks);
+        }
+    }
+
+    /// <summary>
+    /// serve 启动时恢复上次运行留下的已完成任务记录。
+    /// 文件损坏时静默忽略，且不因恢复出的记录破坏启动。
     /// </summary>
     private void LoadFinishedTasks()
     {
@@ -243,7 +337,11 @@ public class BBDownApiServer
             var json = File.ReadAllText(_taskFile);
             var loaded = JsonSerializer.Deserialize(json, AppJsonSerializerContext.Default.ListDownloadTask);
             if (loaded is null) return;
-            lock (_taskLock) { finishedTasks.AddRange(loaded); }
+            lock (_taskLock)
+            {
+                finishedTasks.AddRange(loaded);
+                TrimFinishedTasksLocked();
+            }
             Logger.LogDebug("已恢复 {0} 条历史任务记录", loaded.Count);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
@@ -279,8 +377,10 @@ public class BBDownApiServer
         req.UserAgent = "";
         // NotifyWebhook 是 CLI 功能：serve 的 /add-task 请求体若携带它，会绕过
         // CallBackWebHook 的 SSRF 校验，让服务器向攻击者指定的任意地址 POST 任务数据。
-        // serve 下的任务回调统一走经过 IsSafeCallbackUrl 校验的 CallBackWebHook。
         req.NotifyWebhook = "";
+        // 任务完成回调改为服务端 allowlist：只接受 serve 启动时 --notify-webhook 配置的
+        // 固定地址，客户端请求体中的 CallBackWebHook 一律清零（此前仅靠 IsSafeCallbackUrl
+        // 校验后仍接受客户端传值——现在完全忽略客户端回调，杜绝任意客户端驱动本机 POST）。
         // FilePattern/MultiFilePattern 会被 SetUpWork 当作 savePathFormat 拼进保存路径，
         // FormatSavePath 只替换占位符、字面量里的 ".." 段原样保留，BBDownMuxer 会按 savePath
         // 建目录——攻击者可借此任意创建目录/写入文件（路径穿越面）。serve 任务一律回落默认模板。
@@ -291,6 +391,9 @@ public class BBDownApiServer
         // 需要手动 --key/--kid 的操作者应使用 CLI 而非 API。
         req.DrmKeyHex = "";
         req.DrmKidHex = "";
+        // 任务完成回调只由服务端启动配置（--notify-webhook）决定，客户端请求体中的
+        // 回调字段被完全忽略（服务端 allowlist，不接受客户端指定）。
+        req.CallBackWebHook = "";
 
         // host 字段决定凭据（Cookie/access_token）的发送目标：serve 默认无认证，
         // 若不校验，任意客户端可把请求指向自己的服务器，骗取操作者保存在
@@ -347,9 +450,10 @@ public class BBDownApiServer
     /// （操作者直接配置的局域网回调是 serve 正常用法）；经域名解析出的内网地址一律拒绝，
     /// 防止攻击者用解析到内网的域名（DNS 重绑定）把回调打向内网。
     /// dnsResolver 供测试注入（生产用系统 DNS）。
-    /// 注意：域名在"add 时校验"与"回调时刻连接"之间存在 DNS 重绑定窗口（短 TTL 域名
-    /// 可先解析为公网通过校验、回调时改指 169.254.169.254/内网）。因此 AddDownloadTaskAsync
-    /// 在每次回调建立连接前都会再调用一次本方法复查，把窗口压缩到连接前瞬间。
+    /// 注意：域名在"配置时校验"与"回调时刻连接"之间存在 DNS 重绑定窗口（短 TTL 域名
+    /// 可先解析为公网通过校验、回调时改指 169.254.169.254/内网）。因此每次回调前
+    /// （NotifyCompletionCallbackAsync）都会再次调用本方法复查，并在 SendCallbackAsync 中
+    /// 用 ConnectCallback 把连接绑定到本次校验解析出的 IP，把窗口压缩到连接前瞬间。
     /// </summary>
     internal static bool IsSafeCallbackUrl(string? url, Func<string, IPAddress[]>? dnsResolver = null)
     {
@@ -439,7 +543,61 @@ public class BBDownApiServer
         return false;
     }
 
-    private async Task<DownloadTask> AddDownloadTaskAsync(MyOption option, string? callBackWebHook = null, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// 任务 ID 匹配：JobId 优先（/add-task 返回的 GUID，唯一且无业务含义）；
+    /// 其次回退到 Aid / 提交 Url，兼容旧客户端与旧持久化记录（旧记录 JobId 为空串）。
+    /// </summary>
+    private static bool MatchesTaskId(DownloadTask task, string id)
+    {
+        if (!string.IsNullOrEmpty(task.JobId) && task.JobId == id) return true;
+        return task.Aid == id || task.Url == id;
+    }
+
+    /// <summary>
+    /// 在 <see cref="_taskLock"/> 持锁前提下按 ID 查找任务（JobId 优先，Aid/Url 回退）。
+    /// finished 与 running 的查找顺序固定：先 finished 后 running，
+    /// 避免同名任务在两个集合中各有副本时查询结果漂移。
+    /// </summary>
+    private DownloadTask? FindTaskByIdLocked(string id, bool includeFinished, bool includeRunning)
+    {
+        if (includeFinished)
+        {
+            var f = finishedTasks.FirstOrDefault(t => MatchesTaskId(t, id));
+            if (f is not null) return f;
+        }
+        if (includeRunning)
+        {
+            var r = runningTasks.FirstOrDefault(t => MatchesTaskId(t, id));
+            if (r is not null) return r;
+        }
+        return null;
+    }
+
+    /// <summary>
+    /// /add-task 入队阶段：不 await 任何网络操作，立即生成 JobId 并把任务加入 runningTasks。
+    /// 返回的任务已带 <see cref="DownloadTask.JobId"/>（GUID），客户端拿到 202 + JobId 后即可
+    /// 通过 /get-tasks/{id} 或 /cancel/{id} 命中该任务。URL 解析、下载都在锁外的
+    /// <see cref="ProcessDownloadTaskAsync"/> 中异步推进。
+    /// 不按 Aid 去重：同一视频、不同参数可以并存为两个独立任务（各自有独立 JobId）。
+    /// </summary>
+    private DownloadTask EnqueueDownloadTask(MyOption option)
+    {
+        var task = new DownloadTask(option.Url, option.Url, DateTimeOffset.Now.ToUnixTimeSeconds())
+        {
+            JobId = Guid.NewGuid().ToString("N"),
+            Status = DownloadTaskStatus.Queued,
+        };
+        // 仅入队，不做任何网络解析；锁内只操作内存集合
+        lock (_taskLock) { runningTasks.Add(task); }
+        return task;
+    }
+
+    /// <summary>
+    /// /add-task 的异步执行阶段：解析 URL → 获取视频信息 → 下载，成功后按服务端
+    /// 启动配置（--notify-webhook）发送回调。任何异常都收敛到任务状态字段，使客户端
+    /// 拿到 JobId 后能查到失败原因。
+    /// </summary>
+    private async Task ProcessDownloadTaskAsync(MyOption option, DownloadTask task, string? notifyWebhook = null, CancellationToken cancellationToken = default)
     {
         // 解析 aid 前先把本任务的完整配置写入当前 async 流，用干净的 AppSettings 起步：
         // 1) 避免解析阶段读到全局 _settings 里上一个任务留下的 cookie（跨账号解析）；
@@ -463,57 +621,63 @@ public class BBDownApiServer
         }
         catch (Exception e)
         {
-            // 链接无法解析时客户端已经收到 200，必须留下一条失败记录，
-            // 否则用户既等不到结果也查不到原因
-            var rejected = new DownloadTask(option.Url, option.Url, DateTimeOffset.Now.ToUnixTimeSeconds())
+            // 链接无法解析时客户端已经收到 202 + JobId，必须把已入队的任务标记为失败
+            // 并移入 finishedTasks，否则用户既等不到结果也查不到原因（查询/取消按 JobId 命中）。
+            // Aid 没有可信值：保留原始 Url 便于用户在查询结果里辨认。
+            task.SetAid(option.Url);
+            task.ErrorMessage = e.Message;
+            task.TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds();
+            task.SetStatus(DownloadTaskStatus.Failed);
+            lock (_taskLock)
             {
-                ErrorMessage = e.Message,
-                TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds(),
-            };
-            lock (_taskLock) { finishedTasks.Add(rejected); }
+                task.CancelCts.Dispose();
+                runningTasks.Remove(task);
+                finishedTasks.Add(task);
+            }
             PersistFinishedTasks();
             Logger.LogError($"解析链接失败: {option.Url} - {e.Message}");
-            return rejected;
+            return;
         }
 
-        DownloadTask task = new(aid, option.Url, DateTimeOffset.Now.ToUnixTimeSeconds());
-        // 查重与入队必须在同一把锁内完成，否则并发提交同一 aid 时
-        // 两个请求都能通过 FirstOrDefault 检查并各自入队，导致重复下载
-        lock (_taskLock)
-        {
-            var runningTask = runningTasks.FirstOrDefault(t => t.Aid == aid);
-            if (runningTask is not null)
-            {
-                return runningTask;
-            }
-            runningTasks.Add(task);
-        }
+        // 解析成功：任务命中的是 Aid（业务字段），JobId 保持不变
+        task.SetAid(aid);
         try
         {
-            await _concurrencyLimiter.WaitAsync(cancellationToken);
+            // 队列等待与执行共用 linkedCts：/cancel/{id}（经 task.CancelCts）与服务器关停
+            // （经 cancellationToken）都能中断排队中或运行中的任务。
+            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, task.CancelCts.Token);
+            await _concurrencyLimiter.WaitAsync(linkedCts.Token);
             try
             {
+                task.SetStatus(DownloadTaskStatus.Running);
                 var (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay) = Program.SetUpWork(option);
-                var (fetchedAid, vInfo, apiType) = await Program.GetVideoInfoAsync(option, aidOri, input);
+                var (fetchedAid, vInfo, apiType) = await Program.GetVideoInfoAsync(option, aidOri, input, linkedCts.Token);
                 task.Title = vInfo.Title;
                 task.Pic = vInfo.Pic;
                 task.VideoPubTime = vInfo.PubTime;
                 await Program.DownloadPagesAsync(option, vInfo, encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
-                            input, savePathFormat, lang, fetchedAid, delay, apiType, task, cancellationToken);
-                task.IsSuccessful = true;
+                            input, savePathFormat, lang, fetchedAid, delay, apiType, task, linkedCts.Token);
+                task.SetStatus(DownloadTaskStatus.Succeeded);
             }
             finally
             {
                 _concurrencyLimiter.Release();
             }
         }
+        catch (OperationCanceledException)
+        {
+            // 客户端经 /cancel/{id} 取消（或服务器关停）：标记为 Cancelled
+            task.SetStatus(DownloadTaskStatus.Cancelled);
+            Logger.LogDebug($"{aid} 任务被取消");
+        }
         // 捕获所有异常：任何漏网的异常类型都会跳过下方的收尾逻辑，
-        // 使任务永久滞留在 runningTasks 中，该 aid 之后再也无法重新下载。
+        // 使任务永久滞留在 runningTasks 中，之后再也无法重新下载。
         catch (Exception e)
         {
             bool debugMode = option.Debug || Config.Current.DebugLog;
             var displayMsg = debugMode ? e.ToString() : e.Message;
             task.ErrorMessage = displayMsg;
+            task.SetStatus(DownloadTaskStatus.Failed);
             Logger.LogError($"{aid} 下载失败: {e.Message}");
             Logger.LogDebug("异常详情: {0}", displayMsg);
         }
@@ -526,45 +690,192 @@ public class BBDownApiServer
                 ? (double)(task.TotalDownloadedBytes / elapsed)
                 : 0;
         }
+        // 任务结束后释放它的取消令牌源，避免长驻进程里每个任务都残留一个 CTS。
+        // 必须在 _taskLock 内 Dispose：/cancel 处理器在同一把锁内调用 Cancel()，
+        // 若在锁外 Dispose 会与取消路径竞争（对已释放 CTS 调 Cancel 抛 ObjectDisposedException）。
         lock (_taskLock)
         {
+            task.CancelCts.Dispose();
             runningTasks.Remove(task);
             finishedTasks.Add(task);
         }
         PersistFinishedTasks();
 
-        // Webhook 回调
-        if (!string.IsNullOrEmpty(callBackWebHook))
+        await NotifyCompletionCallbackAsync(task, notifyWebhook);
+    }
+
+    /// <summary>
+    /// 按服务端启动配置（--notify-webhook）发送任务完成回调。客户端请求体中的回调
+    /// 字段已被 SanitizeUntrustedOptions 清零，这里只使用管理员显式配置的固定地址。
+    /// </summary>
+    private async Task NotifyCompletionCallbackAsync(DownloadTask task, string? notifyWebhook)
+    {
+        if (string.IsNullOrEmpty(notifyWebhook)) return;
+        // 回调连接前复查 SSRF：--notify-webhook 是管理员显式配置的固定地址（服务端
+        // allowlist），但仍需拦截回环/链路本地/云元数据等敏感目标。DNS 重绑定风险说明：
+        // 域名回调在"启动时校验"与"回调连接时刻"之间可能存在解析结果变化（短 TTL 域名），
+        // 因此每次回调前都重新校验；并在 SendCallbackAsync 中用 ConnectCallback 把连接
+        // 绑定到本次校验解析出的 IP，避免 HttpClient 再次做 DNS 解析（消除重绑定窗口）。
+        if (!IsSafeCallbackUrl(notifyWebhook))
         {
-            // 回调时刻复查 SSRF：add 时 IsSafeCallbackUrl 解析的 DNS 在分钟级窗口内可能已被
-            // 攻击者改指 169.254.169.254 / 内网（短 TTL 域名重绑定）。此处把窗口压缩到
-            // 连接建立前瞬间再解析一次，命中即跳过本次回调；add 时校验仍保留（防手误配置）。
-            if (!IsSafeCallbackUrl(callBackWebHook))
+            Logger.LogWarn($"回调地址不合法，已跳过本次回调: {notifyWebhook}");
+            return;
+        }
+        // 序列化共享对象前用 Snapshot() 深拷贝：与 /get-tasks 查询端点一致，
+        // 避免未来任何并发写者在序列化期间修改 SavePaths 引发竞态。
+        string jsonContent = JsonSerializer.Serialize(task.Snapshot(), AppJsonSerializerContext.Default.DownloadTask);
+        await SendCallbackAsync(notifyWebhook, jsonContent);
+    }
+
+    /// <summary>
+    /// 向固定回调地址 POST 任务快照。用 SocketsHttpHandler.ConnectCallback 把 TCP 连接
+    /// 绑定到 IsSafeCallbackUrl 本次校验解析出的 IP：HTTP 请求的 Host（SNI）仍是原域名，
+    /// 但实际连到的地址来自已校验的解析结果，杜绝"校验用一套 DNS、连接用另一套 DNS"
+    /// 的 TOCTOU 重绑定窗口。每个回调请求独立创建 handler（连接不复用），代价最小。
+    /// 校验语义与 <see cref="IsSafeCallbackUrl"/> 保持一致：字面 IP（管理员配置的局域网
+    /// 回调）仅拦回环/链路本地/云元数据，域名解析出的内网地址一律拒绝。
+    /// </summary>
+    private static async Task SendCallbackAsync(string webhook, string jsonContent)
+    {
+        try
+        {
+            var uri = new Uri(webhook);
+            // DnsSafeHost：IPv6 字面量不带方括号（uri.Host 对 [::1] 会带方括号，无法解析）
+            var host = uri.DnsSafeHost;
+            bool hostIsLiteralIp = IPAddress.TryParse(host, out var literalIp) && literalIp is not null;
+            IPAddress target;
+            if (hostIsLiteralIp)
             {
-                Logger.LogWarn($"回调地址不合法，已跳过本次回调: {callBackWebHook}");
+                // 字面 IP 是管理员显式配置的地址：直接绑定到该 IP（与 IsSafeCallbackUrl 的
+                // 字面 IP 分支一致，RFC1918 局域网回调放行）。此处不再解析 DNS。
+                literalIp = literalIp!.IsIPv4MappedToIPv6 ? literalIp.MapToIPv4() : literalIp;
+                if (IsUnsafeLiteralIpAddress(literalIp))
+                {
+                    Logger.LogWarn($"回调地址是敏感字面 IP，已跳过本次回调: {webhook}");
+                    return;
+                }
+                target = literalIp;
             }
             else
             {
-                // 序列化共享对象前用 Snapshot() 深拷贝：与 /get-tasks 查询端点一致，
-                // 避免未来任何并发写者在序列化期间修改 SavePaths 引发竞态。
-                string? jsonContent = JsonSerializer.Serialize(task.Snapshot(), AppJsonSerializerContext.Default.DownloadTask);
+                // 域名回调：解析一次并校验全部地址；任一地址命中敏感/内网段即跳过。
+                // 与 IsSafeCallbackUrl 使用同一套 DNS 解析逻辑（域名重绑定校验在此完成）。
+                IPAddress[] addresses;
                 try
                 {
-                    await _callbackClient.PostAsync(callBackWebHook, new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json"));
+                    addresses = Dns.GetHostAddresses(host);
                 }
-                catch (Exception e) when (e is HttpRequestException)
+                catch (SocketException)
                 {
-                    Logger.LogDebug("回调失败: {0}", e.Message);
+                    Logger.LogWarn($"回调地址 DNS 解析失败，已跳过本次回调: {webhook}");
+                    return;
                 }
+                foreach (var addr in addresses)
+                {
+                    var resolvedIp = addr.IsIPv4MappedToIPv6 ? addr.MapToIPv4() : addr;
+                    if (IsBlockedAddress(resolvedIp))
+                    {
+                        Logger.LogWarn($"回调地址解析到敏感地址，已跳过本次回调: {webhook}");
+                        return;
+                    }
+                }
+                // 解析结果可能含多个地址（已全部校验通过），取第一个连接
+                target = addresses[0].IsIPv4MappedToIPv6 ? addresses[0].MapToIPv4() : addresses[0];
+            }
+
+            var handler = new SocketsHttpHandler
+            {
+                AllowAutoRedirect = false,
+                ConnectCallback = async (context, cancellationToken) =>
+                {
+                    var socket = new Socket(target.AddressFamily, SocketType.Stream, ProtocolType.Tcp);
+                    try
+                    {
+                        await socket.ConnectAsync(target, context.DnsEndPoint.Port, cancellationToken).ConfigureAwait(false);
+                        return new NetworkStream(socket, ownsSocket: true);
+                    }
+                    catch
+                    {
+                        socket.Dispose();
+                        throw;
+                    }
+                },
+            };
+            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(2) };
+            // ConnectCallback 已绑定目标 IP；SNI 由 HttpClient 依据请求 URI 的原 host 设置，
+            // 因此请求 URI 保留原 webhook 而不是替换成 IP
+            using var content = new StringContent(jsonContent, System.Text.Encoding.UTF8, "application/json");
+            using var resp = await client.PostAsync(webhook, content);
+            if (!resp.IsSuccessStatusCode)
+            {
+                Logger.LogDebug($"回调返回 HTTP {(int)resp.StatusCode}: {webhook}");
             }
         }
-
-        return task;
+        catch (Exception e) when (e is HttpRequestException or UriFormatException or InvalidOperationException or SocketException)
+        {
+            Logger.LogDebug("回调失败: {0}", e.Message);
+        }
     }
+
+    /// <summary>
+    /// 字面 IP 回调的敏感地址判定：与 <see cref="IsSafeCallbackUrl"/> 的字面 IP 分支一致，
+    /// 仅拦回环、链路本地、云元数据面（169.254/16）与全零地址；RFC1918 私网放行
+    /// （管理员显式配置的局域网回调是 serve 正常用法）。
+    /// </summary>
+    private static bool IsUnsafeLiteralIpAddress(IPAddress ip)
+    {
+        if (IPAddress.IsLoopback(ip)) return true;
+        if (ip.IsIPv6LinkLocal) return true;
+        if (ip.AddressFamily == AddressFamily.InterNetwork)
+        {
+            var b = ip.GetAddressBytes();
+            if (b.Length != 4) return false;
+            if (b[0] == 169 && b[1] == 254) return true; // 169.254.0.0/16 云元数据面
+            if (b.All(x => x == 0)) return true;         // 0.0.0.0：连接时绑定到回环
+            return false;
+        }
+        if (ip.AddressFamily == AddressFamily.InterNetworkV6)
+        {
+            var b6 = ip.GetAddressBytes();
+            return b6.Length == 16 && b6.All(x => x == 0); // [::]
+        }
+        return false;
+    }
+}
+
+public enum DownloadTaskStatus
+{
+    /// <summary>已接受，等待进入执行（受并发限制器约束）。</summary>
+    Queued,
+    /// <summary>正在下载/混流中。</summary>
+    Running,
+    /// <summary>执行完毕且成功。</summary>
+    Succeeded,
+    /// <summary>执行完毕但失败。</summary>
+    Failed,
+    /// <summary>被客户端取消。</summary>
+    Cancelled,
 }
 
 public record DownloadTask(string Aid, string Url, long TaskCreateTime)
 {
+    /// <summary>
+    /// 任务唯一标识（GUID 字符串）。新任务在入队（EnqueueDownloadTask）时立即生成并随
+    /// 202 响应返回，客户端据此查询 /get-tasks/{id} 或取消 /cancel/{id}——与 URL 解析出的
+    /// Aid 无关，完整视频 URL 提交后仍可命中。默认空串：旧持久化记录反序列化时无该字段
+    /// 即为空，查询/取消端点会回退到 Aid / Url 匹配（见 MatchesTaskId）。
+    /// </summary>
+    [JsonInclude]
+    public string JobId { get; set; } = "";
+
+    /// <summary>
+    /// 视频解析出的 Aid（业务字段，不再作为任务唯一标识）。
+    /// 显式声明以遮蔽 record 主构造参数自动生成的 init-only 属性：入队时 Aid 是提交 Url，
+    /// 解析成功/失败后经 <see cref="SetAid"/> 更新为真实 Aid（或失败时的回退值）。
+    /// </summary>
+    [JsonInclude]
+    public string Aid { get; set; } = Aid;
+
     [JsonInclude]
     public string? Title = null;
     [JsonInclude]
@@ -583,6 +894,16 @@ public record DownloadTask(string Aid, string Url, long TaskCreateTime)
     public bool IsSuccessful = false;
     [JsonInclude]
     public string? ErrorMessage = null;
+    [JsonInclude]
+    public DownloadTaskStatus Status = DownloadTaskStatus.Queued;
+
+    /// <summary>
+    /// 每个任务独立的取消令牌源：serve 是长驻进程，任务在后台队列中执行，
+    /// 全局 _serverLifetimeCts 只负责关停时全量取消；客户端可通过 /cancel/{id}
+    /// 单独取消某个任务。等待进入队列的任务也可以被取消（取消前先释放信号量占位）。
+    /// </summary>
+    [JsonIgnore]
+    public CancellationTokenSource CancelCts { get; } = new();
 
     [JsonInclude]
     public List<string> SavePaths = new();
@@ -598,6 +919,25 @@ public record DownloadTask(string Aid, string Url, long TaskCreateTime)
         lock (_savePathLock) { SavePaths.Add(path); }
     }
 
+    /// <summary>线程安全地更新状态字段（下载线程写，查询端点读）。</summary>
+    public void SetStatus(DownloadTaskStatus status)
+    {
+        lock (_savePathLock)
+        {
+            Status = status;
+            IsSuccessful = status == DownloadTaskStatus.Succeeded;
+        }
+    }
+
+    /// <summary>
+    /// 线程安全地更新 Aid（解析成功/失败后由下载线程写入；查询端点读）。
+    /// 与 SetStatus 共用 _savePathLock，避免 Snapshot 枚举期间读到半更新状态。
+    /// </summary>
+    public void SetAid(string aid)
+    {
+        lock (_savePathLock) { Aid = aid; }
+    }
+
     /// <summary>
     /// 深拷贝快照：下载线程会持续修改本对象的 Progress/SavePaths 等字段，
     /// /get-tasks 在锁外序列化共享对象时，SavePaths.Add 撞上枚举会抛
@@ -609,6 +949,7 @@ public record DownloadTask(string Aid, string Url, long TaskCreateTime)
         lock (_savePathLock) { paths = new List<string>(SavePaths); }
         return new(Aid, Url, TaskCreateTime)
         {
+            JobId = JobId,
             Title = Title,
             Pic = Pic,
             VideoPubTime = VideoPubTime,
@@ -619,10 +960,14 @@ public record DownloadTask(string Aid, string Url, long TaskCreateTime)
             IsSuccessful = IsSuccessful,
             ErrorMessage = ErrorMessage,
             SavePaths = paths,
+            Status = Status,
         };
     }
 };
 public record DownloadTaskCollection(List<DownloadTask> Running, List<DownloadTask> Finished);
+
+/// <summary>/add-task 的 202 响应体：返回任务 JobId（GUID），客户端可据此查询或取消。</summary>
+public record AddTaskAccepted(string TaskId);
 
 record struct MyOptionBindingResult<T>(T? Result, Exception? Exception)
 {
@@ -660,6 +1005,7 @@ record struct MyOptionBindingResult<T>(T? Result, Exception? Exception)
 [JsonSerializable(typeof(DownloadTask))]
 [JsonSerializable(typeof(List<DownloadTask>))]
 [JsonSerializable(typeof(DownloadTaskCollection))]
+[JsonSerializable(typeof(AddTaskAccepted))]
 public partial class AppJsonSerializerContext : JsonSerializerContext
 {
 

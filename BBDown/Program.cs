@@ -1,4 +1,4 @@
-﻿using System;
+using System;
 using System.Collections.Generic;
 using System.IO;
 using System.Net;
@@ -165,11 +165,11 @@ partial class Program
         }).ToArray();
     }
 
-    internal static void StartServer(string? listenUrl, int maxConcurrent = 3, string? serveToken = null, CancellationToken cancellationToken = default)
+    internal static void StartServer(string? listenUrl, int maxConcurrent = 3, string? serveToken = null, string? notifyWebhook = null, CancellationToken cancellationToken = default)
     {
-        var defaultListenUrl = "http://0.0.0.0:23333";
+        var defaultListenUrl = "http://127.0.0.1:23333";
         Logger.LogFilePath = Path.Combine(Directory.GetCurrentDirectory(), "bbdown-api.log");
-        var server = new BBDownApiServer(maxConcurrent, serveToken);
+        var server = new BBDownApiServer(maxConcurrent, serveToken, notifyWebhook: notifyWebhook);
         server.SetUpServer();
         server.Run(string.IsNullOrEmpty(listenUrl) ? defaultListenUrl : listenUrl, cancellationToken);
     }
@@ -179,7 +179,7 @@ partial class Program
         cancellationToken.ThrowIfCancellationRequested();
         var (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
             input, savePathFormat, lang, aidOri, delay) = SetUpWork(myOption);
-        var (fetchedAid, vInfo, apiType) = await GetVideoInfoAsync(myOption, aidOri, input);
+        var (fetchedAid, vInfo, apiType) = await GetVideoInfoAsync(myOption, aidOri, input, cancellationToken);
         await DownloadPagesAsync(myOption, vInfo, encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
             input, savePathFormat, lang, fetchedAid, delay, apiType, cancellationToken: cancellationToken);
     }

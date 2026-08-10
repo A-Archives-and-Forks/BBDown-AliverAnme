@@ -23,4 +23,8 @@ COPY --from=builder /app/publish .
 
 EXPOSE 23333
 
-ENTRYPOINT ["dotnet", "BBDown.dll", "serve", "-l", "http://0.0.0.0:23333"]
+# 容器默认监听 0.0.0.0：否则 -p 端口映射从宿主访问不到。
+# CLI 默认 127.0.0.1 仅本机访问，但容器里必须 0.0.0.0 才能被端口映射转发。
+# 对外暴露时务必追加 --serve-token：docker run -p 23333:23333 <image> serve -l http://0.0.0.0:23333 --serve-token <token>
+ENTRYPOINT ["dotnet", "BBDown.dll"]
+CMD ["serve", "-l", "http://0.0.0.0:23333"]

@@ -1,0 +1,94 @@
+name: Pull Request Checks
+
+on:
+  pull_request:
+
+concurrency:
+  group: pr-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  DOTNET_SDK_VERSION: "10.0.300"
+
+jobs:
+  build-and-test:
+    name: Build & Test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up dotnet
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+
+      - name: Restore
+        run: dotnet restore BBDown.sln
+
+      - name: Build (Release, includes AOT-compat compile via Directory.Build.props)
+        run: dotnet build BBDown.sln -c Release --no-restore
+
+      - name: Test (unit)
+        run: dotnet test BBDown.sln -c Release --no-build --filter "Category!=Integration"
+
+  vulnerability-scan:
+    name: NuGet Vulnerability Scan
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up dotnet
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+
+      - name: Restore
+        run: dotnet restore BBDown.sln
+
+      - name: Audit packages
+        run: dotnet list BBDown.sln package --vulnerable
+
+  # 格式门禁：存量文件存在大量 CHARSET/ENDOFLINE 问题（7350 处），
+  # 硬性失败会挡死所有 PR。先用 continue-on-error 把结果暴露在 CI 日志，
+  # 待纯机械格式修复 PR（BOM→UTF-8、CRLF→LF）合入后再改为硬性门禁。
+  format:
+    name: Format Check (informational)
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up dotnet
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+
+      - name: Restore
+        run: dotnet restore BBDown.sln
+
+      - name: Verify formatting
+        run: dotnet format BBDown.sln --verify-no-changes --no-restore
+
+  # Native AOT smoke：BBDown 的 Directory.Build.props 全局 PublishAot=true，
+  # 确保 PR 能产出可运行的 AOT 二进制（与 release.yml 的 linux-x64 对齐）
+  aot-smoke:
+    name: Native AOT smoke (linux-x64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up dotnet
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+
+      - name: Restore
+        run: dotnet restore BBDown/BBDown.csproj -r linux-x64
+
+      - name: Publish Native AOT (linux-x64)
+        run: dotnet publish BBDown/BBDown.csproj -c Release -r linux-x64 --no-restore
+
+      - name: Verify binary
+        run: |
+          test -x BBDown/bin/Release/net10.0/linux-x64/publish/BBDown
+          BBDown/bin/Release/net10.0/linux-x64/publish/BBDown --version

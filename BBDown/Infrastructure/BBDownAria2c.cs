@@ -1,4 +1,4 @@
-﻿using System.Diagnostics;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Threading;
@@ -10,32 +10,23 @@ static class BBDownAria2c
 {
     public static string ARIA2C = "aria2c";
 
+    /// <summary>aria2c 外部进程执行器。默认用系统进程实现，测试可注入假进程。</summary>
+    public static IExternalProcessRunner ProcessRunner { get; set; } = new SystemProcessRunner();
+
     public static async Task<int> RunCommandCodeAsync(string command, string args, string? stdinContent = null, CancellationToken token = default)
     {
-        using Process p = new();
-        p.StartInfo.UseShellExecute = false;
-        p.StartInfo.RedirectStandardOutput = false;
-        p.StartInfo.RedirectStandardInput = stdinContent != null;
-        p.StartInfo.FileName = command;
-        p.StartInfo.Arguments = args;
-        p.Start();
-        if (stdinContent != null)
+        // 参数仍以命令行字符串传入（aria2c 的 --aria2c-args 是整串配置），
+        // 这里切分成逐项 argv 交给执行器——统一超时、整树终止与输出限流。
+        var spec = new ExternalProcessSpec
         {
-            await p.StandardInput.WriteAsync(stdinContent);
-            p.StandardInput.Close();
-        }
-        try
-        {
-            await p.WaitForExitAsync(token);
-        }
-        catch (OperationCanceledException)
-        {
-            // WaitForExitAsync(token) 只取消等待、不结束子进程：
-            // 不 Kill 的话 aria2c 会变成孤儿进程继续写文件（serve 关停 / Ctrl+C 场景）
-            try { p.Kill(entireProcessTree: true); } catch { /* 进程可能已自行退出 */ }
-            throw;
-        }
-        return p.ExitCode;
+            FileName = command,
+            Arguments = CommandLineSplitter.Split(args),
+            StandardInput = stdinContent,
+            ToolDisplayName = command,
+            // aria2c 的进度输出走 stdout，量很大，这里不转发（保持原行为：不重定向）
+            TimeoutMs = null,
+        };
+        return await ProcessRunner.RunAsync(spec, token);
     }
 
     public static async Task DownloadFileByAria2cAsync(string url, string path, string extraArgs, CancellationToken token = default)

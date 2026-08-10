@@ -1,4 +1,4 @@
-﻿using BBDown.Core.Entity;
+using BBDown.Core.Entity;
 using BBDown.Core.Util;
 using System.Text.Json;
 using static BBDown.Core.Entity.Entity;
@@ -7,12 +7,12 @@ namespace BBDown.Core.Fetcher;
 
 public class CheeseInfoFetcher : IFetcher
 {
-    public async Task<VInfo> FetchAsync(string id)
+    public async Task<VInfo> FetchAsync(string id, CancellationToken cancellationToken = default)
     {
         id = id[7..];
         string index = "";
         string api = $"https://api.bilibili.com/pugv/view/web/season?ep_id={id}";
-        string json = await HTTPUtil.GetWebSourceAsync(api);
+        string json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
         var data = infoJson.RootElement.GetPropertySafe("data");
         string cover = data.GetValueAsStringSafe("cover");
