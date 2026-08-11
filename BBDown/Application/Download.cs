@@ -211,31 +211,38 @@ internal partial class Program
         // 此前直接写最终路径，非零退出/取消后只返回 Failed 不删除半成品，下次运行发现
         // "存在且非空"就跳过，可能永久保留截断视频并报告成功。临时产物成功且校验通过后
         // 才原子替换到最终路径；失败/取消清理临时产物，绝不留半成品当成品。
+        // 取消/超时可能让 MuxAV 抛异常（await 之后的清理无法执行），因此用 try/finally
+        // 覆盖"混流→验证→移动"全程，finally 删除仍存在的临时产物，避免遗留大文件占用磁盘。
         var muxingPath = savePath + $".muxing-{Guid.NewGuid():N}";
-        int code = await BBDownMuxer.MuxAV(useMp4box, p.bvid, videoPath, audioPath, audioMaterial, muxingPath,
-            desc,
-            title,
-            p.ownerName ?? "",
-            (selectedPagesInfo.Count > 1 || (bangumi && !vInfo.IsBangumiEnd)) ? p.title : "",
-            File.Exists(coverPath) ? coverPath : "",
-            lang,
-            subtitleInfo, audioOnly, videoOnly, p.points, p.pubTime, myOption.SimplyMux, isHevc, cancellationToken);
-        if (code != 0 || !File.Exists(muxingPath) || new FileInfo(muxingPath).Length == 0)
-        {
-            // 混流失败/取消：清理半成品临时产物，返回失败（不留截断文件被下次误当成功）
-            try { if (File.Exists(muxingPath)) File.Delete(muxingPath); } catch (IOException) { }
-            return MuxOutcome.Failed;
-        }
-        // 产物合法：原子替换到最终路径。File.Move(overwrite) 在 Windows 上是"删除目标+改名"，
-        // 但目标原本不存在（fastSkipChecked 已判定），不会破坏已有文件。
         try
         {
+            int code = await BBDownMuxer.MuxAV(useMp4box, p.bvid, videoPath, audioPath, audioMaterial, muxingPath,
+                desc,
+                title,
+                p.ownerName ?? "",
+                (selectedPagesInfo.Count > 1 || (bangumi && !vInfo.IsBangumiEnd)) ? p.title : "",
+                File.Exists(coverPath) ? coverPath : "",
+                lang,
+                subtitleInfo, audioOnly, videoOnly, p.points, p.pubTime, myOption.SimplyMux, isHevc, cancellationToken);
+            if (code != 0 || !File.Exists(muxingPath) || new FileInfo(muxingPath).Length == 0)
+            {
+                // 混流失败/取消：返回失败（finally 会清理半成品临时产物）
+                return MuxOutcome.Failed;
+            }
+            // 产物合法：原子替换到最终路径。File.Move(overwrite) 在 Windows 上是"删除目标+改名"，
+            // 但目标原本不存在（fastSkipChecked 已判定），不会破坏已有文件。
             File.Move(muxingPath, savePath, true);
+            muxingPath = null; // 已移动成功，finally 无需清理
         }
-        catch (IOException)
+        finally
         {
-            try { if (File.Exists(muxingPath)) File.Delete(muxingPath); } catch (IOException) { }
-            return MuxOutcome.Failed;
+            // 取消/超时/失败后清理仍存在的临时产物：此路径覆盖 MuxAV 抛异常（await 之后的
+            // 清理代码无法执行的场景），避免遗留 .muxing-* 大文件持续占用磁盘。
+            if (muxingPath is not null)
+            {
+                try { if (File.Exists(muxingPath)) File.Delete(muxingPath); }
+                catch (IOException) { /* 清理失败不影响主流程 */ }
+            }
         }
         Logger.Log("清理临时文件...");
         await Task.Delay(200, cancellationToken);

@@ -243,6 +243,55 @@ public class DownloadPipelineTests
     }
 
     /// <summary>
+    /// 回归：多线程分片身份检查必须命中。预置资源 A 的旧分片（00000_video.vclip）及其
+    /// manifest，再下载等长资源 B——若身份检查不命中（通配符错误/首分片缺失绕过），
+    /// 旧分片会被按长度拼入新资源，最终哈希 ≠ B 的哈希。此测试用真实 LocalByteServer
+    /// 走完整下载，验证产物哈希必须等于服务端 B 载荷。
+    /// </summary>
+    [Fact]
+    public async Task MultiThreadDownloadAndMerge_StaleSegmentFromOtherResource_IsReplacedWithFreshContent()
+    {
+        using var server = new LocalByteServer(256 * 1024);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            // 预置资源 A 的旧分片（00000_video.vclip，与服务端 B 等长但内容不同）及其清单
+            var clip = Path.Combine(dir, "00000_video.vclip");
+            var staleBytes = new byte[256 * 1024];
+            new Random(3).NextBytes(staleBytes);
+            await File.WriteAllBytesAsync(clip, staleBytes);
+            var staleManifest = new BBDownDownloadUtil.ResumeManifest(
+                BBDownDownloadUtil.StableResourceIdentity("https://cdn.example.com/resourceA.mp4"), 256 * 1024, null, null);
+            await File.WriteAllTextAsync(clip + ".manifest.json",
+                System.Text.Json.JsonSerializer.Serialize(staleManifest, DownloadManifestJsonContext.Default.ResumeManifest));
+
+            var config = new BBDownDownloadUtil.DownloadConfig { MultiThread = true };
+            var original = Config.Current.ThreadSegmentSizeMb;
+            try
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = 1 }); // 1MB 分片 → 1 个分片
+                await BBDownDownloadUtil.MultiThreadDownloadAndMergeAsync(
+                    $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
+            }
+            finally
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = original });
+            }
+
+            // 产物哈希必须等于服务端 B：若旧分片被复用（身份检查不命中），哈希会失配
+            Assert.True(File.Exists(target));
+            Assert.Equal(server.PayloadHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
     /// 回归：视频与音频的临时文件必须隔离。旧实现用 GetFileNameWithoutExtension 生成
     /// .tmp，视频 xxx.mp4 与音频 xxx.m4a 共用 video.tmp——视频中断留下的数据会被音频
     /// 下载当成前缀续传（长度正确但内容损坏）。新实现保留扩展名（video.mp4.tmp /
@@ -357,6 +406,40 @@ public class DownloadPipelineTests
             // 当前请求是签名刷新的同一资源 → 稳定身份一致 → 可续传
             Assert.True(BBDownDownloadUtil.CanResumeFrom(tmp,
                 "https://cdn.example.com/1080p.mp4?deadline=999&sign=new&qn=80", 12345, out _));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// 回归：完整 .tmp 即便身份与长度都匹配，若服务器 ETag 已变化（同路径内容变化但长度
+    /// 不变），也必须拒绝——否则旧 .tmp 被直接采用，产出"长度正确但内容损坏"的文件。
+    /// </summary>
+    [Fact]
+    public void CanResumeFrom_SameLengthAndIdentity_ButChangedETag_RejectsResume()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var tmp = Path.Combine(dir, "video.mp4.tmp");
+            File.WriteAllText(tmp, "complete-content");
+            // 清单记录旧 ETag：同一资源同一长度，但服务器已返回新 ETag（内容已变）。
+            // 清单身份用稳定身份（与 URL 剥离签名参数后的结果一致）。
+            var manifest = new BBDownDownloadUtil.ResumeManifest(
+                BBDownDownloadUtil.StableResourceIdentity("https://cdn.example.com/video.mp4?deadline=1&sign=old"),
+                12345, null, "W/old-etag");
+            File.WriteAllText(tmp + ".manifest.json",
+                System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
+
+            Assert.False(BBDownDownloadUtil.CanResumeFrom(tmp, "https://cdn.example.com/video.mp4?deadline=2&sign=new", 12345, out var reason,
+                currentETag: "W/new-etag"));
+            Assert.Contains("ETag", reason);
+            // 校验器一致时仍可续传
+            Assert.True(BBDownDownloadUtil.CanResumeFrom(tmp, "https://cdn.example.com/video.mp4?deadline=2&sign=new", 12345, out _,
+                currentETag: "W/old-etag"));
         }
         finally
         {

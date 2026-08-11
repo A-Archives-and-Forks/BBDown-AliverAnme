@@ -308,7 +308,7 @@ internal static class BBDownDownloadUtil
             // 长度相等不等于内容可信：同一输出路径可能被 1080P→720P / AVC→HEVC 的
             // 另一个资源复用（长度恰好相同）。只有续传清单确认资源身份一致时才直接采用，
             // 否则删除完整重下——杜绝"长度正确但内容损坏"的假成功。
-            if (CanResumeFrom(tmpName, url, fileSize, out var resumeReason))
+            if (CanResumeFrom(tmpName, url, fileSize, out var resumeReason, probeHeaders?.ETag?.Tag, probeContentHeaders?.LastModified?.ToString("R")))
             {
                 Logger.LogDebug("断点续传: 检测到已完整下载的临时文件且资源身份一致, 直接移动");
                 File.Move(tmpName, path, true);
@@ -327,7 +327,7 @@ internal static class BBDownDownloadUtil
         {
             // 续传同样要求资源身份一致：清单缺失/不符时删除 .tmp 完整重下，
             // 否则旧前缀可能与新响应拼接（长度仍正确但内容损坏）。
-            if (CanResumeFrom(tmpName, url, fileSize, out var reason))
+            if (CanResumeFrom(tmpName, url, fileSize, out var reason, probeHeaders?.ETag?.Tag, probeContentHeaders?.LastModified?.ToString("R")))
             {
                 Logger.LogDebug("断点续传: 从现有临时文件 {0} 字节处继续（资源身份一致）", new FileInfo(tmpName).Length);
                 // 续传时带 If-Range（ETag/Last-Modified）：让服务器校验本地前缀仍属于当前对象
@@ -497,20 +497,22 @@ internal static class BBDownDownloadUtil
         string dir0 = Path.GetDirectoryName(path)!;
         string stem0 = Path.GetFileNameWithoutExtension(path);
         string clipExt0 = Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip";
-        string trackManifestPath = Path.Combine(dir0, stem0 + clipExt0 + ".manifest.json");
-        // 已存在轨道分片且身份与当前资源一致 → 保留续传；不一致 → 清空整轨重下
-        if (Directory.EnumerateFiles(dir0, stem0 + "*" + clipExt0).Any())
+        // 该轨道的全部预期分片路径（与 allClips 一一对应）：用于检测"是否存在任意分片"，
+        // 不要求首分片存在——中断可能只留下后续分片，只要任一存在就必须做身份校验。
+        List<string> expectedClips = allClips
+            .Select(c => Path.Combine(dir0, c.index.ToString("00000") + "_" + stem0 + clipExt0))
+            .ToList();
+        string manifestClip = expectedClips[0]; // 轨道清单挂在首分片名下（00000_<stem>.vclip.manifest.json）
+        // 存在任意旧分片 → 校验轨道 manifest；缺失/损坏/不匹配 → 清理全部分片和旧 manifest
+        bool anyExistingSegment = expectedClips.Any(File.Exists);
+        if (anyExistingSegment && !CanResumeFrom(manifestClip, url, fileSize, out var trackReason, probeHeaders?.ETag?.Tag, probeContentHeaders?.LastModified?.ToString("R")))
         {
-            // 用第一个分片名作为续传清单名（CanResumeFrom 以 .manifest.json 为约定）
-            string firstClip = Path.Combine(dir0, "00000_" + stem0 + clipExt0);
-            if (File.Exists(firstClip) && !CanResumeFrom(firstClip, url, fileSize, out var trackReason))
-            {
-                Logger.LogDebug("多线程: 轨道分片资源身份不可信（{0}），删除全部分片后完整重下", trackReason ?? "未知原因");
-                CleanStaleClipsFor(path);
-            }
+            Logger.LogDebug("多线程: 轨道分片资源身份不可信（{0}），删除全部分片后完整重下", trackReason ?? "未知原因");
+            CleanStaleClipsFor(path);
+            DeleteResumeManifest(manifestClip);
         }
         // 下载分片前写入轨道清单（真正中断也会留下清单，下次可确认身份续传）
-        WriteResumeManifest(Path.Combine(dir0, "00000_" + stem0 + clipExt0), url, fileSize, probeHeaders, probeContentHeaders);
+        WriteResumeManifest(manifestClip, url, fileSize, probeHeaders, probeContentHeaders);
         // 分片进度按下标存放并维护一个原子累计值。
         // 此前每次回调都要对 ConcurrentDictionary.Values 求两次和，
         // 而 Values 每次访问都会复制出一份快照 —— 回调频率是每分片每 256KB 一次，
@@ -691,8 +693,22 @@ internal static class BBDownDownloadUtil
                 totalLength,
                 contentHeaders?.LastModified?.ToString("R"),
                 headers?.ETag?.Tag);
-            File.WriteAllText(ResumeManifestPath(tmpName),
-                System.Text.Json.JsonSerializer.Serialize(m, DownloadManifestJsonContext.Default.ResumeManifest));
+            // 原子写入：写唯一临时文件后同目录 rename。进程在写入中被杀会留下截断 JSON，
+            // 下次只能放弃已有 .tmp（CanResumeFrom 读清单失败）。rename 保证清单要么完整
+            // 要么不存在；失败时清理临时文件。
+            string manifestPath = ResumeManifestPath(tmpName);
+            string tmp = manifestPath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(tmp,
+                    System.Text.Json.JsonSerializer.Serialize(m, DownloadManifestJsonContext.Default.ResumeManifest));
+                File.Move(tmp, manifestPath, true);
+            }
+            finally
+            {
+                try { if (File.Exists(tmp)) File.Delete(tmp); }
+                catch (IOException) { /* 清理失败不影响主流程 */ }
+            }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
         {
@@ -705,9 +721,12 @@ internal static class BBDownDownloadUtil
     /// <summary>
     /// 校验某份 .tmp 是否可用于续传当前资源。返回 true 表示身份一致可续传；
     /// 返回 false 表示身份不符/清单缺失/长度不符，调用方应删除 .tmp 完整重下。
+    /// <paramref name="currentETag"/>/<paramref name="currentLastModified"/> 是本次探测到的
+    /// 服务器校验器：清单与当前都有校验器且不一致时（同路径内容变化但长度不变），必须拒绝
+    /// ——否则旧的完整 .tmp 会被直接采用，产出"长度正确但内容损坏"的文件。
     /// internal 供测试验证"等长但资源身份不同"的 .tmp 被拒绝。
     /// </summary>
-    internal static bool CanResumeFrom(string tmpName, string url, long totalLength, out string? reason)
+    internal static bool CanResumeFrom(string tmpName, string url, long totalLength, out string? reason, string? currentETag = null, string? currentLastModified = null)
     {
         reason = null;
         try
@@ -735,6 +754,20 @@ internal static class BBDownDownloadUtil
             if (m.TotalLength != totalLength)
             {
                 reason = $"续传清单总长({m.TotalLength})与当前探测({totalLength})不一致";
+                return false;
+            }
+            // 校验器对比：清单与当前探测都有 ETag/Last-Modified 且不一致 → 内容已变，拒绝续传。
+            // 仅一方有校验器时不强制（有些 CDN 不返回 ETag/Last-Modified），退化为上面
+            // 的身份+长度判断。
+            if (currentETag is not null && m.ETag is not null && currentETag != m.ETag)
+            {
+                reason = $"服务器 ETag 已变化（{m.ETag} → {currentETag}），内容不可信";
+                return false;
+            }
+            if (currentLastModified is not null && m.LastModified is not null
+                && !string.Equals(currentLastModified, m.LastModified, StringComparison.OrdinalIgnoreCase))
+            {
+                reason = $"服务器 Last-Modified 已变化，内容不可信";
                 return false;
             }
             return true;
