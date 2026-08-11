@@ -62,9 +62,10 @@ public class WatchLaterCommand : Command<WatchLaterSettings>
                 // 稍后再看接口需要登录：先加载本地登录凭据（或用户传入的 cookie）。
                 // 用统一会话初始化入口：不仅加载凭据，还做登录检查并提取 wbi——
                 // 稍后再看列表与后续下载都用 WEB API，空 wbi 的 w_rid 会被 B 站拒绝。
+                // 返回的完整会话在父流程自身异步流内应用（子方法内 AsyncLocal 写入不回流）。
                 var bootstrap = new MyOption { Cookie = settings.Cookie, AccessToken = settings.AccessToken, UseTvApi = settings.UseTvApi, UseAppApi = settings.UseAppApi, UseIntlApi = settings.UseIntlApi };
-                var newWbi = await Program.InitializeRequestSessionAsync(bootstrap, cancellationToken);
-                if (newWbi is not null) Core.Config.WBI_FLOW = newWbi;
+                var session = await Program.InitializeRequestSessionAsync(bootstrap, cancellationToken);
+                if (session is not null) Core.Config.Apply(session);
 
                 Logger.Log("正在获取稍后再看列表...");
                 var list = await FetchWatchLaterAsync(cancellationToken);

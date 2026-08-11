@@ -81,7 +81,7 @@ public static class LiveStreamUtil
         // 若下一次启动直接递归删除整个 .segs（旧实现正是如此），保留内容即丢失。
         // 这里只隔离旧会话（提示保留路径），不自动删除非空会话；当前会话完成后清理自己的目录。
         ReportStaleSessions(segRoot);
-        var segDir = Path.Combine(segRoot, $"session-{DateTime.Now:yyyyMMdd_HHmmss}");
+        var segDir = Path.Combine(segRoot, $"session-{DateTime.Now:yyyyMMdd_HHmmss}-{Guid.NewGuid():N}");
         Directory.CreateDirectory(segDir);
 
         long total = 0;

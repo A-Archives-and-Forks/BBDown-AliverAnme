@@ -144,9 +144,10 @@ public class SubCheckCommand : Command<SubCheckSettings>
             };
             // 统一初始化请求会话：订阅枚举（mid: 空间/收藏夹/合集等）经 SpaceVideoFetcher →
             // Parser.WbiSign 签名，必须先取得 wbi，否则空 wbi 的 w_rid 会被 B 站拒绝。
-            // 返回的新 wbi 在父流程（SubCheck 自身异步流）内显式应用。
-            var newWbi = await Program.InitializeRequestSessionAsync(sessionOption, cancellationToken);
-            if (newWbi is not null) Core.Config.WBI_FLOW = newWbi;
+            // 返回的完整会话（含本地凭据与新 wbi）在父流程（SubCheck 自身异步流）内显式应用——
+            // 子方法内 AsyncLocal 写入不会回流，只应用 newWbi 会让本地凭据丢失。
+            var session = await Program.InitializeRequestSessionAsync(sessionOption, cancellationToken);
+            if (session is not null) Core.Config.Apply(session);
 
             int failedSubs = 0;
             foreach (var sub in subs)

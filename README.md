@@ -136,7 +136,7 @@ BBDown 会在开始下载前识别这种情况并中止，避免产出一个被�
 | `login` | APP 扫码登录 WEB 账号 |
 | `logintv` | APP 扫码登录 TV 账号 |
 | `serve` | 以 API 服务器模式运行 |
-| `live` | 录制 B 站直播流（断流自动重连，录制内容先写入 `.part` 临时文件，结束/取消时改名为最终文件） |
+| `live` | 录制 B 站直播流（断流自动重连，录制内容写入独立分段，结束后用 FFmpeg concat 合成最终文件；取消/断连时已录分段保留在 `.segs/session-*` 目录，可手动恢复） |
 | `article` | 下载 B 站专栏文章为 Markdown |
 | `watchlater` | 批量下载稍后再看列表（需登录） |
 | `sub` | 订阅管理：`sub add/list/remove/check`，检查并增量下载新内容 |

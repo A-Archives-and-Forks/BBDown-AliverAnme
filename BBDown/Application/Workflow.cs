@@ -77,14 +77,14 @@ internal partial class Program
         return (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay);
     }
 
-    public static async Task<(string fetchedAid, VInfo vInfo, string apiType, string? newWbi)> GetVideoInfoAsync(MyOption myOption, string aidOri, string input, CancellationToken cancellationToken = default)
+    public static async Task<(string fetchedAid, VInfo vInfo, string apiType, AppSettings? session)> GetVideoInfoAsync(MyOption myOption, string aidOri, string input, CancellationToken cancellationToken = default)
     {
-        // 统一初始化请求会话：加载凭据 + 登录检查 + 提取 wbi（WEB API 路径）。
-        // InitializeRequestSessionAsync 不写 Config（AsyncLocal 不回流），返回的
-        // newWbi 由本方法在自身流内显式应用（本方法后续 fetcher 请求用得上），
-        // 同时带回父流程由调用方在自身流内应用。
-        string? returnedWbi = await InitializeRequestSessionAsync(myOption, cancellationToken);
-        if (returnedWbi is not null) Core.Config.WBI_FLOW = returnedWbi;
+        // 统一初始化请求会话：加载凭据 + 登录检查 + 提取 wbi。返回完整的会话配置
+        // （含本地 BBDown.data 加载出的 Cookie/Token，以及提取的 wbi），由调用方在
+        // 自身异步流内 Config.Apply 一次性应用——子方法内的 AsyncLocal 写入不会回流
+        // 父流程（见 ConfigPropagationTests），只返回 newWbi 会让本地凭据在返回后丢失。
+        AppSettings? session = await InitializeRequestSessionAsync(myOption, cancellationToken);
+        if (session is not null) Config.Apply(session);
 
         Logger.Log("获取aid...");
         aidOri = await UrlResolver.ResolveAsync(input, cancellationToken);
@@ -169,33 +169,59 @@ internal partial class Program
 
             Logger.Log($"P{p.index}: [{p.cid}] [{p.title}] [{BBDownUtil.FormatTime(p.dur)}]");
         }
-        // 返回 newWbi 由父流程在自身流内应用：AsyncLocal 写入不会回流父调用方
+        // 返回 session 由父流程在自身流内 Config.Apply：AsyncLocal 写入不会回流父调用方
         // （父流程的 ExecutionContext 快照在 await 前已捕获）。父流程在 GetVideoInfoAsync
-        // 返回后继续调用 DownloadPagesAsync → Parser.WbiSign，必须用上这一版新密钥，
-        // 否则 w_rid 仍用旧密钥签名（密钥轮换后服务器会拒绝）。
-        return (aidOri, vInfo, apiType, returnedWbi);
+        // 返回后继续调用 DownloadPagesAsync → Parser.WbiSign，必须用上这一版的凭据与新密钥，
+        // 否则 w_rid 仍用旧密钥签名（密钥轮换后服务器会拒绝），本地凭据也会丢失。
+        return (aidOri, vInfo, apiType, session);
     }
 
     /// <summary>
-    /// 统一初始化一次请求会话：加载凭据 → 登录检查 → 提取 wbi（仅 WEB API 路径）。
-    /// 返回提取到的新 wbi（可能为 null），由调用方在自身异步流内显式应用——
-    /// 本方法不写 Config（AsyncLocal 写入只影响本方法上下文，不会回流调用方）。
-    /// CLI 下载（DoWorkAsync → GetVideoInfoAsync）、Serve 任务、订阅检查（SubCheck）、
-    /// 稍后再看（WatchLater）都应先调用本方法，否则空间/收藏夹/合集等经
-    /// Parser.WbiSign 签名的请求会用空 wbi 发出（B 站返回签名错误）。
+    /// 统一初始化一次请求会话：加载凭据（含本地 BBDown.data 等文件）→ 登录检查 → 提取 wbi。
+    /// 返回完整的 <see cref="AppSettings"/>（含凭据与新 wbi），由调用方在自身异步流内
+    /// Config.Apply 一次性应用——本方法不写 Config（AsyncLocal 写入只影响本方法上下文，
+    /// 不会回流调用方）。CLI 下载、Serve 任务、订阅检查（SubCheck）、稍后再看（WatchLater）
+    /// 都应先调用本方法并应用返回值，否则空间/收藏夹/合集等经 Parser.WbiSign 签名的请求
+    /// 会用空 wbi 发出（B 站返回签名错误），本地凭据也会在返回后丢失。
+    /// 返回 null 表示无需更新（如 INTL/TV 模式且未加载到新凭据）。
     /// </summary>
-    public static async Task<string?> InitializeRequestSessionAsync(MyOption myOption, CancellationToken cancellationToken = default)
+    public static async Task<AppSettings?> InitializeRequestSessionAsync(MyOption myOption, CancellationToken cancellationToken = default)
     {
-        // 加载认证信息
-        LoadCredentials(myOption);
+        // 计算加载后的凭据（显式传参优先，否则本地文件），但不 Apply——
+        // 由调用方拿返回值在自身流内应用，避免子方法内的 AsyncLocal 写入丢失。
+        string cookie = !string.IsNullOrEmpty(myOption.Cookie) ? myOption.Cookie : Config.Current.Cookie;
+        string token = !string.IsNullOrEmpty(myOption.AccessToken)
+            ? myOption.AccessToken.Replace("access_token=", "")
+            : Config.Current.Token;
+        if (string.IsNullOrEmpty(cookie) && File.Exists(Path.Combine(APP_DIR, "BBDown.data")))
+        {
+            Logger.Log("加载本地cookie...");
+            Logger.LogDebug("文件路径：{0}", Path.Combine(APP_DIR, "BBDown.data"));
+            cookie = File.ReadAllText(Path.Combine(APP_DIR, "BBDown.data"));
+        }
+        if (string.IsNullOrEmpty(token) && File.Exists(Path.Combine(APP_DIR, "BBDownTV.data")) && myOption.UseTvApi)
+        {
+            Logger.Log("加载本地token...");
+            Logger.LogDebug("文件路径：{0}", Path.Combine(APP_DIR, "BBDownTV.data"));
+            token = File.ReadAllText(Path.Combine(APP_DIR, "BBDownTV.data")).Replace("access_token=", "");
+        }
+        if (string.IsNullOrEmpty(token) && File.Exists(Path.Combine(APP_DIR, "BBDownApp.data")) && myOption.UseAppApi)
+        {
+            Logger.Log("加载本地token...");
+            Logger.LogDebug("文件路径：{0}", Path.Combine(APP_DIR, "BBDownApp.data"));
+            token = File.ReadAllText(Path.Combine(APP_DIR, "BBDownApp.data")).Replace("access_token=", "");
+        }
 
-        // 检测是否登录了账号。WBI 只在 WEB API 路径需要：INTL/TV 走各自签名，
-        // APP 走 access_key，均不涉及 w_rid。
-        if (myOption is { UseIntlApi: false, UseTvApi: false } && Config.Current.Area == "")
+        string? newWbi = null;
+        // 检测是否登录了账号并提取 wbi。WBI 是元数据 fetcher（SpaceVideoFetcher 的
+        // mid: 列表）的签名依赖，不能只根据最终播放 API 模式决定：FetcherFactory 无论
+        // TV/INTL/WEB 都把 mid: 路由到 SpaceVideoFetcher，后者无条件用 Parser.WbiSign
+        // 签名（x/space/wbi/arc/search 是 WEB 接口）。因此只要可能解析空间类目标就初始化。
+        if (Config.Current.Area == "")
         {
             Logger.Log("检测账号登录...");
-            var (isLoggedIn, cookieExpired, newWbi) = await BBDownUtil.CheckLoginWithDetails(Config.Current.Cookie, cancellationToken);
-            // 返回 newWbi 由调用方在自身流内 Apply（AsyncLocal 语义），本方法不写。
+            var (isLoggedIn, cookieExpired, wbi) = await BBDownUtil.CheckLoginWithDetails(cookie, cancellationToken);
+            newWbi = wbi;
             if (!isLoggedIn)
             {
                 if (cookieExpired)
@@ -217,9 +243,14 @@ internal partial class Program
                     Logger.LogWarn("========================================");
                 }
             }
-            return newWbi;
         }
-        return null;
+
+        // 构造要应用到当前流的完整会话：含加载出的凭据（可能来自本地文件）与新 wbi。
+        // 若与当前流配置无差异则返回 null，避免无谓的 Config.Apply。
+        var current = Config.Current;
+        var session = current with { Cookie = cookie, Token = token, Wbi = newWbi ?? current.Wbi };
+        if (session == current) return null;
+        return session;
     }
 
 }

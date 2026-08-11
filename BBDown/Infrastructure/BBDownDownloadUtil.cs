@@ -284,7 +284,11 @@ internal static class BBDownDownloadUtil
             return;
         }
         int retry = 0;
-        string tmpName = Path.Combine(desDir, Path.GetFileNameWithoutExtension(path) + ".tmp");
+        // 临时文件保留目标扩展名（path + ".tmp"）：视频 xxx.mp4 与音频 xxx.m4a 路径只差
+        // 扩展名，此前用 GetFileNameWithoutExtension 会让两者共用同一 .tmp——视频中断
+        // 留下的 1MB 视频数据会被下次音频下载当成音频前缀续传（长度正确但内容损坏）。
+        // 保留扩展名即隔离音视频的临时文件，且与多线程分片（.vclip/.aclip）的隔离一致。
+        string tmpName = path + ".tmp";
         long fileSize = await GetFileSizeAsync(url, token);
         // 必须要求 fileSize > 0：服务器未返回 Content-Length 时 fileSize 为 0，
         // 此时若 path 恰好是上次失败留下的空文件，会被误判成"已下载完成"

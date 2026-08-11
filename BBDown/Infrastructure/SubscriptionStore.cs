@@ -24,6 +24,25 @@ public static class SubscriptionStore
     private static readonly string SubFile = Path.Combine(Program.APP_DIR, "BBDownSubscriptions.json");
     private static readonly string HistoryFile = Path.Combine(Program.APP_DIR, "BBDownSubscriptions.history.json");
 
+    /// <summary>
+    /// 把损坏的历史文件隔离为 .corrupt-时间戳 并返回隔离路径。
+    /// 返回 null 表示隔离失败（文件被占用等，保留原位）。
+    /// internal 供测试验证"损坏历史不静默当空/重置"。
+    /// </summary>
+    internal static string? IsolateCorruptHistoryFile()
+    {
+        string corrupt = HistoryFile + $".corrupt-{DateTimeOffset.Now.ToUnixTimeSeconds()}";
+        try
+        {
+            if (File.Exists(HistoryFile)) File.Move(HistoryFile, corrupt, true);
+            return corrupt;
+        }
+        catch (IOException)
+        {
+            return null;
+        }
+    }
+
     // 走 JsonTypeInfo 的序列化：AOT 裁剪安全，且可自定义缩进与不转义非 ASCII
     private static string ToJson<T>(T value, JsonTypeInfo<T> typeInfo)
     {
@@ -55,16 +74,11 @@ public static class SubscriptionStore
 
     private static void WriteSubs(List<Subscription> subs)
     {
-        try
+        // 写入失败必须向上传播：调用方据此返回非零退出码/失败状态。
+        // 此前吞掉异常后调用方仍打印"已添加订阅"，用户以为成功但文件没写入。
+        lock (_ioLock)
         {
-            lock (_ioLock)
-            {
-                AtomicWrite(SubFile, ToJson(subs, SubscriptionJsonContext.Default.ListSubscription));
-            }
-        }
-        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-        {
-            Logger.LogWarn($"写入订阅文件失败: {ex.Message}");
+            AtomicWrite(SubFile, ToJson(subs, SubscriptionJsonContext.Default.ListSubscription));
         }
     }
 
@@ -110,7 +124,9 @@ public static class SubscriptionStore
         }
     }
 
-    /// <summary>某个订阅已成功下载过的 avid 集合。</summary>
+    /// <summary>某个订阅已成功下载过的 avid 集合。
+    /// 历史文件损坏时隔离为 .corrupt-时间戳 并抛异常（调用方应中止该订阅，不能当空历史
+    /// 继续——否则已下载内容会被当作新增重新下载一遍）。</summary>
     public static HashSet<string> LoadHistory(string target)
     {
         try
@@ -127,10 +143,11 @@ public static class SubscriptionStore
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {
-            // 历史文件损坏/不可读时不能静默当作"空历史"：会让已下载过的内容被
-            // 当作新增重新下载一遍（批量重复下载）。至少明确警告用户原因。
-            Logger.LogWarn($"读取订阅历史失败（{ex.Message}），已当作无历史处理，可能重新下载已下载内容: {HistoryFile}");
-            return [];
+            // 损坏历史隔离而非当空历史/静默重置：保留现场供排查，同时中止当前订阅。
+            // 静默当空历史会让已下载内容被当作新增重新下载；静默重置会丢失所有订阅的历史。
+            string? corrupt = IsolateCorruptHistoryFile();
+            Logger.LogError($"订阅历史文件损坏（{ex.Message}），已隔离为 {corrupt ?? HistoryFile}，中止当前订阅以避免重复下载");
+            throw new InvalidOperationException($"订阅历史文件损坏，已隔离为 {corrupt ?? HistoryFile}，请检查后恢复", ex);
         }
     }
 
@@ -139,28 +156,27 @@ public static class SubscriptionStore
         lock (_ioLock)
         {
             var hist = new Dictionary<string, List<string>>();
-            try
+            if (File.Exists(HistoryFile))
             {
-                if (File.Exists(HistoryFile))
+                try
+                {
                     hist = JsonSerializer.Deserialize(File.ReadAllText(HistoryFile), SubscriptionJsonContext.Default.DictionaryStringListString) ?? new();
-            }
-            catch (JsonException)
-            {
-                // 历史文件损坏时重置——但必须警告：静默重置会让已下载过的内容
-                // 被当作"新增"重新下载一遍，用户无从得知原因。
-                Logger.LogWarn($"订阅历史文件损坏，已重置历史: {HistoryFile}");
+                }
+                catch (JsonException ex)
+                {
+                    // 历史文件损坏：隔离而非静默重置。静默重置会让已下载过的内容在下次
+                    // 检查时被当作新增重新下载一遍，且丢失全部订阅的历史。
+                    string? corrupt = IsolateCorruptHistoryFile();
+                    Logger.LogError($"订阅历史文件损坏（{ex.Message}），已隔离为 {corrupt ?? HistoryFile}，中止记录以避免覆盖历史");
+                    throw new InvalidOperationException($"订阅历史文件损坏，已隔离为 {corrupt ?? HistoryFile}，请检查后恢复", ex);
+                }
             }
 
             if (!hist.TryGetValue(target, out var list)) { list = []; hist[target] = list; }
             if (!list.Contains(aid)) list.Add(aid);
-            try
-            {
-                AtomicWrite(HistoryFile, ToJson(hist, SubscriptionJsonContext.Default.DictionaryStringListString));
-            }
-            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
-            {
-                Logger.LogWarn($"写入订阅历史失败: {ex.Message}");
-            }
+            // 写入失败向上传播：调用方据此让 sub check 返回非零退出码，
+            // 否则下次运行会因历史未记录而重复下载已下载内容。
+            AtomicWrite(HistoryFile, ToJson(hist, SubscriptionJsonContext.Default.DictionaryStringListString));
         }
     }
 }

@@ -780,10 +780,11 @@ public class BBDownApiServer
         {
             task.SetStatus(DownloadTaskStatus.Running);
             var (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay) = Program.SetUpWork(option);
-            var (fetchedAid, vInfo, apiType, newWbi) = await Program.GetVideoInfoAsync(option, aidOri, input, linkedCts.Token);
-            // GetVideoInfoAsync 在子异步流程中提取的 wbi 不会自动回流父流程（AsyncLocal 语义），
-            // 这里在父流程内显式应用，确保后续 DownloadPagesAsync → Parser.WbiSign 用上新密钥。
-            if (newWbi is not null) Core.Config.WBI_FLOW = newWbi;
+            var (fetchedAid, vInfo, apiType, session) = await Program.GetVideoInfoAsync(option, aidOri, input, linkedCts.Token);
+            // GetVideoInfoAsync 在子异步流程中加载的凭据与提取的 wbi 不会自动回流父流程
+            // （AsyncLocal 语义），这里在父流程内显式应用，确保后续 DownloadPagesAsync →
+            // Parser.WbiSign 用上新密钥与本地凭据。
+            if (session is not null) Core.Config.Apply(session);
             task.Title = vInfo.Title;
             task.Pic = vInfo.Pic;
             task.VideoPubTime = vInfo.PubTime;

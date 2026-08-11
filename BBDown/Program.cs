@@ -202,10 +202,11 @@ partial class Program
         cancellationToken.ThrowIfCancellationRequested();
         var (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
             input, savePathFormat, lang, aidOri, delay) = SetUpWork(myOption);
-        var (fetchedAid, vInfo, apiType, newWbi) = await GetVideoInfoAsync(myOption, aidOri, input, cancellationToken);
-        // GetVideoInfoAsync 在子异步流程中提取的 wbi 不会自动回流父流程（AsyncLocal 语义），
-        // 这里在父流程内显式应用，确保后续 DownloadPagesAsync → Parser.WbiSign 用上新密钥。
-        if (newWbi is not null) Core.Config.WBI_FLOW = newWbi;
+        var (fetchedAid, vInfo, apiType, session) = await GetVideoInfoAsync(myOption, aidOri, input, cancellationToken);
+        // GetVideoInfoAsync 在子异步流程中加载的凭据与提取的 wbi 不会自动回流父流程
+        // （AsyncLocal 语义），这里在父流程内显式应用，确保后续 DownloadPagesAsync →
+        // Parser.WbiSign 用上新密钥与本地凭据。GetVideoInfoAsync 内部已对自身流程应用。
+        if (session is not null) Core.Config.Apply(session);
         await DownloadPagesAsync(myOption, vInfo, encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
             input, savePathFormat, lang, fetchedAid, delay, apiType, cancellationToken: cancellationToken);
     }

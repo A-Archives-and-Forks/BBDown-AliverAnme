@@ -242,6 +242,46 @@ public class DownloadPipelineTests
         }
     }
 
+    /// <summary>
+    /// 回归：视频与音频的临时文件必须隔离。旧实现用 GetFileNameWithoutExtension 生成
+    /// .tmp，视频 xxx.mp4 与音频 xxx.m4a 共用 video.tmp——视频中断留下的数据会被音频
+    /// 下载当成前缀续传（长度正确但内容损坏）。新实现保留扩展名（video.mp4.tmp /
+    /// video.m4a.tmp）。此测试预置一个旧命名的共享 video.tmp 残留，下载音频并验证产物
+    /// 与服务端字节一致：若音频误用共享残留作前缀，哈希必然失配。
+    /// </summary>
+    [Fact]
+    public async Task SingleThreadDownload_AudioDoesNotReuseStaleSharedTempFromVideo()
+    {
+        using var server = new LocalByteServer(64 * 1024);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var videoPath = Path.Combine(dir, "video.mp4");
+        var audioPath = Path.Combine(dir, "video.m4a"); // 同 stem，仅扩展名不同
+        try
+        {
+            // 预置旧命名下的共享 .tmp 残留（模拟视频中断留下的数据）
+            var staleShared = Path.Combine(dir, "video.tmp");
+            var staleBytes = new byte[32 * 1024]; // 音频 64KB 的一半
+            new Random(9).NextBytes(staleBytes);
+            await File.WriteAllBytesAsync(staleShared, staleBytes);
+
+            // 下载音频（单线程）：新实现用 video.m4a.tmp，忽略共享 video.tmp 残留
+            var config = new BBDownDownloadUtil.DownloadConfig();
+            await BBDownDownloadUtil.DownloadFileAsync(
+                $"http://127.0.0.1:{server.Port}/file", audioPath, config, CancellationToken.None);
+
+            // 音频产物必须与服务端字节一致：若旧实现把视频残留当音频前缀续传，
+            // 输出 = 32KB 视频随机 + 32KB 服务端尾部，哈希必然失配
+            Assert.True(File.Exists(audioPath));
+            Assert.Equal(server.PayloadHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(audioPath)));
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
     /// <summary>返回错误 Content-Range 起始偏移的本地服务：验证下载必须拒绝而非接受错位区间。</summary>
     private sealed class MisleadingRangeServer : IDisposable
     {

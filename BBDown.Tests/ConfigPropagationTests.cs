@@ -73,13 +73,13 @@ public class ConfigPropagationTests
     }
 
     /// <summary>
-    /// 锁定 GetVideoInfoAsync 的返回契约：必须把提取的 newWbi 带回父流程（第四元），
-    /// 由 CLI 的 DoWorkAsync 与 Serve 的 ProcessDownloadTaskAsync 在返回后显式应用。
-    /// 若未来改回三/二元组或删掉 newWbi，此测试失败——父流程将失去密钥轮换后的
-    /// w_rid 签名能力（Parser.WbiSign 在 GetVideoInfoAsync 返回后才被调用）。
+    /// 锁定 GetVideoInfoAsync 的返回契约：第四元必须是完整会话 AppSettings?（含凭据 + wbi），
+    /// 由 CLI 的 DoWorkAsync 与 Serve 的 ProcessDownloadTaskAsync 在返回后显式 Config.Apply。
+    /// 若未来改回只返回 newWbi 或删掉会话，此测试失败——父流程将失去本地凭据与密钥轮换
+    /// 后的 w_rid 签名能力（Parser.WbiSign 在 GetVideoInfoAsync 返回后才被调用）。
     /// </summary>
     [Fact]
-    public void GetVideoInfoAsync_ReturnsNewWbi_InFourthTupleElement()
+    public void GetVideoInfoAsync_ReturnsFullSession_InFourthTupleElement()
     {
         var method = typeof(Program).GetMethod("GetVideoInfoAsync");
         Assert.NotNull(method);
@@ -88,10 +88,10 @@ public class ConfigPropagationTests
             "GetVideoInfoAsync 应返回 Task<元组>");
         var tuple = ret.GetGenericArguments()[0];
         Assert.True(tuple.IsGenericType && tuple.GetGenericTypeDefinition() == typeof(ValueTuple<,,,>),
-            "GetVideoInfoAsync 应返回 4 元组 (fetchedAid, vInfo, apiType, newWbi)");
+            "GetVideoInfoAsync 应返回 4 元组 (fetchedAid, vInfo, apiType, session)");
         var fields = tuple.GetFields();
-        // 第四元必须是 string?（newWbi）：子流程提取的 wbi 密钥带回父流程
-        Assert.Equal(typeof(string), fields[3].FieldType);
+        // 第四元必须是 AppSettings（完整会话）：子流程加载的凭据与 wbi 密钥带回父流程
+        Assert.Equal(typeof(AppSettings), fields[3].FieldType);
     }
 
     /// <summary>
@@ -128,11 +128,60 @@ public class ConfigPropagationTests
         string api = "mid=1&wts=1700000000";
         Config.ApplyToCurrentAsyncFlow(Config.Current with { Wbi = "flow-key" });
         Assert.Contains($"w_rid={ComputeMd5Hex(api + "flow-key")}", Parser.WbiSign(api));
-
         // 换密钥后签名随之变化：证明签名读取的是当前流配置而非缓存
         Config.ApplyToCurrentAsyncFlow(Config.Current with { Wbi = "rotated-key" });
         Assert.Contains($"w_rid={ComputeMd5Hex(api + "rotated-key")}", Parser.WbiSign(api));
         Assert.DoesNotContain($"w_rid={ComputeMd5Hex(api + "flow-key")}", Parser.WbiSign(api));
+    }
+
+    /// <summary>
+    /// 回归：InitializeRequestSessionAsync 必须返回完整会话（含凭据 + wbi），
+    /// 而不是只返回 newWbi。子方法内 LoadCredentials 的 Config.Apply 写入 AsyncLocal
+    /// 不会回流父流程（本类 SubMethod_SetConfig_DoesNotFlowBackToParent 已证明），
+    /// 若只返回 wbi，用本地 BBDown.data 未显式传参时，返回后 Fetcher/下载流程会
+    /// 看到旧的空 Cookie/Token。此测试验证：父流程拿到返回值并 Config.Apply 后，
+    /// 凭据在新流程内可见。
+    /// </summary>
+    [Fact]
+    public async Task Session_ReturnedByChild_WhenAppliedInParent_MakesCredentialsVisible()
+    {
+        // 父流程初始：无 Cookie（模拟未显式传参、尚未加载本地凭据）
+        Config.Apply(Config.Current with { Cookie = "", Wbi = "old" });
+
+        // 子方法模拟 InitializeRequestSessionAsync：加载凭据 + 提取 wbi，
+        // 返回完整 AppSettings 但不 Apply（真实实现正是如此，避免 AsyncLocal 丢失）
+        async Task<AppSettings?> Child()
+        {
+            await Task.Yield();
+            var loaded = Config.Current with { Cookie = "SESSDATA=local-cookie", Wbi = "new-key" };
+            return loaded;
+        }
+        var session = await Child();
+
+        // 子方法内不 Apply：父流程此刻仍读旧值（证明子方法的修改没回流）
+        Assert.Equal("", Config.Current.Cookie);
+
+        // 父流程应用返回值——修复后的契约行为
+        if (session is not null) Config.Apply(session);
+
+        // 应用后凭据与 wbi 在父流程内可见
+        Assert.Equal("SESSDATA=local-cookie", Config.Current.Cookie);
+        Assert.Equal("new-key", Config.Current.Wbi);
+    }
+
+    /// <summary>
+    /// 回归：InitializeRequestSessionAsync 返回的会话必须携带完整凭据（不只 wbi），
+    /// 且默认（无登录检查分支，如 INTL/TV 模式）也要能带回加载的凭据。
+    /// </summary>
+    [Fact]
+    public void Session_ReturnType_IsAppSettings()
+    {
+        var method = typeof(Program).GetMethod("InitializeRequestSessionAsync");
+        Assert.NotNull(method);
+        var ret = method!.ReturnType;
+        Assert.True(ret.IsGenericType && ret.GetGenericTypeDefinition() == typeof(Task<>),
+            "InitializeRequestSessionAsync 应返回 Task<AppSettings?>");
+        Assert.Equal(typeof(AppSettings), ret.GetGenericArguments()[0]);
     }
 
     /// <summary>
