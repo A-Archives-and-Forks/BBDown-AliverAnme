@@ -37,7 +37,7 @@ public class LiveCommand : Command<LiveSettings>
 
                 DateTime lastLog = DateTime.MinValue;
                 // 传 roomId：断流/地址过期时内部重新解析流地址续录
-                await LiveStreamUtil.DownloadToFileAsync(settings.RoomId, path, total =>
+                bool recorded = await LiveStreamUtil.DownloadToFileAsync(settings.RoomId, path, total =>
                 {
                     if (DateTime.Now - lastLog >= TimeSpan.FromSeconds(5))
                     {
@@ -46,6 +46,12 @@ public class LiveCommand : Command<LiveSettings>
                     }
                 }, cancellationToken);
 
+                if (!recorded)
+                {
+                    // 未收到任何字节就结束：不生成空文件，也不报告"录制已保存"
+                    Logger.LogWarn("录制未收到任何数据，未保存文件");
+                    return 1;
+                }
                 Logger.Log($"录制已保存: {path}");
                 return 0;
             }

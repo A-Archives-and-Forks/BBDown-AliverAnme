@@ -56,7 +56,13 @@ partial class Program
 
     private static void Console_CancelKeyPress(object? sender, ConsoleCancelEventArgs e)
     {
-        Logger.LogWarn("Force Exit...");
+        // 首次 Ctrl+C：恢复终端状态后只取消根 CTS 并允许进程走正常退出路径。
+        // 此前这里直接 Environment.Exit(0)：下载/ffmpeg/DRM 的 finally 不保证执行、
+        // 直播 .part 不会改名保存、serve 任务状态来不及持久化，且即使下载未完成
+        // 也以成功码 0 退出。现在把取消交给命令执行流（Spectre 收到 OperationCanceledException
+        // 返回 CancellationExitCode=130），所有清理逻辑得以执行。
+        // 必须设置 e.Cancel = true：否则 Ctrl+C 处理结束后 OS 会立即终止进程，
+        // 优雅退出路径同样被绕过。
         try
         {
             Console.ResetColor();
@@ -64,9 +70,26 @@ partial class Program
             if (!OperatingSystem.IsWindows())
                 System.Diagnostics.Process.Start("stty", "echo");
         }
-        catch { /* 尽力恢复终端状态，进程即将退出，失败无需上报 */ }
-        Environment.Exit(0);
+        catch { /* 尽力恢复终端状态，失败无需上报 */ }
+
+        if (_firstCancelHandled)
+        {
+            // 二次 Ctrl+C：命令清理可能卡住（如外部进程等待超时），强制终止。
+            // 用标准 130（128+SIGINT）退出码，比 0 更能反映"被中断"。
+            Logger.LogWarn("强制退出...");
+            Environment.Exit(130);
+        }
+        _firstCancelHandled = true;
+        Logger.LogWarn("正在取消并等待清理完成（再次 Ctrl+C 强制退出）...");
+        e.Cancel = true;
+        try { _rootCts.Cancel(); } catch { /* 取消令牌源可能已释放，忽略 */ }
     }
+
+    /// <summary>根取消令牌源：Ctrl+C 首次触发时取消它，让命令执行流走优雅退出路径。</summary>
+    private static readonly CancellationTokenSource _rootCts = new();
+
+    /// <summary>是否已经处理过首次 Ctrl+C（二次则强制退出）。</summary>
+    private static volatile bool _firstCancelHandled;
 
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(DefaultCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(LoginCommand))]
@@ -151,7 +174,7 @@ partial class Program
             });
         });
 
-        return await app.RunAsync(mergedArgs);
+        return await app.RunAsync(mergedArgs, _rootCts.Token);
     }
 
     internal static string[] NormalizeCliArgs(string[] args)

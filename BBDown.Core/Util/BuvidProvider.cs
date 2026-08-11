@@ -36,7 +36,9 @@ public static class BuvidProvider
             }
 
             var cookie = Config.Current.Cookie;
-            Config.COOKIE = string.IsNullOrEmpty(cookie)
+            // 只更新当前异步流的 Cookie：serve 并发任务下写全局会被后写者覆盖，
+            // 使其它任务读到被污染后的凭据（跨账号串号）。flow-scoped 改动只对本任务生效。
+            Config.COOKIE_FLOW = string.IsNullOrEmpty(cookie)
                 ? $"buvid3={buvid3}"
                 : $"{cookie.TrimEnd(';')};buvid3={buvid3}";
             Logger.LogDebug("已获取 buvid3: {0}", buvid3);

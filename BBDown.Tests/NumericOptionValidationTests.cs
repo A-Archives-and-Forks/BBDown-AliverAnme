@@ -84,4 +84,49 @@ public class NumericOptionValidationTests
 
         Assert.Null(Record.Exception(() => Program.ValidateNumericOptionsForTest(option)));
     }
+
+    [Fact]
+    public void UpperBoundaryValues_AreAccepted()
+    {
+        var option = Valid();
+        option.RetryCount = 100;
+        option.RetryDelay = 600_000;
+        option.ThreadSegmentSize = 1024;
+        option.DelayPerPage = 600;
+
+        Assert.Null(Record.Exception(() => Program.ValidateNumericOptionsForTest(option)));
+    }
+
+    [Theory]
+    [InlineData(101)]      // 超过 100：无限重试拖垮任务
+    [InlineData(int.MaxValue)]
+    public void RetryCount_AboveUpperBound_Throws(int value)
+    {
+        var option = Valid();
+        option.RetryCount = value;
+
+        var ex = Assert.Throws<ArgumentException>(() => Program.ValidateNumericOptionsForTest(option));
+        Assert.Contains("--retry-count", ex.Message);
+    }
+
+    [Fact]
+    public void RetryDelay_AboveUpperBound_Throws()
+    {
+        // 退避基数 (retry+1)*RetryDelayMs 会随重试次数线性放大，过大值导致单次等待数小时
+        var option = Valid();
+        option.RetryDelay = 600_001;
+
+        var ex = Assert.Throws<ArgumentException>(() => Program.ValidateNumericOptionsForTest(option));
+        Assert.Contains("--retry-delay", ex.Message);
+    }
+
+    [Fact]
+    public void DelayPerPage_AboveUpperBound_Throws()
+    {
+        var option = Valid();
+        option.DelayPerPage = 601;
+
+        var ex = Assert.Throws<ArgumentException>(() => Program.ValidateNumericOptionsForTest(option));
+        Assert.Contains("--delay-per-page", ex.Message);
+    }
 }

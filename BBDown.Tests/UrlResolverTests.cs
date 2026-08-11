@@ -129,4 +129,50 @@ public class UrlResolverTests
         var result = await UrlResolver.ResolveAsync(input);
         Assert.Equal(expected, result);
     }
+
+    // ── 泛抓取域名白名单（SSRF/凭据外发防护） ──
+
+    [Theory]
+    [InlineData("https://www.bilibili.com/video/BV1xx411c7mD")]
+    [InlineData("https://www.bilibili.com/bangumi/play/ep12345")]
+    [InlineData("https://b23.tv/abc123")]
+    [InlineData("https://api.bilibili.com/x/web-interface/view")]
+    [InlineData("https://upos-sz-mirrorcoso1.bilivideo.com/upgcx")]
+    [InlineData("http://hdslb.com/")]
+    [InlineData("https://www.bilibili.tv/intl/video")]
+    [InlineData("https://api.snm0516.aisee.tv/")]
+    public void IsTrustedBilibiliUrl_OfficialHosts_Allowed(string url)
+        => Assert.True(UrlResolver.IsTrustedBilibiliUrl(url));
+
+    [Theory]
+    [InlineData("https://evil.example.com/")]
+    [InlineData("https://evilb23.tv/")]            // 后缀冒充：host 非精确 b23.tv
+    [InlineData("https://b23.tv.evil.com/")]       // 真 bilibili.com 域名陷阱
+    [InlineData("https://bilibili.com.evil.com/")]
+    [InlineData("http://127.0.0.1:23333/")]
+    [InlineData("http://169.254.169.254/latest/meta-data")]
+    [InlineData("http://10.0.0.1/")]
+    [InlineData("https://api.bilibili.com@evil.com/")]  // userinfo 混淆
+    [InlineData("not a url")]
+    [InlineData("ftp://bilibili.com/")]
+    public void IsTrustedBilibiliUrl_UntrustedHosts_Rejected(string url)
+        => Assert.False(UrlResolver.IsTrustedBilibiliUrl(url));
+
+    [Fact]
+    public void IsTrustedBilibiliUrl_PathSuffixConfusion_Rejected()
+    {
+        // 斜杠/路径混淆：纯字符串后缀匹配会放行 "evil.com/.bilibili.com"，
+        // Uri.Host 规范化后必须拒绝
+        Assert.False(UrlResolver.IsTrustedBilibiliUrl("http://evil.com/.bilibili.com"));
+    }
+
+    [Fact]
+    public async Task ResolveAsync_UntrustedHttpUrl_RejectedBeforeNetwork()
+    {
+        // 泛抓取分支会向用户输入的 URL 主机发请求：攻击者域名必须在发起任何
+        // 网络请求之前被域名白名单拦截（否则携带操作者 Cookie 的请求会外发凭据）。
+        var ex = await Assert.ThrowsAsync<ArgumentException>(
+            () => UrlResolver.ResolveAsync("https://evil.example.com/"));
+        Assert.Contains("仅支持解析 B 站域名", ex.Message);
+    }
 }

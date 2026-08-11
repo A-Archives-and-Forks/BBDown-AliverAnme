@@ -42,6 +42,10 @@ public static partial class BBDownUtil
     }
     public static Task<string> GetAvIdAsync(string input) => UrlResolver.ResolveAsync(input);
 
+    /// <summary>带取消令牌的 URL 解析：serve 模式下让 /cancel 能中断正在进行的解析。</summary>
+    public static Task<string> GetAvIdAsync(string input, CancellationToken cancellationToken)
+        => UrlResolver.ResolveAsync(input, cancellationToken);
+
 
     public static string FormatFileSize(double fileSize)
     {
@@ -365,8 +369,10 @@ public static partial class BBDownUtil
                 Logger.LogDebug("nav 响应中缺少 wbi_img，跳过 wbi 密钥更新");
                 return;
             }
-            Core.Config.WBI = GetMixinKey(RSubString(imgUrl) + RSubString(subUrl));
-            Logger.LogDebug("wbi: {0}", Core.Config.WBI);
+            // 只更新当前异步流的 wbi：serve 并发任务下，同时写全局会被最后执行的任务覆盖，
+            // 使其它任务读到串号后的密钥。这里用 flow-scoped setter，改动只对本任务流程生效。
+            Core.Config.WBI_FLOW = GetMixinKey(RSubString(imgUrl) + RSubString(subUrl));
+            Logger.LogDebug("wbi: {0}", Core.Config.WBI_FLOW);
         }
         catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
         {

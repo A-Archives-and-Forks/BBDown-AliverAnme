@@ -15,22 +15,13 @@ namespace BBDown;
 
 internal partial class Program
 {
-    private static readonly object _deprecatedSavePathLock = new();
-
     /// <summary>
-    /// 幂等追加 [&lt;dfn&gt;] 后缀。serve 模式下每个下载任务都会执行一次 SetUpWork→HandleDeprecatedOptions，
-    /// 多个任务若都带废弃的 --add-dfn-subfix，静态默认路径会被反复追加成重复后缀。
+    /// 处理废弃选项。注意：--add-dfn-subfix 与 --no-padding-page-num 的默认路径调整
+    /// 必须写入当前任务的 <see cref="MyOption.FilePattern"/>/<see cref="MyOption.MultiFilePattern"/>，
+    /// 而不是改静态的 SinglePageDefaultSavePath/MultiPageDefaultSavePath——serve 模式下
+    /// 每个任务都会执行一次 SetUpWork，改静态字段会让一个任务的废弃选项永久污染
+    /// 后续所有任务的默认路径。
     /// </summary>
-    private static void EnsureDfnSuffixOnce()
-    {
-        lock (_deprecatedSavePathLock)
-        {
-            if (SinglePageDefaultSavePath.Contains("[<dfn>]")) return;
-            SinglePageDefaultSavePath += "[<dfn>]";
-            MultiPageDefaultSavePath += "[<dfn>]";
-        }
-    }
-
     private static void HandleDeprecatedOptions(MyOption myOption)
     {
         if (myOption.AddDfnSuffix)
@@ -38,8 +29,12 @@ internal partial class Program
             Logger.LogWarn("--add-dfn-subfix 已被弃用, 建议使用 --file-pattern/-F 或 --multi-file-pattern/-M 来自定义输出文件名格式");
             if (string.IsNullOrEmpty(myOption.FilePattern) && string.IsNullOrEmpty(myOption.MultiFilePattern))
             {
-                EnsureDfnSuffixOnce();
-                Logger.LogWarn($"已切换至 -F \"{SinglePageDefaultSavePath}\" -M \"{MultiPageDefaultSavePath}\"");
+                // 只在当前任务生效：追加后缀到本任务的实际模板，不碰静态默认值
+                if (string.IsNullOrEmpty(myOption.FilePattern))
+                    myOption.FilePattern = SinglePageDefaultSavePath + "[<dfn>]";
+                if (string.IsNullOrEmpty(myOption.MultiFilePattern))
+                    myOption.MultiFilePattern = MultiPageDefaultSavePath + "[<dfn>]";
+                Logger.LogWarn($"已切换至 -F \"{myOption.FilePattern}\" -M \"{myOption.MultiFilePattern}\"");
             }
         }
         if (myOption.Aria2cProxy != "")
@@ -67,8 +62,9 @@ internal partial class Program
             Logger.LogWarn("--no-padding-page-num 已被弃用, 建议使用 --file-pattern/-F 或 --multi-file-pattern/-M 来自定义输出文件名格式");
             if (string.IsNullOrEmpty(myOption.FilePattern) && string.IsNullOrEmpty(myOption.MultiFilePattern))
             {
-                MultiPageDefaultSavePath = MultiPageDefaultSavePath.Replace("<pageNumberWithZero>", "<pageNumber>");
-                Logger.LogWarn($"已切换至 -M \"{MultiPageDefaultSavePath}\"");
+                // 只在当前任务生效：替换本任务多P模板里的补零占位符，不碰静态默认值
+                myOption.MultiFilePattern = MultiPageDefaultSavePath.Replace("<pageNumberWithZero>", "<pageNumber>");
+                Logger.LogWarn($"已切换至 -M \"{myOption.MultiFilePattern}\"");
             }
         }
         if (myOption.BandwidthAscending)
@@ -246,25 +242,27 @@ internal partial class Program
             throw new ArgumentException(
                 $"参数有误：--muxer-timeout 需在 1 ~ {maxMuxerTimeoutMinutes} 分钟之间，当前为 {myOption.MuxerTimeout}");
         }
-        if (myOption.RetryCount < 1)
+        if (myOption.RetryCount < 1 || myOption.RetryCount > 100)
         {
             throw new ArgumentException(
-                $"参数有误：--retry-count 至少为 1，当前为 {myOption.RetryCount}（设为 0 将不会发起任何下载）");
+                $"参数有误：--retry-count 需在 1 ~ 100 之间，当前为 {myOption.RetryCount}（设为 0 将不会发起任何下载，过大则无限重试拖垮任务）");
         }
-        if (myOption.RetryDelay < 0)
+        if (myOption.RetryDelay < 0 || myOption.RetryDelay > 600_000)
         {
+            // 上限 600 秒：退避基数 (retry+1) * RetryDelayMs 会随重试次数线性放大，
+            // 过大值会导致单次等待长达数小时、且乘积累加可能溢出 int
             throw new ArgumentException(
-                $"参数有误：--retry-delay 不能为负数，当前为 {myOption.RetryDelay}");
+                $"参数有误：--retry-delay 需在 0 ~ 600000 ms 之间，当前为 {myOption.RetryDelay}");
         }
-        if (myOption.ThreadSegmentSize < 1)
+        if (myOption.ThreadSegmentSize < 1 || myOption.ThreadSegmentSize > 1024)
         {
             throw new ArgumentException(
-                $"参数有误：--thread-segment-size 至少为 1 MB，当前为 {myOption.ThreadSegmentSize}（设为 0 会导致分片切分无法收敛）");
+                $"参数有误：--thread-segment-size 需在 1 ~ 1024 MB 之间，当前为 {myOption.ThreadSegmentSize}（设为 0 会导致分片切分无法收敛）");
         }
-        if (myOption.DelayPerPage < 0)
+        if (myOption.DelayPerPage < 0 || myOption.DelayPerPage > 600)
         {
             throw new ArgumentException(
-                $"参数有误：--delay-per-page 不能为负数，当前为 {myOption.DelayPerPage}");
+                $"参数有误：--delay-per-page 需在 0 ~ 600 秒之间，当前为 {myOption.DelayPerPage}");
         }
     }
 

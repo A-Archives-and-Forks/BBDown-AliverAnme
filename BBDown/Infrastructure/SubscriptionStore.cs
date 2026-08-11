@@ -141,7 +141,12 @@ public static class SubscriptionStore
                 if (File.Exists(HistoryFile))
                     hist = JsonSerializer.Deserialize(File.ReadAllText(HistoryFile), SubscriptionJsonContext.Default.DictionaryStringListString) ?? new();
             }
-            catch (JsonException) { /* 文件损坏时重置历史 */ }
+            catch (JsonException)
+            {
+                // 历史文件损坏时重置——但必须警告：静默重置会让已下载过的内容
+                // 被当作"新增"重新下载一遍，用户无从得知原因。
+                Logger.LogWarn($"订阅历史文件损坏，已重置历史: {HistoryFile}");
+            }
 
             if (!hist.TryGetValue(target, out var list)) { list = []; hist[target] = list; }
             if (!list.Contains(aid)) list.Add(aid);

@@ -347,6 +347,7 @@ static partial class BBDownMuxer
             // 目录里可能有同一 aid 其它分P 已完成的 .ts / 成品，扫目录会把它们
             // 一并拼进本P 输出，产出串味的损坏文件。
             var tsFiles = new List<string>();
+            var sourceFiles = new List<string>();
             foreach (var file in files)
             {
                 var tmpFile = Path.Combine(Path.GetDirectoryName(file)!, Path.GetFileNameWithoutExtension(file) + ".ts");
@@ -363,10 +364,14 @@ static partial class BBDownMuxer
                         $"FLV 分段转封装失败 (ffmpeg code={code})：{Path.GetFileName(file)}，已保留源分段以便重试");
                 }
                 tsFiles.Add(tmpFile);
-                File.Delete(file);
+                // 不在此处删除源分段：后续分段失败时，前面已转好的源应保留以便整体重试。
+                // 源文件在全部转换、合并成功后才统一删除（见下方）。
+                sourceFiles.Add(file);
             }
             BBDownUtil.CombineMultipleFilesIntoSingleFile(tsFiles.ToArray(), outPath);
+            // 全部转换 + 合并成功后才清理：删除 .ts 中间产物与源分段
             foreach (var s in tsFiles) TryDelete(s);
+            foreach (var s in sourceFiles) TryDelete(s);
         }
     }
 

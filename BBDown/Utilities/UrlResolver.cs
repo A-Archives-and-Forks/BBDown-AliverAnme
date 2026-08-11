@@ -19,9 +19,14 @@ public static partial class UrlResolver
         if (input.StartsWith("http", StringComparison.OrdinalIgnoreCase))
         {
             var lowerInput = input.ToLowerInvariant();
-            if (input.Contains("b23.tv"))
+            // b23.tv 短链：仅接受 host 精确等于 b23.tv 的输入。用 Contains 会让
+            // "evilb23.tv" / "b23.tv.evil.com" 这类伪造域名混进来触发一次到攻击者
+            // 服务器的出站请求。重定向逐跳校验：每一跳的 Location 在发起下一跳前
+            // 都必须仍是可信 B 站域名，拒绝即中止——不访问非可信/私网目标。
+            if (Uri.TryCreate(input, UriKind.Absolute, out var inputUri)
+                && inputUri.Host.Equals("b23.tv", StringComparison.OrdinalIgnoreCase))
             {
-                string tmp = await HTTPUtil.GetWebLocationAsync(input, token);
+                string tmp = await HTTPUtil.GetWebLocationCheckedAsync(input, IsTrustedBilibiliUri, token: token);
                 if (tmp == input) throw new InvalidOperationException("无限重定向");
                 input = tmp;
                 lowerInput = input.ToLowerInvariant();
@@ -121,7 +126,17 @@ public static partial class UrlResolver
             }
             else
             {
-                string web = await HTTPUtil.GetWebSourceAsync(input, token: token);
+                // 泛抓取分支：对未识别的 HTTP URL 抓取整页 HTML 并解析 __INITIAL_STATE__。
+                // 这是解析器里唯一会向"用户输入的目标主机"发起网络请求的路径，目标域名
+                // 完全由输入决定。若不加域名守卫，serve 模式下攻击者提交自己的域名，
+                // 该分支会用携带操作者 B 站 Cookie 的请求抓取攻击者页面（HTTPUtil 此前
+                // 无条件附加 Cookie），把本地凭据外发给攻击者（SSRF + 凭据泄露）。
+                // 因此这里：1) 只允许抓取 B 站官方域名；2) 用匿名请求（不带 Cookie）；
+                // 3) 逐跳校验重定向——初始域名可信不代表重定向目标可信，可信域名的
+                // 开放重定向仍可把请求导向内网/非可信主机，泛抓取必须逐跳校验。
+                if (!IsTrustedBilibiliUrl(input))
+                    throw new ArgumentException("输入有误：仅支持解析 B 站域名下的链接");
+                string web = await HTTPUtil.GetWebSourceAnonymousCheckedAsync(input, IsTrustedBilibiliUri, token: token);
                 Regex regex = StateRegex();
                 string json = regex.Match(web).Groups[1].Value;
                 // 页面未含 __INITIAL_STATE__ 时 json 为空，JsonDocument.Parse("") 会抛底层 JsonException；
@@ -207,11 +222,17 @@ public static partial class UrlResolver
         try
         {
             string api = $"https://www.bilibili.com/video/av{avid}/";
-            string location = await HTTPUtil.GetWebLocationAsync(api, token);
+            // 用逐跳校验的重定向解析：av 跳转检查同样不允许跟随到非可信主机。
+            // 返回原地址（未被重定向/重定向被拒）时按非番剧处理。
+            string location = await HTTPUtil.GetWebLocationCheckedAsync(api, IsTrustedBilibiliUri, token: token);
             return location.Contains("/ep") ? $"ep:{EpRegex().Match(location).Groups[1].Value}" : avid;
         }
-        catch (Exception ex) when (ex is HttpRequestException)
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException)
         {
+            // TaskCanceledException：若非用户主动取消（token 未取消），是 HttpClient
+            // 超时/服务器断开——跳转检查失败按原 av 号处理，不阻断解析；
+            // 若确实是用户取消，则重新抛出让上层走取消路径。
+            if (token.IsCancellationRequested) throw;
             Core.Logger.LogWarn($"av{avid} 跳转检查失败: {ex.Message}");
             return avid;
         }
@@ -232,6 +253,33 @@ public static partial class UrlResolver
             // 避免畸形输入（如裸 "bv"）直接因字符串切片越界而崩溃
             throw new ArgumentException($"输入有误：BV 号格式不正确 ({ex.Message})");
         }
+    }
+
+    /// <summary>
+    /// 解析器泛抓取分支的域名白名单：B 站官方域名（含子域）与 b23.tv 短链域名。
+    /// 泛抓取会用匿名请求抓取该 URL 的整页 HTML，必须是用户输入唯一可能触发的
+    /// 对任意主机的出站请求，因此只放行可信域名，防止向攻击者服务器发请求。
+    /// </summary>
+    private static readonly string[] TrustedBilibiliHosts =
+        { "bilibili.com", "b23.tv", "bilivideo.com", "hdslb.com", "biliapi.net", "bilibili.tv", "aisee.tv" };
+
+    internal static bool IsTrustedBilibiliUrl(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+        return IsTrustedBilibiliUri(uri);
+    }
+
+    /// <summary>基于 <see cref="Uri"/> 的信任判定，供逐跳重定向校验回调使用。</summary>
+    internal static bool IsTrustedBilibiliUri(Uri uri)
+    {
+        // 仅 http/https：泛抓取不需要其它协议，避免把输入导向 file:/ftp: 等本地资源
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
+        // Uri.Host 对标准 http/https 返回规范化主机名（不含端口/用户信息），
+        // 直接比对主机名本身，杜绝 "evil.com/bilibili.com" 这类后缀字符串混淆。
+        var host = uri.Host;
+        return TrustedBilibiliHosts.Any(h =>
+            host.Equals(h, StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith("." + h, StringComparison.OrdinalIgnoreCase));
     }
 
     private static async Task<string> GetEpidBySSIdAsync(string ssid, CancellationToken token = default)

@@ -4,7 +4,7 @@
 
 ## 开发环境
 
-- [.NET 9.0 SDK](https://dotnet.microsoft.com/download)
+- [.NET 10.0 SDK](https://dotnet.microsoft.com/download)
 - 支持的操作系统：Windows / Linux / macOS
 
 ## 构建

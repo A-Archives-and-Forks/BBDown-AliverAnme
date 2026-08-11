@@ -46,7 +46,9 @@ jobs:
         run: dotnet restore BBDown.sln
 
       - name: Audit packages
-        run: dotnet list BBDown.sln package --vulnerable
+        # --include-transitive：仅扫描直接依赖会漏掉传递依赖中的已知漏洞，
+        # NuGet 官方要求显式包含传递依赖
+        run: dotnet list BBDown.sln package --vulnerable --include-transitive
 
   # 格式门禁：存量文件存在大量 CHARSET/ENDOFLINE 问题（7350 处），
   # 硬性失败会挡死所有 PR。先用 continue-on-error 把结果暴露在 CI 日志，

@@ -36,9 +36,16 @@ public class OptionDefaultsBindingTests
         var o = Bind("https://www.bilibili.com/video/BV1qt4y1X7TW");
 
         Assert.True(o.MultiThread, "--multi-thread 帮助文本称默认开启");
-        Assert.True(o.ForceHttp, "--force-http 帮助文本称默认开启");
         Assert.True(o.SkipAi, "--skip-ai 帮助文本称默认开启");
         Assert.True(o.ForceReplaceHost, "--force-replace-host 帮助文本称默认开启");
+    }
+
+    [Fact]
+    public void ForceHttp_DefaultsToOff_UsingHttps()
+    {
+        // 默认使用 HTTPS 下载：ForceHttp 已改为默认关闭（HTTP 仅作为显式兼容选项）
+        var o = Bind("https://www.bilibili.com/video/BV1qt4y1X7TW");
+        Assert.False(o.ForceHttp, "--force-http 默认应关闭（使用 HTTPS）");
     }
 
     [Fact]

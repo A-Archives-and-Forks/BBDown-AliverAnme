@@ -163,6 +163,20 @@ class ProgressBar : IDisposable, IProgress<double>
         }
         lock (speedTimer)
         {
+            // 结算最后一段不足 1 秒的增量：速度定时器只在每秒触发时累加
+            // TotalDownloadedBytes（见 SpeedTimerHandler），短下载/下载末尾的最后
+            // <1 秒的字节从未被计入，导致短下载统计为 0、平均速度失真。
+            // 这里在计时器停止前把剩余增量一次性结算进任务字段。
+            long finalDelta = Interlocked.Read(ref downloadedBytes) - Interlocked.Read(ref lastDownloadedBytes);
+            if (finalDelta > 0)
+            {
+                var task = RelatedTask;
+                if (task is not null)
+                {
+                    task.TotalDownloadedBytes += finalDelta;
+                    task.DownloadSpeed = finalDelta;
+                }
+            }
             speedTimer.Dispose();
         }
     }

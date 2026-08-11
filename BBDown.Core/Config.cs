@@ -32,6 +32,16 @@ public static class Config
         lock (_lock) { _settings = settings; }
     }
 
+    /// <summary>
+    /// 只更新当前异步流的配置快照，不触碰全局 <see cref="_settings"/>。
+    /// 用于子方法在下载流程中产生的新配置（如 wbi 密钥、buvid3 cookie）：
+    /// 这些更新应只对当前任务的流程生效——同时写全局会被并发 serve 任务的
+    /// 后写者覆盖，造成跨任务污染（一个任务拿到的配置被另一个任务的尾部写入破坏）。
+    /// 子方法仍返回新值由父流程经 <see cref="Apply"/> 传播到全局的场景，走 Apply。
+    /// </summary>
+    public static void ApplyToCurrentAsyncFlow(AppSettings settings)
+        => _contextSettings.Value = settings;
+
     public static string COOKIE { get => Current.Cookie; set => Apply(Current with { Cookie = value }); }
     public static string TOKEN { get => Current.Token; set => Apply(Current with { Token = value }); }
     public static bool DEBUG_LOG { get => Current.DebugLog; set => Apply(Current with { DebugLog = value }); }
@@ -41,6 +51,20 @@ public static class Config
     public static string AREA { get => Current.Area; set => Apply(Current with { Area = value }); }
     public static string WBI { get => Current.Wbi; set => Apply(Current with { Wbi = value }); }
     public static bool SKIP_SSL_CHECK { get => Current.SkipSslCheck; set => Apply(Current with { SkipSslCheck = value }); }
+
+    /// <summary>
+    /// 只更新当前异步流的 Cookie（不写全局）。用于下载流程中注入 buvid3 等设备标识：
+    /// serve 并发任务下，把注入结果写进全局会让后写者覆盖先写者的凭据，
+    /// 造成跨账号串号。改动只对本任务流程生效，与 <see cref="ApplyToCurrentAsyncFlow"/> 同义。
+    /// </summary>
+    public static string COOKIE_FLOW { get => Current.Cookie; set => ApplyToCurrentAsyncFlow(Current with { Cookie = value }); }
+
+    /// <summary>
+    /// 只更新当前异步流的 Wbi（不写全局）。用于下载流程中提取的 wbi 密钥：
+    /// 与 <see cref="ApplyToCurrentAsyncFlow"/> 同义，见其说明——serve 并发任务下
+    /// 不应让一个任务的 wbi 覆盖全局后被其它任务读到。
+    /// </summary>
+    public static string WBI_FLOW { get => Current.Wbi; set => ApplyToCurrentAsyncFlow(Current with { Wbi = value }); }
 
     public static readonly Dictionary<string, string> qualitys = AppSettings.QualityMap;
 }

@@ -60,11 +60,71 @@ public static class HTTPUtil
     public static string UserAgent { get; set; } = GetRandomUserAgent();
 
     public static async Task<string> GetWebSourceAsync(string url, string? userAgent = null, CancellationToken token = default)
+        => await GetWebSourceCoreAsync(url, sendCookie: true, userAgent: userAgent, token: token);
+
+    /// <summary>
+    /// 匿名抓取网页内容：不携带登录 Cookie。仅用于解析阶段抓取尚未确认可信的
+    /// 用户输入 URL（如 ResolveAsync 的泛抓取分支）——此时目标域名可能由攻击者控制，
+    /// 附带操作者的 B 站凭据会把它外发到攻击者服务器（SSRF + 凭据泄露）。
+    /// 已验证可信的 B 站 API 调用仍走 <see cref="GetWebSourceAsync"/>（携带 Cookie）。
+    /// </summary>
+    public static async Task<string> GetWebSourceAnonymousAsync(string url, string? userAgent = null, CancellationToken token = default)
+        => await GetWebSourceCoreAsync(url, sendCookie: false, userAgent: userAgent, token: token);
+
+    /// <summary>
+    /// 逐跳校验重定向的匿名抓取：不携带 Cookie，且每一跳的 Location 都在发起下一跳
+    /// 请求前交给 <paramref name="validateNextHop"/> 校验。与
+    /// <see cref="GetWebSourceAnonymousAsync"/>（走自动跳转的共享客户端）不同，
+    /// 初始域名可信不代表重定向目标可信——可信域名的开放重定向仍可把请求导向内网。
+    /// </summary>
+    public static async Task<string> GetWebSourceAnonymousCheckedAsync(string url,
+        Func<Uri, bool> validateNextHop, string? userAgent = null, int maxHops = 10, CancellationToken token = default)
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.All,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(1),
+        };
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(1) };
+        string current = url;
+        for (int hop = 0; hop < maxHops; hop++)
+        {
+            using var webRequest = new HttpRequestMessage(HttpMethod.Get, current);
+            webRequest.Headers.TryAddWithoutValidation("User-Agent", userAgent ?? UserAgent);
+            webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
+            webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
+            webRequest.Headers.Connection.Clear();
+
+            using var response = await client.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
+            if ((int)response.StatusCode is >= 300 and < 400)
+            {
+                var location = response.Headers.Location;
+                if (location is null) return current;
+                var next = location.IsAbsoluteUri ? location : new Uri(new Uri(current), location);
+                // 发起下一跳前校验目标：非可信主机 / 私网地址在此被拦截，不会真正访问
+                if (!validateNextHop(next))
+                {
+                    Logger.LogWarn($"重定向目标未通过校验，已中止: {SensitiveDataMasker.MaskUrl(next.ToString())}");
+                    return current;
+                }
+                current = next.ToString();
+                continue;
+            }
+            string htmlCode = await response.Content.ReadAsStringAsync(token);
+            Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
+            return htmlCode;
+        }
+        return current;
+    }
+
+    private static async Task<string> GetWebSourceCoreAsync(string url, bool sendCookie, string? userAgent, CancellationToken token)
     {
         using var webRequest = new HttpRequestMessage(HttpMethod.Get, url);
         webRequest.Headers.TryAddWithoutValidation("User-Agent", userAgent ?? UserAgent);
         webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
-        webRequest.Headers.TryAddWithoutValidation("Cookie", (url.Contains("/ep") || url.Contains("/ss")) ? Config.Current.Cookie + ";CURRENT_FNVAL=4048;" : Config.Current.Cookie);
+        if (sendCookie)
+            webRequest.Headers.TryAddWithoutValidation("Cookie", (url.Contains("/ep") || url.Contains("/ss")) ? Config.Current.Cookie + ";CURRENT_FNVAL=4048;" : Config.Current.Cookie);
         if (url.Contains("api.bilibili.com"))
             webRequest.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
         if (url.Contains("api.bilibili.tv"))
@@ -110,6 +170,112 @@ public static class HTTPUtil
             }
         }
         return url; // fallback: return original URL
+    }
+
+    /// <summary>
+    /// 逐跳校验重定向的地址解析。共享 <see cref="AppHttpClient"/> 启用了自动跳转
+    /// （AllowAutoRedirect=true），请求会先跟随到最终主机才返回——若可信域名存在开放
+    /// 重定向，内部地址或非可信目标仍会被先访问到。此方法用禁用自动跳转的专用客户端
+    /// 手动逐跳跟随：每一跳的 Location 都在**发起下一跳请求之前**交给
+    /// <paramref name="validateNextHop"/> 校验，拒绝即中止（不访问非可信/私网目标）。
+    /// 最多跟随 <paramref name="maxHops"/> 次，防重定向环无限跳转。
+    /// 每跳先 HEAD，不支持 HEAD 的服务器（405/HttpRequestException）回退到 GET 请求同一 URL。
+    /// 返回最终 URL；未被重定向时返回原 URL。
+    /// </summary>
+    public static async Task<string> GetWebLocationCheckedAsync(string url,
+        Func<Uri, bool> validateNextHop, int maxHops = 10, CancellationToken token = default)
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.All,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(1),
+        };
+        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(1) };
+        string current = url;
+        for (int hop = 0; hop < maxHops; hop++)
+        {
+            var method = HttpMethod.Head;
+            bool retryAsGet = false;
+            try
+            {
+                using var webRequest = new HttpRequestMessage(method, current);
+                webRequest.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+                webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
+                webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
+                webRequest.Headers.Connection.Clear();
+
+                using var response = await client.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
+                if ((int)response.StatusCode is >= 300 and < 400)
+                {
+                    var location = response.Headers.Location;
+                    if (location is null)
+                    {
+                        // 3xx 无 Location：无法继续，按原地址返回
+                        return current;
+                    }
+                    var next = location.IsAbsoluteUri ? location : new Uri(new Uri(current), location);
+                    // 发起下一跳前校验目标：非可信主机 / 私网地址在此被拦截，不会真正访问
+                    if (!validateNextHop(next))
+                    {
+                        Logger.LogWarn($"重定向目标未通过校验，已中止: {SensitiveDataMasker.MaskUrl(next.ToString())}");
+                        return current;
+                    }
+                    current = next.ToString();
+                    continue;
+                }
+                if (response.IsSuccessStatusCode)
+                {
+                    return current;
+                }
+                // 非 3xx 且非成功（如 HEAD 返回 405/404）：部分服务器不支持 HEAD，回退 GET
+                retryAsGet = true;
+            }
+            catch (HttpRequestException) when (method == HttpMethod.Head)
+            {
+                // HEAD 不被支持，回退到 GET
+                retryAsGet = true;
+            }
+
+            if (retryAsGet)
+            {
+                try
+                {
+                    using var getRequest = new HttpRequestMessage(HttpMethod.Get, current);
+                    getRequest.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+                    getRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
+                    getRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
+                    getRequest.Headers.Connection.Clear();
+
+                    using var getResponse = await client.SendAsync(getRequest, HttpCompletionOption.ResponseHeadersRead, token);
+                    if ((int)getResponse.StatusCode is >= 300 and < 400)
+                    {
+                        var location = getResponse.Headers.Location;
+                        if (location is null)
+                        {
+                            return current;
+                        }
+                        var next = location.IsAbsoluteUri ? location : new Uri(new Uri(current), location);
+                        if (!validateNextHop(next))
+                        {
+                            Logger.LogWarn($"重定向目标未通过校验，已中止: {SensitiveDataMasker.MaskUrl(next.ToString())}");
+                            return current;
+                        }
+                        current = next.ToString();
+                        continue;
+                    }
+                    return current;
+                }
+                catch (HttpRequestException)
+                {
+                    // GET 也失败：按不可达处理，返回当前地址
+                    return current;
+                }
+            }
+            return current;
+        }
+        // 到达跳数上限仍未结束：返回当前地址（调用方据此判断）
+        return current;
     }
 
     public static async Task<byte[]> GetPostResponseAsync(string Url, byte[] postData, Dictionary<string, string>? headers = null, CancellationToken token = default)

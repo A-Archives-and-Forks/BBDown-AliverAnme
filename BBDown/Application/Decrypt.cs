@@ -66,14 +66,12 @@ internal partial class Program
 
             if (string.IsNullOrEmpty(parsed.KeyHex))
             {
-                Logger.LogWarn("============================================");
-                Logger.LogWarn("自动密钥提取失败，文件将保持加密状态。");
-                Logger.LogWarn("");
-                Logger.LogWarn("解决方案：");
-                Logger.LogWarn("  1. 确保 device.wvd 文件放置在程序目录下");
-                Logger.LogWarn($"  2. 或手动指定: BBDown <url> --key <KEY_HEX> --kid {parsed.KidHex}");
-                Logger.LogWarn("============================================");
-                return;
+                // 用户显式请求了 DRM 解密（--decrypt-drm / --key / --kid）但取钥失败：
+                // 若只是打印警告并 return，任务会继续把"仍是加密的流"当成功产物混流/交付，
+                // 用户拿到加密文件却被告知下载成功。这里抛异常让调用方把任务标记为失败，
+                // 而不是静默交付加密产物。
+                throw new InvalidOperationException(
+                    "DRM 解密密钥获取失败，无法解密。请确保 device.wvd 位于程序目录，或使用 --key --kid 手动提供密钥。");
             }
         }
 
@@ -84,8 +82,10 @@ internal partial class Program
             : FindTool("mp4decrypt");
         if (string.IsNullOrEmpty(mp4decrypt))
         {
-            Logger.LogError("未找到 mp4decrypt，请安装 Bento4 或通过 --mp4decrypt-path 指定路径");
-            return;
+            // 与取钥失败一致：用户显式请求解密但没有解密器，若只记录错误并 return，
+            // 加密流会被当成功产物交付。抛异常让任务标记失败。
+            throw new InvalidOperationException(
+                "未找到 mp4decrypt，无法解密 DRM 内容。请安装 Bento4 或通过 --mp4decrypt-path 指定路径。");
         }
 
         if (!string.IsNullOrEmpty(videoPath) && File.Exists(videoPath))
@@ -135,15 +135,20 @@ internal partial class Program
             };
 
             using var proc = Process.Start(psi);
-            if (proc == null) return;
+            if (proc is null)
+                throw new InvalidOperationException($"mp4decrypt 无法启动: {mp4decrypt}（进程启动失败）");
             var stderrTask = proc.StandardError.ReadToEndAsync();
             try
             {
-                await proc.WaitForExitAsync(token);
+                // 解密无超时兜底会让进程无限挂起：用混流超时配置作上限（与外部进程执行器一致）。
+                // 达到超时同样 Kill 进程树并抛错，不留下孤儿 mp4decrypt。
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeoutCts.CancelAfter(TimeSpan.FromMinutes(Math.Max(1, Core.Config.Current.MuxerTimeoutMinutes)));
+                await proc.WaitForExitAsync(timeoutCts.Token);
             }
             catch (OperationCanceledException)
             {
-                // 用户取消：进程仍在运行，必须 Kill 掉，避免留下孤儿 mp4decrypt。
+                // 用户取消或超时：进程仍在运行，必须 Kill 掉，避免留下孤儿 mp4decrypt。
                 try { proc.Kill(true); } catch { /* 进程可能已自行退出 */ }
                 throw;
             }

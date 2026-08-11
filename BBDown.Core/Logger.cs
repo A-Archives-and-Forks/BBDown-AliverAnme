@@ -45,13 +45,15 @@ public static class Logger
     public static void Log(object text, bool enter = true)
     {
         var line = DateTime.Now.ToString("[yyyy-MM-dd HH:mm:ss.fff]") + " - " + text;
-        Console.Write(line);
-        AppendToFile(line);
-        if (enter)
+        // 普通日志同样要加锁：serve 并发下载时多线程交错写会插行/截断，
+        // 与 LogColor/LogError 的锁保持一致（这些方法都把 Console 写入锁内）。
+        lock (_consoleLock)
         {
-            Console.WriteLine();
-            AppendToFile(string.Empty);
+            Console.Write(line);
+            if (enter) Console.WriteLine();
         }
+        AppendToFile(line);
+        if (enter) AppendToFile(string.Empty);
     }
 
     public static void LogError(object text)

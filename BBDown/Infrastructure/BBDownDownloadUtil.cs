@@ -25,24 +25,31 @@ internal static class BBDownDownloadUtil
 
     private static async Task RangeDownloadToTmpAsync(int id, string url, string tmpName, long fromPosition, long? toPosition, Action<int, long, long> onProgress, bool failOnRangeNotSupported = false, CancellationToken token = default)
     {
-        DateTimeOffset? lastTime = File.Exists(tmpName) ? new FileInfo(tmpName).LastWriteTimeUtc : null;
         using var fileStream = new FileStream(tmpName, FileMode.OpenOrCreate);
-        fileStream.Seek(0, SeekOrigin.End);
-        if (toPosition > 0 && fileStream.Position == toPosition - fromPosition + 1)
+        // 分片起点：若旧分片已超出目标分片范围（上次中断后内容异常变大），Seek 到 End
+        // 会让 Range 起点越过目标分片末尾，持续返回 416。这里把起点钳制在分片范围内，
+        // 超出的旧尾部在写回时会被覆盖/截断。
+        long clipLength = toPosition is > 0 ? toPosition.Value - fromPosition + 1 : long.MaxValue;
+        long startPos = Math.Min(fileStream.Length, clipLength);
+        fileStream.Seek(startPos, SeekOrigin.Begin);
+        if (toPosition > 0 && startPos == clipLength)
         {
             // 已下载完成 直接汇报进度并跳过下载
-            onProgress(id, fileStream.Position, fileStream.Position);
+            onProgress(id, startPos, startPos);
             return;
         }
-        var downloadedBytes = fromPosition + fileStream.Position;
+        var downloadedBytes = fromPosition + startPos;
 
         using var httpRequestMessage = new HttpRequestMessage();
         if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
             httpRequestMessage.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
         httpRequestMessage.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0");
         httpRequestMessage.Headers.TryAddWithoutValidation("Cookie", Core.Config.Current.Cookie);
+        // 只发 Range：续传正确性由 Range: bytes=N- 保证，服务器支持则回 206、不支持则回 200
+        // （下方 200 分支已做降级处理）。不发送 If-Range——此前用本地临时文件的
+        // LastWriteTimeUtc 当 If-Range，它不是服务器的 Last-Modified，符合协议的服务器
+        // 会因不匹配返回完整 200，导致续传被误判为"服务器不支持多线程"。
         httpRequestMessage.Headers.Range = new(downloadedBytes, toPosition);
-        httpRequestMessage.Headers.IfRange = lastTime != null ? new(lastTime.Value) : null;
         httpRequestMessage.RequestUri = new(url);
 
         using var response = (await HTTPUtil.AppHttpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
@@ -51,11 +58,16 @@ internal static class BBDownDownloadUtil
         {
             if (failOnRangeNotSupported && (downloadedBytes > 0 || toPosition != null)) throw new NotSupportedException("Range request is not supported.");
             downloadedBytes = 0;
+            // 完整重下必须清空旧内容：只 Seek(0) 而没 SetLength(0) 会留下旧文件尾部，
+            // 与新的短内容拼接成损坏文件。
+            fileStream.SetLength(0);
             fileStream.Seek(0, SeekOrigin.Begin);
         }
 
         using var stream = await response.Content.ReadAsStreamAsync(token);
-        var totalBytes = downloadedBytes + (response.Content.Headers.ContentLength ?? long.MaxValue - downloadedBytes);
+        long? declaredLength = response.Content.Headers.ContentLength;
+        // 服务器声明了 Content-Length 时按声明校验完整性；未声明时读到 EOF 即为结束
+        var totalBytes = downloadedBytes + (declaredLength ?? long.MaxValue - downloadedBytes);
         long writeStartPosition = fileStream.Position;
 
         const int blockSize = 1048576 / 4;
@@ -68,22 +80,34 @@ internal static class BBDownDownloadUtil
             while (downloadedBytes < totalBytes)
             {
                 var recevied = await stream.ReadAsync(buffer.AsMemory(0, blockSize), token);
-                if (recevied == 0) break;
+                if (recevied == 0)
+                {
+                    // 提前 EOF：仅当服务器声明了 Content-Length 且未读够时是截断——
+                    // 说明连接中断，必须抛错触发重试，不能把截断当成功。
+                    // 未声明 Content-Length 时读到 EOF 是正常结束，静默跳出。
+                    if (declaredLength is not null)
+                        throw new IOException("下载中断：响应提前结束，已触发重试");
+                    break;
+                }
+                // 依赖 FileStream 自身缓冲，不逐块 FlushAsync：每 256KB 一次刷盘会
+                // 把异步写放大成同步 syscall，大文件下载产生海量无必要的刷新调用。
+                // 分片结束时统一 flush 一次，保证数据落盘后调用方（合并）可读到完整内容。
                 await fileStream.WriteAsync(buffer.AsMemory(0, recevied), token);
-                await fileStream.FlushAsync(token);
                 downloadedBytes += recevied;
                 onProgress(id, downloadedBytes - fromPosition, totalBytes);
             }
+            // 分片写完后落盘：合并/删除等后续操作依赖磁盘上已有完整数据
+            await fileStream.FlushAsync(token);
         }
         finally
         {
             ArrayPool<byte>.Shared.Return(buffer);
         }
 
-        if (response.Content.Headers.ContentLength != null)
+        if (declaredLength != null)
         {
             long written = fileStream.Position - writeStartPosition;
-            if (written != response.Content.Headers.ContentLength.Value)
+            if (written != declaredLength.Value)
                 throw new InvalidOperationException("写入大小与HTTP响应声明不符，触发重试");
         }
     }
@@ -108,18 +132,40 @@ internal static class BBDownDownloadUtil
         => WithPathLockAsync(path, action, token);
 
     /// <summary>
+    /// 带返回值的路径锁版本：以目标路径的独占锁执行 <paramref name="action"/> 并返回其结果。
+    /// 用于"判定目标文件是否已存在 → 生产（如混流写最终路径）→ 清理"这类必须原子化的临界区：
+    /// 若不持有锁，serve 下两个同标题任务可能同时通过判定、同时写同一个最终路径，后写者覆盖先写者。
+    /// </summary>
+    internal static Task<T> RunWithPathLockAsync<T>(string path, Func<Task<T>> action, CancellationToken token = default)
+        => WithPathLockAsync(path, action, token);
+
+    /// <summary>
     /// 取得某个目标路径的独占锁并登记一个使用者。
     /// 必须与 <see cref="UnregisterDownloadLock"/> 成对使用，否则字典会持续膨胀 ——
     /// serve 模式是长驻进程，每个下载过的路径都留下一个 SemaphoreSlim 就是内存泄漏。
     /// </summary>
+    /// <summary>
+    /// 规范化为锁键：Path.GetFullPath 展开相对路径/“..”段，Windows 下统一小写
+    /// （NTFS 不区分大小写，大小写不同的同一路径应共享一把锁）。
+    /// 规范化必须同时用于 Acquire 与 Unregister，否则字典键不匹配导致锁泄漏。
+    /// </summary>
+    private static string NormalizeLockKey(string path)
+    {
+        // 空/空白路径在 GetFullPath 下会抛异常；用固定占位键避免锁机制自身抛错
+        if (string.IsNullOrWhiteSpace(path)) return "<empty>";
+        string full = Path.GetFullPath(path);
+        return OperatingSystem.IsWindows() ? full.ToLowerInvariant() : full;
+    }
+
     private static PathLock AcquireDownloadLock(string path)
     {
+        var key = NormalizeLockKey(path);
         lock (_lockFactory)
         {
-            if (!_downloadLocks.TryGetValue(path, out var pathLock))
+            if (!_downloadLocks.TryGetValue(key, out var pathLock))
             {
                 pathLock = new PathLock();
-                _downloadLocks[path] = pathLock;
+                _downloadLocks[key] = pathLock;
             }
             pathLock.Waiters++;
             return pathLock;
@@ -128,12 +174,13 @@ internal static class BBDownDownloadUtil
 
     private static void UnregisterDownloadLock(string path, PathLock pathLock)
     {
+        var key = NormalizeLockKey(path);
         lock (_lockFactory)
         {
             // 仅在没有其他使用者时移除，避免正在等待的线程拿到已被弃用的信号量
-            if (--pathLock.Waiters == 0 && _downloadLocks.TryGetValue(path, out var current) && ReferenceEquals(current, pathLock))
+            if (--pathLock.Waiters == 0 && _downloadLocks.TryGetValue(key, out var current) && ReferenceEquals(current, pathLock))
             {
-                _downloadLocks.Remove(path);
+                _downloadLocks.Remove(key);
                 pathLock.Semaphore.Dispose();
             }
         }
@@ -153,6 +200,23 @@ internal static class BBDownDownloadUtil
             await pathLock.Semaphore.WaitAsync(token);
             acquired = true;
             await action();
+        }
+        finally
+        {
+            if (acquired) pathLock.Semaphore.Release();
+            UnregisterDownloadLock(path, pathLock);
+        }
+    }
+
+    private static async Task<T> WithPathLockAsync<T>(string path, Func<Task<T>> action, CancellationToken token)
+    {
+        var pathLock = AcquireDownloadLock(path);
+        var acquired = false;
+        try
+        {
+            await pathLock.Semaphore.WaitAsync(token);
+            acquired = true;
+            return await action();
         }
         finally
         {
@@ -232,13 +296,68 @@ internal static class BBDownDownloadUtil
         }
     }
 
-    public static async Task MultiThreadDownloadFileAsync(string url, string path, DownloadConfig config, CancellationToken token = default)
+    /// <summary>
+    /// 多线程下载。返回本次实际产生的分片文件列表（按 index 升序，与
+    /// <see cref="GetAllClips"/> 的切片一一对应）。调用方应只合并/清理该列表：
+    /// 扫描目录里全部 *.?clip 会把上一次取消、其它分P、其它轨道留下的分片混进来，
+    /// 造成拼串味文件与误删。
+    /// </summary>
+    public static async Task<List<string>> MultiThreadDownloadFileAsync(string url, string path, DownloadConfig config, CancellationToken token = default)
     {
-        if (string.IsNullOrEmpty(url)) return;
-        await WithPathLockAsync(path, () => MultiThreadDownloadCoreAsync(url, path, config, token), token);
+        if (string.IsNullOrEmpty(url)) return [];
+        List<string>? clips = null;
+        await WithPathLockAsync(path, async () => clips = await MultiThreadDownloadCoreAsync(url, path, config, token), token);
+        return clips ?? [];
     }
 
-    private static async Task MultiThreadDownloadCoreAsync(string url, string path, DownloadConfig config, CancellationToken token)
+    /// <summary>
+    /// 多线程下载 + 合并 + 清理，在目标路径的独占锁内完成整个分片生命周期。
+    /// 调用方（Display）不再在锁外合并/删除分片：相同目标路径的第二个任务会等第一个
+    /// 任务"下载→合并→清理"全部结束后再进入，要么看到文件已完整而跳过，要么正常下载，
+    /// 不会复用/误删第一个任务的分片。
+    /// 合并结果先写到临时文件再原子替换到目标路径：中途失败不会留下半截成品。
+    /// </summary>
+    public static async Task MultiThreadDownloadAndMergeAsync(string url, string path, DownloadConfig config, CancellationToken token = default)
+    {
+        if (string.IsNullOrEmpty(url)) return;
+        await WithPathLockAsync(path, async () =>
+        {
+            // 已完整下载过：直接跳过（不再产生分片，也不做任何合并/清理）
+            long fileSize = await GetFileSizeAsync(url, token);
+            if (fileSize > 0 && File.Exists(path) && new FileInfo(path).Length == fileSize)
+            {
+                Logger.LogDebug("文件已下载过, 跳过下载");
+                return;
+            }
+            var clips = await MultiThreadDownloadCoreAsync(url, path, config, token);
+            if (clips.Count == 0) return; // 单线程降级或 aria2 路径：成品已直接写到目标路径
+            // 在锁内合并：合并到临时文件后原子替换，避免锁内写目标路径时被读取方读到半截
+            string tmpMerged = path + ".merging";
+            BBDownUtil.CombineMultipleFilesIntoSingleFile(clips.ToArray(), tmpMerged);
+            // 完整性闭环：合并产物必须与服务器声明的总长度一致，否则删除半截成品并抛错，
+            // 触发上层重试。合并时若任一来源分片不完整/缺失，产物长度会小于预期。
+            if (fileSize > 0)
+            {
+                long mergedLength = File.Exists(tmpMerged) ? new FileInfo(tmpMerged).Length : 0;
+                if (mergedLength != fileSize)
+                {
+                    try { File.Delete(tmpMerged); } catch (IOException) { }
+                    throw new InvalidOperationException(
+                        $"分片合并产物长度 ({mergedLength} 字节) 与服务器声明总长 ({fileSize} 字节) 不符，已触发重试");
+                }
+            }
+            File.Move(tmpMerged, path, true);
+            // 清理分片
+            foreach (var clip in clips)
+            {
+                try { File.Delete(clip); }
+                catch (IOException) { /* 清理失败不影响主流程 */ }
+            }
+        }, token);
+    }
+
+    /// <summary>本次多线程下载实际产生的分片文件列表。无分片（单线程降级/已存在跳过）时返回空列表。</summary>
+    private static async Task<List<string>> MultiThreadDownloadCoreAsync(string url, string path, DownloadConfig config, CancellationToken token)
     {
         if (config.ForceHttp) url = ReplaceUrl(url);
         Logger.LogDebug("Start downloading: {0}", url);
@@ -248,7 +367,7 @@ internal static class BBDownDownloadUtil
             if (File.Exists(path + ".aria2") || !File.Exists(path))
                 throw new InvalidOperationException("aria2下载可能存在错误");
             Console.WriteLine();
-            return;
+            return [];
         }
         long fileSize = await GetFileSizeAsync(url, token);
         Logger.LogDebug("文件大小：{0} bytes", fileSize);
@@ -259,7 +378,7 @@ internal static class BBDownDownloadUtil
         {
             Logger.LogWarn("服务器未返回文件大小, 已降级为单线程下载");
             await DownloadFileCoreAsync(url, path, config, token);
-            return;
+            return [];
         }
         //已下载过, 跳过下载
         if (File.Exists(path) && new FileInfo(path).Length == fileSize)
@@ -268,7 +387,7 @@ internal static class BBDownDownloadUtil
             // 目标文件已完整：清理上一次中断遗留的该路径分片。否则调用方（Display）
             // 在下载返回后仍会无条件重合并目录里的 .vclip，用残缺分片截断覆盖这份完整成品。
             CleanStaleClipsFor(path);
-            return;
+            return [];
         }
         List<Clip> allClips = GetAllClips(url, fileSize);
         int total = allClips.Count;
@@ -283,7 +402,15 @@ internal static class BBDownDownloadUtil
         using var progress = new ProgressBar(config.RelatedTask);
         progress.Report(0);
         int maxRetry = Config.Current.MaxRetryCount;
-        await Parallel.ForEachAsync(allClips, token, async (clip, _) =>
+        // 显式限制单文件分片并发：不设上限时 Parallel.ForEachAsync 用 CPU 核数，
+        // 高核数机器 × serve 并发任务会把出站连接数放大到远超需要的量级。
+        // 每文件封顶 8 路并发分片，下载带宽通常先于并发数饱和，足够。
+        var parallelOptions = new ParallelOptions
+        {
+            CancellationToken = token,
+            MaxDegreeOfParallelism = Math.Min(8, Math.Max(1, Environment.ProcessorCount)),
+        };
+        await Parallel.ForEachAsync(allClips, parallelOptions, async (clip, _) =>
         {
             int retry = 0;
             string tmp = Path.Combine(Path.GetDirectoryName(path)!, clip.index.ToString("00000") + "_" + Path.GetFileNameWithoutExtension(path) + (Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip"));
@@ -320,6 +447,15 @@ internal static class BBDownDownloadUtil
                 }
             }
         });
+        // 返回本次产生的精确分片列表：与 allClips 的 index 一一对应。
+        // 合并/清理调用方据此操作，不扫描目录（避免混入其它任务的残留分片）。
+        string dir = Path.GetDirectoryName(path)!;
+        string stem = Path.GetFileNameWithoutExtension(path);
+        string clipExt = Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip";
+        return allClips
+            .Select(c => Path.Combine(dir, c.index.ToString("00000") + "_" + stem + clipExt))
+            .OrderBy(p => p)
+            .ToList();
     }
 
     /// <summary>

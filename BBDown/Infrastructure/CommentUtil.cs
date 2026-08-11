@@ -26,10 +26,13 @@ public static class CommentUtil
 {
     /// <summary>
     /// 分页抓取视频评论，直到某页为空或达到 maxPages 上限。
+    /// 返回的 <see cref="CommentPage"/> 携带是否因达到上限而被截断的标志：
+    /// 默认每页 20 条、最多 20 页（400 条），若评论总数超过该量级，界面应提示结果不完整。
     /// </summary>
-    public static async Task<List<CommentItem>> FetchAsync(long aid, int maxPages = 20, CancellationToken token = default)
+    public static async Task<CommentPage> FetchAsync(long aid, int maxPages = 20, CancellationToken token = default)
     {
         var result = new List<CommentItem>();
+        bool truncated = false;
         for (int pn = 1; pn <= maxPages; pn++)
         {
             string api = $"https://api.bilibili.com/x/v2/reply?type=1&oid={aid}&sort=0&ps=20&pn={pn}";
@@ -52,9 +55,14 @@ public static class CommentUtil
                     r.GetInt64Safe("like"),
                     content.Trim()));
             }
+            // 已达到分页上限但当前页仍有回复：说明还有更多评论未抓取
+            if (pn == maxPages) truncated = true;
         }
-        return result;
+        return new CommentPage(result, truncated);
     }
+
+    /// <summary>评论抓取结果：列表 + 是否因达到分页上限而被截断（存在未抓取的更多评论）。</summary>
+    public record CommentPage(List<CommentItem> Items, bool Truncated);
 
     /// <summary>导出评论为带缩进的 JSON 文件（保留中文原文，AOT 裁剪安全）。</summary>
     public static async Task SaveToJsonAsync(List<CommentItem> comments, string path)

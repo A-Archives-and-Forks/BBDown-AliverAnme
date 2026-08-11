@@ -30,6 +30,32 @@ public class BBDownApiServer
     private readonly string? _serveToken;
 
     /// <summary>
+    /// 在途后台任务集合（fire-and-forget 的 ProcessDownloadTaskAsync）。服务关停时
+    /// 取消共享令牌后必须等待这些任务完成取消/终止外部进程/持久化，再退出进程——
+    /// 否则 ffmpeg/aria2c 成为孤儿、直播 .part 未改名、已完成任务记录来不及落盘。
+    /// </summary>
+    private readonly HashSet<Task> _inFlightTasks = [];
+    private readonly object _inFlightLock = new();
+
+    /// <summary>
+    /// 接受队列上限：正在处理 + 排队等待的任务总数上限。
+    /// 每个 /add-task 请求都会创建一个后台 Task（即使还没开始下载），若不加限制，
+    /// 攻击者或误操作可无限堆积后台 Task、配置对象与 CTS。达到上限后 /add-task
+    /// 返回 429 Too Many Requests，而不是继续堆积。
+    /// 队列长度 = maxConcurrent（并发执行） + 允许排队等待的额外数量。
+    /// </summary>
+    private readonly SemaphoreSlim _acceptLimiter;
+    private const int MaxQueuedPerConcurrent = 8;
+
+    /// <summary>当前空闲的接受队列槽位（供测试断言限流行为）。</summary>
+    internal int AvailableAcceptSlots => _acceptLimiter.CurrentCount;
+
+    /// <summary>
+    /// 尝试占用一个接受队列槽位。供测试直接占用槽位验证 429 限流路径。
+    /// </summary>
+    internal bool TryAcquireAcceptSlot() => _acceptLimiter.Wait(0);
+
+    /// <summary>
     /// 服务端固定的任务完成回调地址（serve 启动时经 --notify-webhook 配置）。
     /// 只接受管理员在启动参数里显式配置的地址；客户端请求体中的回调字段一律忽略，
     /// 防止任意客户端让本机服务器向攻击者指定的地址 POST 任务数据（SSRF 横向面）。
@@ -59,6 +85,10 @@ public class BBDownApiServer
         // 防御：maxConcurrent <= 0 会让 SemaphoreSlim 构造抛 ArgumentOutOfRangeException，
         // serve 作为长驻进程应以可读错误退出而非崩溃
         _concurrencyLimiter = new SemaphoreSlim(Math.Max(1, maxConcurrent), Math.Max(1, maxConcurrent));
+        // 接受队列：并发执行 + 排队等待，上限 = maxConcurrent + maxConcurrent*8（可排队等待的数量）。
+        // 上限不随请求数增长，serve 长驻进程的任务/CTS 堆积被限制在一个固定数量级内。
+        int acceptCap = Math.Max(1, maxConcurrent) * (1 + MaxQueuedPerConcurrent);
+        _acceptLimiter = new SemaphoreSlim(acceptCap, acceptCap);
         _serveToken = serveToken;
         _notifyWebhook = notifyWebhook;
         _taskFile = taskFilePath ?? Path.Combine(Environment.CurrentDirectory, "bbdown-tasks.json");
@@ -166,10 +196,22 @@ public class BBDownApiServer
             // 与 API 其余端点（PascalCase 源生成）不一致，且无法用 AOT 上下文类型化。
             // 先入队拿到 JobId：任何解析/下载都在锁外的后台任务中异步推进，
             // 客户端拿到 202 + JobId 后即可通过 /get-tasks/{id} 或 /cancel/{id} 命中。
+            // 接受队列限流：任务总数（执行中 + 排队等待）达到上限后立即拒绝新请求，
+            // 防止长驻进程被无限堆积的后台任务/配置对象/CTS 拖垮。
+            if (!_acceptLimiter.Wait(0))
+            {
+                Logger.LogWarn($"任务队列已满，拒绝新任务: {req.Url}");
+                return Results.Problem("任务队列已满，请稍后再试",
+                    statusCode: StatusCodes.Status429TooManyRequests, title: "Too Many Requests");
+            }
             var task = EnqueueDownloadTask(req);
-            _ = ProcessDownloadTaskAsync(req, task, _notifyWebhook, _serverLifetimeCts.Token)
-                .ContinueWith(t => Logger.LogError($"任务异常终止: {t.Exception?.GetBaseException().Message}"),
-                    TaskContinuationOptions.OnlyOnFaulted);
+            var bgTask = RunAcceptedTaskAsync(req, task);
+            // 登记在途任务：服务关停时据此等待所有后台任务收尾
+            lock (_inFlightLock) { _inFlightTasks.Add(bgTask); }
+            _ = bgTask.ContinueWith(t =>
+            {
+                lock (_inFlightLock) { _inFlightTasks.Remove(t); }
+            }, TaskScheduler.Default);
             return Results.Json(new AddTaskAccepted(task.JobId), AppJsonSerializerContext.Default.AddTaskAccepted, statusCode: StatusCodes.Status202Accepted);
         });
         // 取消任务：仅对 running/queued 生效（finished 任务不可取消）。
@@ -243,6 +285,30 @@ public class BBDownApiServer
         {
             // 收到取消信号（如 Ctrl+C），正常退出
         }
+        // 关停收尾：Kestrel 已停止接收新请求。取消共享令牌已在 ApplicationStopping
+        // 触发（见 SetUpServer 的注册）。这里限时等待所有在途后台任务完成
+        // "取消 → 终止外部进程 → 持久化"，避免退出进程时遗留孤儿 ffmpeg/aria2c
+        // 或丢失未落盘的任务记录。等待超时（例如下载器在取消后仍卡在外部进程上）
+        // 则放弃等待，不无限阻塞退出。
+        Task[] inflight;
+        lock (_inFlightLock) { inflight = [.. _inFlightTasks]; }
+        if (inflight.Length > 0)
+        {
+            Logger.LogWarn($"正在等待 {inflight.Length} 个在途任务取消并收尾...");
+            try
+            {
+                if (!Task.WaitAll(inflight, TimeSpan.FromSeconds(30)))
+                {
+                    Logger.LogWarn("部分在途任务未在 30 秒内完成收尾，已强制退出");
+                }
+            }
+            catch (AggregateException)
+            {
+                // 个别任务取消路径抛出的异常不影响整体退出
+            }
+        }
+        // 最后一次持久化：确保取消前已完成的任务记录落盘
+        PersistFinishedTasks();
     }
 
     /// <summary>
@@ -593,9 +659,31 @@ public class BBDownApiServer
     }
 
     /// <summary>
-    /// /add-task 的异步执行阶段：解析 URL → 获取视频信息 → 下载，成功后按服务端
-    /// 启动配置（--notify-webhook）发送回调。任何异常都收敛到任务状态字段，使客户端
-    /// 拿到 JobId 后能查到失败原因。
+    /// 运行 /add-task 接受的后台任务：负责释放接受队列占位，并把任何漏网异常
+    /// 收敛成日志（ProcessDownloadTaskAsync 内部已收敛所有异常，此处兜底避免遗漏
+    /// 变成无人观察的 Task 异常）。占位释放必须在任务完成（含取消/失败）后，
+    /// 否则队列上限会因已结束任务占位不释放而逐渐耗尽。
+    /// </summary>
+    private async Task RunAcceptedTaskAsync(MyOption option, DownloadTask task)
+    {
+        try
+        {
+            await ProcessDownloadTaskAsync(option, task, _notifyWebhook, _serverLifetimeCts.Token);
+        }
+        catch (Exception ex)
+        {
+            Logger.LogError($"任务异常终止: {ex.GetBaseException().Message}");
+        }
+        finally
+        {
+            _acceptLimiter.Release();
+        }
+    }
+
+    /// <summary>
+    /// 单个已接受任务的生命周期：等待并发闸门 → 解析 URL → 获取视频信息 → 下载。
+    /// 信号量闸门覆盖"解析→下载"全程（此前只在解析后生效，解析阶段不受并发限制）。
+    /// 任何异常都收敛到任务状态字段，使客户端拿到 JobId 后能查到失败原因。
     /// </summary>
     private async Task ProcessDownloadTaskAsync(MyOption option, DownloadTask task, string? notifyWebhook = null, CancellationToken cancellationToken = default)
     {
@@ -614,16 +702,63 @@ public class BBDownApiServer
             Area = option.Area ?? "",
             SkipSslCheck = option.Insecure,
         });
+
+        // 并发闸门：等待信号量放在 URL 解析之前。此前闸门只在解析完成后才生效，
+        // 大量短链/SS/MD 提交会同时发起出站网络解析（不受 --max-concurrent 限制），
+        // 攻击者或误操作可并发打满 B 站 API。现在信号量覆盖"解析→下载"完整生命周期。
+        // 取消令牌也在这里创建：解析阶段（b23 跳转、SS/MD 查询、页面抓取）也能被
+        // /cancel/{id} 与服务器关停中断（此前解析阶段的取消要等解析完成才生效）。
+        using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, task.CancelCts.Token);
+        bool slotAcquired = false;
+        try
+        {
+            await _concurrencyLimiter.WaitAsync(linkedCts.Token);
+            slotAcquired = true;
+        }
+        catch (OperationCanceledException)
+        {
+            // 排队等待期间被取消（客户端 /cancel/{id} 或服务器关停）：标记取消并落盘
+            task.SetStatus(DownloadTaskStatus.Cancelled);
+            task.TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds();
+            lock (_taskLock)
+            {
+                task.CancelCts.Dispose();
+                runningTasks.Remove(task);
+                finishedTasks.Add(task);
+            }
+            PersistFinishedTasks();
+            return;
+        }
+
         string aid;
         try
         {
-            aid = await BBDownUtil.GetAvIdAsync(option.Url);
+            aid = await BBDownUtil.GetAvIdAsync(option.Url, linkedCts.Token);
+        }
+        catch (OperationCanceledException)
+        {
+            // 解析阶段被取消：与排队阶段一致，标记取消而非失败（此前会被 catch(Exception)
+            // 吞成 Failed，取消语义丢失）。
+            if (slotAcquired) _concurrencyLimiter.Release();
+            task.SetAid(option.Url);
+            task.ErrorMessage = "已取消";
+            task.TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds();
+            task.SetStatus(DownloadTaskStatus.Cancelled);
+            lock (_taskLock)
+            {
+                task.CancelCts.Dispose();
+                runningTasks.Remove(task);
+                finishedTasks.Add(task);
+            }
+            PersistFinishedTasks();
+            return;
         }
         catch (Exception e)
         {
             // 链接无法解析时客户端已经收到 202 + JobId，必须把已入队的任务标记为失败
             // 并移入 finishedTasks，否则用户既等不到结果也查不到原因（查询/取消按 JobId 命中）。
             // Aid 没有可信值：保留原始 Url 便于用户在查询结果里辨认。
+            if (slotAcquired) _concurrencyLimiter.Release();
             task.SetAid(option.Url);
             task.ErrorMessage = e.Message;
             task.TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds();
@@ -643,26 +778,15 @@ public class BBDownApiServer
         task.SetAid(aid);
         try
         {
-            // 队列等待与执行共用 linkedCts：/cancel/{id}（经 task.CancelCts）与服务器关停
-            // （经 cancellationToken）都能中断排队中或运行中的任务。
-            using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, task.CancelCts.Token);
-            await _concurrencyLimiter.WaitAsync(linkedCts.Token);
-            try
-            {
-                task.SetStatus(DownloadTaskStatus.Running);
-                var (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay) = Program.SetUpWork(option);
-                var (fetchedAid, vInfo, apiType) = await Program.GetVideoInfoAsync(option, aidOri, input, linkedCts.Token);
-                task.Title = vInfo.Title;
-                task.Pic = vInfo.Pic;
-                task.VideoPubTime = vInfo.PubTime;
-                await Program.DownloadPagesAsync(option, vInfo, encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
-                            input, savePathFormat, lang, fetchedAid, delay, apiType, task, linkedCts.Token);
-                task.SetStatus(DownloadTaskStatus.Succeeded);
-            }
-            finally
-            {
-                _concurrencyLimiter.Release();
-            }
+            task.SetStatus(DownloadTaskStatus.Running);
+            var (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay) = Program.SetUpWork(option);
+            var (fetchedAid, vInfo, apiType) = await Program.GetVideoInfoAsync(option, aidOri, input, linkedCts.Token);
+            task.Title = vInfo.Title;
+            task.Pic = vInfo.Pic;
+            task.VideoPubTime = vInfo.PubTime;
+            await Program.DownloadPagesAsync(option, vInfo, encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
+                        input, savePathFormat, lang, fetchedAid, delay, apiType, task, linkedCts.Token);
+            task.SetStatus(DownloadTaskStatus.Succeeded);
         }
         catch (OperationCanceledException)
         {
@@ -680,6 +804,11 @@ public class BBDownApiServer
             task.SetStatus(DownloadTaskStatus.Failed);
             Logger.LogError($"{aid} 下载失败: {e.Message}");
             Logger.LogDebug("异常详情: {0}", displayMsg);
+        }
+        finally
+        {
+            // 无论成功/取消/失败都释放并发占位
+            if (slotAcquired) _concurrencyLimiter.Release();
         }
         task.TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds();
         if (task.IsSuccessful)

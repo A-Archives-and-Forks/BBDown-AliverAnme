@@ -116,11 +116,10 @@ internal partial class Program
     {
         if (downloadConfig.MultiThread && !url.Contains("-cmcc-"))
         {
-            await BBDownDownloadUtil.MultiThreadDownloadFileAsync(url, destPath, downloadConfig, token);
-            Logger.Log($"合并{(video ? "视频" : "音频")}分片...");
-            BBDownUtil.CombineMultipleFilesIntoSingleFile(BBDownUtil.GetFiles(Path.GetDirectoryName(destPath)!, $".{(video ? "v" : "a")}clip"), destPath);
-            Logger.Log("清理分片...");
-            foreach (var file in new DirectoryInfo(Path.GetDirectoryName(destPath)!).EnumerateFiles("*.?clip")) file.Delete();
+            // 下载→合并→清理在目标路径的独占锁内完成（MultiThreadDownloadAndMergeAsync），
+            // 调用方不再在锁外合并/删除分片：相同目标路径的第二个任务会等第一个任务
+            // 完全结束后再进入，避免复用/误删上一个任务的分片或读到半截成品。
+            await BBDownDownloadUtil.MultiThreadDownloadAndMergeAsync(url, destPath, downloadConfig, token);
         }
         else
         {

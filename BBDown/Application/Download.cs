@@ -175,12 +175,74 @@ internal partial class Program
     internal static int ClampRoleAudioIndex(int aIndex, int audioCount)
         => audioCount <= 0 ? -1 : Math.Min(Math.Max(aIndex, 0), audioCount - 1);
 
+    /// <summary>最终路径锁内临界区的结果：跳过（文件已存在）、成功、失败。</summary>
+    private enum MuxOutcome
+    {
+        Skipped,
+        Succeeded,
+        Failed,
+    }
+
+    /// <summary>
+    /// 混流 + 产物校验 + 临时文件清理，作为最终路径独占锁内的临界区。
+    /// 拆出独立方法使调用点能用 <see cref="BBDownDownloadUtil.RunWithPathLockAsync{T}"/>
+    /// 对 savePath 加锁：防止 serve 下两个同标题任务同时写同一个最终输出文件。
+    /// 锁内先做权威的存在性检查：即使两个任务都通过了锁外的快速跳过判定并各自下载，
+    /// 到锁内这一步时，若文件已存在（另一个任务刚写完），则跳过而非覆盖。
+    /// </summary>
+    private static async Task<MuxOutcome> MuxAndFinalizeAsync(bool useMp4box, MyOption myOption, Page p, VInfo vInfo, List<Page> selectedPagesInfo, ParsedResult parsedResult,
+        string desc, string title, string coverPath, string lang,
+        List<Subtitle> subtitleInfo, List<AudioMaterial> audioMaterial, string videoPath, string audioPath, string savePath, bool isHevc,
+        bool videoOnly, bool audioOnly, bool bangumi, bool fastSkipChecked, DownloadTask? relatedTask, CancellationToken cancellationToken)
+    {
+        // 锁内权威判定：文件已存在（可能是另一个任务刚写完成，或本次下载期间被跳过判定
+        // 的其它任务写入了）→ 跳过，不覆盖。
+        if (fastSkipChecked && File.Exists(savePath) && new FileInfo(savePath).Length != 0)
+        {
+            Logger.Log($"{savePath}已存在, 跳过下载...");
+            relatedTask?.AddSavePath(savePath);
+            if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0)
+            {
+                Directory.Delete(p.aid, true);
+            }
+            return MuxOutcome.Skipped;
+        }
+        int code = await BBDownMuxer.MuxAV(useMp4box, p.bvid, videoPath, audioPath, audioMaterial, savePath,
+            desc,
+            title,
+            p.ownerName ?? "",
+            (selectedPagesInfo.Count > 1 || (bangumi && !vInfo.IsBangumiEnd)) ? p.title : "",
+            File.Exists(coverPath) ? coverPath : "",
+            lang,
+            subtitleInfo, audioOnly, videoOnly, p.points, p.pubTime, myOption.SimplyMux, isHevc, cancellationToken);
+        if (code != 0 || !File.Exists(savePath) || new FileInfo(savePath).Length == 0)
+        {
+            return MuxOutcome.Failed;
+        }
+        Logger.Log("清理临时文件...");
+        await Task.Delay(200, cancellationToken);
+        if (parsedResult.VideoTracks.Any()) File.Delete(videoPath);
+        // 仅删除非空音轨路径：flv 分支 audioPath 为空串，File.Delete("") 会抛异常。
+        // 原 flv 清理本就只删 videoPath，这里用守卫保持行为一致。
+        if (!string.IsNullOrEmpty(audioPath) && parsedResult.AudioTracks.Any()) File.Delete(audioPath);
+        if (p.points.Any()) File.Delete(Path.Combine(Path.GetDirectoryName(string.IsNullOrEmpty(videoPath) ? audioPath : videoPath)!, "chapters"));
+        foreach (var s in subtitleInfo) File.Delete(s.path);
+        foreach (var a in audioMaterial) File.Delete(a.path);
+        if (selectedPagesInfo.Count == 1 || p.index == selectedPagesInfo.Last().index || p.aid != selectedPagesInfo.Last().aid)
+            File.Delete(coverPath);
+        if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0) Directory.Delete(p.aid, true);
+        return MuxOutcome.Succeeded;
+    }
+
     private static async Task<bool> DownloadPageAsync(Page p, MyOption myOption, VInfo vInfo, List<Page> selectedPagesInfo, Dictionary<string, byte> encodingPriority, Dictionary<string, int> dfnPriority,
         string? firstEncoding, bool downloadDanmaku, BBDownDanmakuFormat[] downloadDanmakuFormats, string input, string savePathFormat, string lang, string aidOri, string apiType, DownloadTask? relatedTask = null, CancellationToken cancellationToken = default)
     {
         string desc = string.IsNullOrEmpty(p.desc) ? vInfo.Desc : p.desc;
         bool bangumi = vInfo.IsBangumi;
-        var pagesCount = selectedPagesInfo.Count;
+        // 补零宽度用"全部分P总数"而非筛选后的数量：单独下载 P1（-p 1）与稍后下载
+        // 全部分P（-p all）时，<pageNumberWithZero> 应产生相同宽度的文件名，
+        // 否则同一视频因筛选方式不同会得到不同路径（P01 vs P1）。
+        var pagesCount = vInfo.PagesInfo.Count;
         List<Subtitle> subtitleInfo = [];
         string title = vInfo.Title;
         string pic = vInfo.Pic;
@@ -250,6 +312,9 @@ internal partial class Program
                                     Directory.CreateDirectory(dir);
                                 _outSubPath = Path.ChangeExtension(_outSubPath, $".{s.lan}.srt");
                                 File.Move(s.path, _outSubPath, true);
+                                // 记录最终产物：SubOnly 提前返回不经过下方统一 AddSavePath，
+                                // 若这里不记录，serve API 的成功响应里产物列表会缺字幕文件。
+                                relatedTask?.AddSavePath(_outSubPath);
                             }
                         }
                     }
@@ -428,6 +493,12 @@ internal partial class Program
 
                         if (myOption.DanmakuOnly)
                         {
+                            // 记录最终产物：DanmakuOnly 提前返回不经过下方统一 AddSavePath，
+                            // 若这里不记录，serve API 的成功响应里产物列表会缺弹幕文件。
+                            if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                                relatedTask?.AddSavePath(danmakuXmlPath);
+                            if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass) && File.Exists(danmakuAssPath))
+                                relatedTask?.AddSavePath(danmakuAssPath);
                             if (Directory.Exists(p.aid))
                             {
                                 Directory.Delete(p.aid);
@@ -438,11 +509,14 @@ internal partial class Program
 
                     if (myOption.CoverOnly)
                     {
+                        // 仅下载封面：封面保存成功后必须立即 return，否则会继续执行下方
+                        // 轨道解析、视频/音频下载与混流——用户只要封面却白白下载完整视频。
                         var coverUrl = pic == "" ? p.cover! : pic;
                         var newCoverPath = Path.ChangeExtension(savePath, Path.GetExtension(coverUrl));
                         await BBDownDownloadUtil.DownloadFileAsync(coverUrl, newCoverPath, downloadConfig, cancellationToken);
                         if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0) Directory.Delete(p.aid, true);
                         relatedTask?.AddSavePath(newCoverPath);
+                        return true;
                     }
 
                     Logger.Log($"已选择的流:");
@@ -521,9 +595,14 @@ internal partial class Program
                         {
                             var commentsPath = Path.ChangeExtension(savePath, ".comments.json");
                             Logger.Log("正在下载评论...");
-                            var comments = await CommentUtil.FetchAsync(commentAid, token: cancellationToken);
-                            await CommentUtil.SaveToJsonAsync(comments, commentsPath);
-                            Logger.Log($"评论已保存: {commentsPath} ({comments.Count} 条)");
+                            var commentPage = await CommentUtil.FetchAsync(commentAid, token: cancellationToken);
+                            await CommentUtil.SaveToJsonAsync(commentPage.Items, commentsPath);
+                            Logger.Log($"评论已保存: {commentsPath} ({commentPage.Items.Count} 条)");
+                            // 达到分页上限仍有更多评论：明确提示结果不完整，避免用户误以为已抓全
+                            if (commentPage.Truncated)
+                            {
+                                Logger.LogWarn($"评论数量达到抓取上限（{commentPage.Items.Count} 条），可能还有更多评论未导出");
+                            }
                         }
                         catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException
                                                     or IOException or TaskCanceledException or KeyNotFoundException or FormatException)
@@ -539,34 +618,33 @@ internal partial class Program
 
                     if (!parsedResult.VideoTracks.Any()) videoPath = "";
                     if (!parsedResult.AudioTracks.Any()) audioPath = "";
-                    if (myOption.SkipMux) return true;
+                    if (myOption.SkipMux)
+                    {
+                        // 记录原始轨道产物：SkipMux 跳过混流，返回前若不记录 SavePaths，
+                        // serve API 的成功响应里产物列表会缺本次下载的裸音视频流。
+                        if (File.Exists(videoPath)) relatedTask?.AddSavePath(videoPath);
+                        if (File.Exists(audioPath)) relatedTask?.AddSavePath(audioPath);
+                        foreach (var a in audioMaterial) if (File.Exists(a.path)) relatedTask?.AddSavePath(a.path);
+                        return true;
+                    }
                     Logger.Log($"开始合并音视频{(subtitleInfo.Any() ? "和字幕" : "")}...");
                     if (myOption.AudioOnly)
                         savePath = savePath[..^4] + ".m4a";
 
                     var isHevc = selectedVideo?.codecs == "HEVC";
-                    int code = await BBDownMuxer.MuxAV(myOption.UseMP4box, p.bvid, videoPath, audioPath, audioMaterial, savePath,
-                        desc,
-                        title,
-                        p.ownerName ?? "",
-                        (pagesCount > 1 || (bangumi && !vInfo.IsBangumiEnd)) ? p.title : "",
-                        File.Exists(coverPath) ? coverPath : "",
-                        lang,
-                        subtitleInfo, myOption.AudioOnly, myOption.VideoOnly, p.points, p.pubTime, myOption.SimplyMux, isHevc, cancellationToken);
-                    if (code != 0 || !File.Exists(savePath) || new FileInfo(savePath).Length == 0)
+                    // 最终路径独占锁：serve 下两个不同 Aid、相同标题的任务会解析出同一个
+                    // savePath（默认单文件模板是 <videoTitle>）。锁内完成"存在性判定 → 混流 →
+                    // 校验 → 清理"：即使两个任务都通过了上面的快速跳过判定并各自下载到临时路径，
+                    // 到锁内这一步时若文件已存在（另一个任务先写完），也会跳过而非覆盖。
+                    var muxOutcome = await BBDownDownloadUtil.RunWithPathLockAsync(savePath,
+                        () => MuxAndFinalizeAsync(myOption.UseMP4box, myOption, p, vInfo, selectedPagesInfo, parsedResult, desc, title, coverPath, lang, subtitleInfo, audioMaterial,
+                            videoPath, audioPath, savePath, isHevc, videoOnly: false, audioOnly: myOption.AudioOnly,
+                            bangumi, fastSkipChecked: true, relatedTask, cancellationToken),
+                        cancellationToken);
+                    if (muxOutcome == MuxOutcome.Failed)
                     {
                         Logger.LogError("合并失败"); return false;
                     }
-                    Logger.Log("清理临时文件...");
-                    await Task.Delay(200, cancellationToken);
-                    if (parsedResult.VideoTracks.Any()) File.Delete(videoPath);
-                    if (parsedResult.AudioTracks.Any()) File.Delete(audioPath);
-                    if (p.points.Any()) File.Delete(Path.Combine(Path.GetDirectoryName(string.IsNullOrEmpty(videoPath) ? audioPath : videoPath)!, "chapters"));
-                    foreach (var s in subtitleInfo) File.Delete(s.path);
-                    foreach (var a in audioMaterial) File.Delete(a.path);
-                    if (selectedPagesInfo.Count == 1 || p.index == selectedPagesInfo.Last().index || p.aid != selectedPagesInfo.Last().aid)
-                        File.Delete(coverPath);
-                    if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0) Directory.Delete(p.aid, true);
                 }
                 else if (parsedResult.Clips.Any() && parsedResult.Dfns.Any())   //flv
                 {
@@ -639,34 +717,33 @@ internal partial class Program
                     // 同 aid 其它分P 的成品一起捞进来，多P FLV 视频会被拼串味）
                     videoPath = $"{p.aid}/{p.aid}.P{p.index}.{p.cid}.mp4";
                     await BBDownMuxer.MergeFLV(segFiles.ToArray(), videoPath, cancellationToken);
-                    if (myOption.SkipMux) return true;
+                    if (myOption.SkipMux)
+                    {
+                        // 记录原始轨道产物：SkipMux 跳过混流，返回前若不记录 SavePaths，
+                        // serve API 的成功响应里产物列表会缺本次下载的合并视频流。
+                        if (File.Exists(videoPath)) relatedTask?.AddSavePath(videoPath);
+                        return true;
+                    }
                     Logger.Log($"开始混流视频{(subtitleInfo.Any() ? "和字幕" : "")}...");
                     if (myOption.AudioOnly)
                         savePath = savePath[..^4] + ".m4a";
-                    int code = await BBDownMuxer.MuxAV(false, p.bvid, videoPath, "", audioMaterial, savePath,
-                        desc,
-                        title,
-                        p.ownerName ?? "",
-                        (pagesCount > 1 || (bangumi && !vInfo.IsBangumiEnd)) ? p.title : "",
-                        File.Exists(coverPath) ? coverPath : "",
-                        lang,
-                        subtitleInfo, myOption.AudioOnly, myOption.VideoOnly, p.points, p.pubTime, myOption.SimplyMux, cancellationToken: cancellationToken);
-                    if (code != 0 || !File.Exists(savePath) || new FileInfo(savePath).Length == 0)
+                    // 与 dash 分支一致：对最终 savePath 加独占锁，锁内完成"存在性判定 → 混流 →
+                    // 校验 → 清理"，防止 serve 同标题任务并发覆盖
+                    var muxOutcome = await BBDownDownloadUtil.RunWithPathLockAsync(savePath,
+                        () => MuxAndFinalizeAsync(useMp4box: false, myOption, p, vInfo, selectedPagesInfo, parsedResult, desc, title, coverPath, lang, subtitleInfo, audioMaterial,
+                            videoPath, "", savePath, isHevc: false, videoOnly: myOption.VideoOnly, audioOnly: myOption.AudioOnly,
+                            bangumi, fastSkipChecked: true, relatedTask, cancellationToken),
+                        cancellationToken);
+                    if (muxOutcome == MuxOutcome.Failed)
                     {
                         Logger.LogError("合并失败"); return false;
                     }
-                    Logger.Log("清理临时文件...");
-                    await Task.Delay(200, cancellationToken);
-                    if (parsedResult.VideoTracks.Count != 0) File.Delete(videoPath);
-                    foreach (var s in subtitleInfo) File.Delete(s.path);
-                    foreach (var a in audioMaterial) File.Delete(a.path);
-                    if (p.points.Any()) File.Delete(Path.Combine(Path.GetDirectoryName(string.IsNullOrEmpty(videoPath) ? audioPath : videoPath)!, "chapters"));
-                    if (selectedPagesInfo.Count == 1 || p.index == selectedPagesInfo.Last().index || p.aid != selectedPagesInfo.Last().aid)
-                        File.Delete(coverPath);
-                    if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0) Directory.Delete(p.aid, true);
                 }
                 else
                 {
+                    // 无可用轨道（既非 DASH 也非 FLV）→ 解析失败。必须显式返回 false：
+                    // 此前记录错误后仍落到下方 return true，CLI 报成功、Serve 标记 Succeeded、
+                    // 还可能写入下载存档，且 SavePath 指向不存在的文件。
                     if (myOption.DecryptDrm)
                     {
                         Logger.LogError("此视频需要大会员登录才能获取完整DRM内容。");
@@ -681,6 +758,7 @@ internal partial class Program
                         Logger.LogError(parsedResult.WebJsonString);
                     }
                     Logger.LogDebug("{0}", parsedResult.WebJsonString);
+                    return false;
                 }
 
                 if (!string.IsNullOrWhiteSpace(savePath))

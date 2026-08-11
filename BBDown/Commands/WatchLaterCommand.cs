@@ -73,6 +73,8 @@ public class WatchLaterCommand : Command<WatchLaterSettings>
 
                 var targets = settings.Limit > 0 ? list.Take(settings.Limit).ToList() : list;
                 Logger.Log($"共 {list.Count} 个稍后再看，开始下载 {targets.Count} 个...");
+                int succeeded = 0;
+                int failed = 0;
                 foreach (var (aid, title) in targets)
                 {
                     Logger.Log($"--- 下载 av{aid} {title} ---");
@@ -80,14 +82,19 @@ public class WatchLaterCommand : Command<WatchLaterSettings>
                     {
                         var opt = BuildOption($"av{aid}", settings);
                         await Program.DoWorkAsync(opt, cancellationToken);
+                        succeeded++;
                     }
                     catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or IOException)
                     {
-                        // 单个视频失败不应中止整批稍后再看
+                        // 单个视频失败不应中止整批稍后再看，但必须计入失败数，
+                        // 让调用方拿到非零退出码（此前静默继续并返回 0，
+                        // 脚本/CI 无法区分"全部成功"与"部分失败"）
+                        failed++;
                         Logger.LogWarn($"av{aid} 下载失败（继续下一个）: {ex.Message}");
                     }
                 }
-                return 0;
+                Logger.Log($"稍后再看下载完成：成功 {succeeded} 个，失败 {failed} 个");
+                return failed == 0 ? 0 : 1;
             }
             catch (OperationCanceledException)
             {

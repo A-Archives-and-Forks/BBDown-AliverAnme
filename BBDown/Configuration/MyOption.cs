@@ -131,9 +131,9 @@ public class MyOption : CommandSettings
     public bool SkipCover { get; set; }
 
     [CommandOption("--force-http")]
-    [Description("下载音视频时强制使用HTTP协议替换HTTPS(默认开启)")]
-    [DefaultValue(true)]
-    public bool ForceHttp { get; set; } = true;
+    [Description("下载音视频时强制使用HTTP协议替换HTTPS(默认关闭，使用HTTPS)")]
+    [DefaultValue(false)]
+    public bool ForceHttp { get; set; } = false;
 
     [CommandOption("-d|--download-danmaku")]
     [Description("下载弹幕")]

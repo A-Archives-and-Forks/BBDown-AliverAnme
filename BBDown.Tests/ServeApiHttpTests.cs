@@ -34,14 +34,14 @@ public class ServeApiHttpTests
         private readonly bool _ownsTaskFile;
         private readonly Task _runTask;
 
-        public RunningServer(bool withToken = false, string? taskFilePath = null)
+        public RunningServer(bool withToken = false, string? taskFilePath = null, int maxConcurrent = 3)
         {
             // 每个实例用独立的任务文件，避免 LoadFinishedTasks 把上个实例/上轮测试
             // 留下的记录加载进内存，导致任务跨测试累积、断言失准。
             // 外部传入 taskFilePath 时（如重启恢复测试），Dispose 不清理该文件。
             _ownsTaskFile = taskFilePath == null;
             _taskFile = taskFilePath ?? Path.Combine(Path.GetTempPath(), $"bbdown-tasks-{Guid.NewGuid():N}.json");
-            Server = new BBDownApiServer(maxConcurrent: 3, serveToken: withToken ? "test-token" : null, taskFilePath: _taskFile);
+            Server = new BBDownApiServer(maxConcurrent: maxConcurrent, serveToken: withToken ? "test-token" : null, taskFilePath: _taskFile);
             Server.SetUpServer();
             _runTask = Task.Run(() => Server.Run(BaseUrl, _cts.Token));
             // 等待服务器就绪（Kestrel 开始监听）后再发请求：WebApplication 启动在
@@ -338,6 +338,24 @@ public class ServeApiHttpTests
 
         // 不应残留临时文件（原子写完成即清理）
         Assert.False(File.Exists(server.TaskFile + ".tmp"), "原子写完成后不应残留 .tmp 文件");
+    }
+
+    [Fact]
+    public async Task AddTask_QueueFull_Returns429()
+    {
+        using var server = new RunningServer(maxConcurrent: 1);
+        // accept cap = maxConcurrent * (1 + 8) = 9。手动占满全部槽位（模拟队列已满），
+        // 下一个 /add-task 必须返回 429 而不是继续堆积后台任务。
+        int cap = 9;
+        for (int i = 0; i < cap; i++)
+        {
+            Assert.True(server.Server.TryAcquireAcceptSlot(), $"第 {i} 次占用接受槽位应成功");
+        }
+        Assert.Equal(0, server.Server.AvailableAcceptSlots);
+
+        using var content = JsonContent.Create(new { Url = "zz-not-a-real-url" });
+        using var resp = await server.Client.PostAsync("/add-task", content);
+        Assert.Equal(HttpStatusCode.TooManyRequests, resp.StatusCode);
     }
 
     [Fact]

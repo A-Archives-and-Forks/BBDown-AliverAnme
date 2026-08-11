@@ -64,8 +64,10 @@ public static class LiveStreamUtil
     /// B 站直播流地址带时效参数，长时间录制中过期是常态，网络瞬断或地址过期时
     /// 重新解析流地址续录（最多 <see cref="ReconnectLimit"/> 次）。
     /// 全部重连失败时保留 .part 中已录制的内容并抛错。
+    /// 未收到任何字节（流立即断开/下播前无数据）时返回 false 且不生成空文件，
+    /// 调用方据此避免把"什么都没录到"报告为成功。
     /// </summary>
-    public static async Task DownloadToFileAsync(string roomId, string path, Action<long>? onProgress, CancellationToken token = default)
+    public static async Task<bool> DownloadToFileAsync(string roomId, string path, Action<long>? onProgress, CancellationToken token = default)
     {
         const int ReconnectLimit = 3;
         var partPath = path + ".part";
@@ -97,8 +99,32 @@ public static class LiveStreamUtil
                 try
                 {
                     var (url, _, _, _) = await ResolveAsync(roomId, token);
+                    long before = total;
                     total = await StreamToFileAsync(url, partPath, total, onProgress, token);
-                    break; // 流正常结束（主播下播）
+                    // 流读到 EOF：可能是主播下播，也可能是 CDN 切换/连接到期产生的正常 EOF。
+                    // 若直接当作"主播下播"结束，CDN 切换时的截断录像会被当成成功产物。
+                    // 因此 EOF 后重新查询直播状态：仍在直播则重新解析地址续录，确认下播才结束。
+                    // 成功持续传输（本次会话收到新字节）后重置重连计数，避免偶发 EOF 消耗重连额度。
+                    if (total > before)
+                    {
+                        reconnect = 0;
+                    }
+                    try
+                    {
+                        _ = await ResolveAsync(roomId, token);
+                        // 仍在直播：EOF 是连接到期/CDN 切换，重解析地址续录
+                        Logger.LogWarn("直播流连接结束但直播间仍在直播，正在重新解析流地址续录...");
+                        continue;
+                    }
+                    catch (InvalidOperationException ex) when (ex.Message.Contains("当前未在直播"))
+                    {
+                        break; // 确认下播：结束录制
+                    }
+                    catch (Exception ex) when (ex is HttpRequestException or JsonException)
+                    {
+                        // 重新查询直播状态失败：按瞬态故障重连
+                        await ReconnectOrThrow(ex);
+                    }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
@@ -123,8 +149,20 @@ public static class LiveStreamUtil
             // 取消发生在重连等待 Task.Delay 或 while 顶部检查（try 外）：先走到循环后的改名保存再退出
         }
 
+        // 未收到任何字节：不生成空文件，返回 false 让调用方明确失败
+        if (total == 0)
+        {
+            if (File.Exists(partPath))
+            {
+                try { File.Delete(partPath); }
+                catch (IOException) { /* 清理失败不影响 */ }
+            }
+            return false;
+        }
+
         if (File.Exists(partPath))
             File.Move(partPath, path, true);
+        return true;
     }
 
     /// <summary>把一条直播流写到 <paramref name="partPath"/>（追加模式，续写重连前的已录内容），返回累计字节数。</summary>

@@ -147,7 +147,7 @@ public class SubCheckCommand : Command<SubCheckSettings>
                 Logger.Log($"检查订阅: {sub.Name} ({sub.Target})");
                 try
                 {
-                    string resolved = await UrlResolver.ResolveAsync(sub.Target);
+                    string resolved = await UrlResolver.ResolveAsync(sub.Target, cancellationToken);
                     if (string.IsNullOrEmpty(resolved)) continue;
 
                     var fetcher = FetcherFactory.CreateFetcher(resolved, settings.UseIntlApi);

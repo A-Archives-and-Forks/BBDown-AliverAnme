@@ -322,17 +322,19 @@ BBDown serve -l http://0.0.0.0:12450 --serve-token <token>
 
 #### Docker 部署
 
-镜像默认以 `serve` 启动并监听 `http://0.0.0.0:23333`（容器内必须监听 `0.0.0.0`，否则 `-p` 端口映射从宿主机访问不到），宿主机通过 `-p 23333:23333` 即可访问。
+镜像以 **Native AOT** 构建，运行阶段直接执行原生可执行文件（不依赖 .NET 运行时），默认以 `serve` 启动并监听 `http://0.0.0.0:23333`（容器内必须监听 `0.0.0.0`，否则 `-p` 端口映射从宿主机访问不到），宿主机通过 `-p 23333:23333` 即可访问。
 
 ```bash
-docker run -d --name bbdown -p 23333:23333 <image>
+docker build -t bbdown .
 ```
 
-容器对外暴露时**务必**追加 `--serve-token`（否则任何能连到该端口的人都可以提交下载任务）。由于镜像 `ENTRYPOINT` 只包含 `dotnet BBDown.dll`，追加参数会作为 `serve` 的命令行参数整体拼接：
+> **安全边界**：serve 在非回环监听（`0.0.0.0`）且未配置 `--serve-token` 时会**拒绝启动**（防止局域网任意客户端提交下载任务）。因此直接 `docker run -d -p 23333:23333 <image>` 会以非零码退出——这是预期行为，不是故障。对外暴露必须显式传入 token：
 
 ```bash
 docker run -d --name bbdown -p 23333:23333 <image> serve -l http://0.0.0.0:23333 --serve-token <token>
 ```
+
+容器对外暴露时**务必**配置 `--serve-token`（否则任何能连到该端口的人都可以提交下载任务）。由于镜像 `ENTRYPOINT` 是 AOT 原生可执行文件，追加参数会作为 `serve` 的命令行参数整体拼接。
 
 API 详细说明请参考 [API.md](./API.md)。
 
