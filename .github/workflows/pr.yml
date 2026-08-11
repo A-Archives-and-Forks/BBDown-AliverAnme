@@ -29,7 +29,8 @@ jobs:
         run: dotnet build BBDown.sln -c Release --no-restore
 
       - name: Test (unit)
-        run: dotnet test BBDown.sln -c Release --no-build --filter "Category!=Integration"
+        # 排除全部集成类别：外部网络（NetworkIntegration）与本地 ffmpeg（LocalIntegration）
+        run: dotnet test BBDown.sln -c Release --no-build --filter "Category!=Integration&Category!=NetworkIntegration&Category!=LocalIntegration"
 
   vulnerability-scan:
     name: NuGet Vulnerability Scan
@@ -69,10 +70,34 @@ jobs:
       - name: Verify formatting
         run: dotnet format BBDown.sln --verify-no-changes --no-restore
 
-  # 集成测试：真实网络访问 B 站 API，验证解析/重定向/登录检测等端到端路径。
-  # 不阻断 PR（网络抖动易误报），但必须运行并报告结果。
-  integration-test:
-    name: Integration Tests
+  # 本地可重复的集成测试（无需外部网络）：真实 ffmpeg 混流冒烟。本机 ffmpeg
+  # 不可用时测试内部直接跳过（不产生失败），因此该 job 可以作为硬性门禁阻断 PR。
+  local-integration:
+    name: Integration Tests (local ffmpeg)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up dotnet
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+
+      - name: Install ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
+      - name: Restore
+        run: dotnet restore BBDown.sln
+
+      - name: Test (local integration)
+        # 独立 runner 无其他 job 的构建产物，必须显式构建（dotnet test 自带 build）
+        run: dotnet test BBDown.sln -c Release --filter "Category=LocalIntegration"
+
+  # 外部网络集成测试：真实访问 B 站 API，验证解析/重定向/登录检测等端到端路径。
+  # 不阻断 PR（网络抖动/API 变更易误报），但必须运行并报告结果；失败时收集
+  # 测试输出供人工判断是"网络环境失败"还是"代码回归"。
+  network-integration:
+    name: Integration Tests (external network)
     runs-on: ubuntu-latest
     continue-on-error: true
     steps:
@@ -86,8 +111,19 @@ jobs:
       - name: Restore
         run: dotnet restore BBDown.sln
 
-      - name: Test (integration)
-        run: dotnet test BBDown.sln -c Release --no-build --filter "Category=Integration"
+      - name: Test (network integration)
+        # 独立 runner 无其他 job 的构建产物，必须显式构建（dotnet test 自带 build）
+        run: dotnet test BBDown.sln -c Release --filter "Category=NetworkIntegration"
+
+      - name: Upload test results
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: integration-test-results
+          path: |
+            BBDown.Tests/TestResults/*.trx
+            BBDown.Tests/TestResults/*.log
+          if-no-files-found: ignore
 
   # Native AOT smoke：BBDown 的 Directory.Build.props 全局 PublishAot=true，
   # 确保 PR 能产出可运行的 AOT 二进制（与 release.yml 的 linux-x64 对齐）

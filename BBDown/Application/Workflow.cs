@@ -77,19 +77,22 @@ internal partial class Program
         return (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay);
     }
 
-    public static async Task<(string fetchedAid, VInfo vInfo, string apiType)> GetVideoInfoAsync(MyOption myOption, string aidOri, string input, CancellationToken cancellationToken = default)
+    public static async Task<(string fetchedAid, VInfo vInfo, string apiType, string? newWbi)> GetVideoInfoAsync(MyOption myOption, string aidOri, string input, CancellationToken cancellationToken = default)
     {
         // 加载认证信息
         LoadCredentials(myOption);
 
         // 检测是否登录了账号
+        string? returnedWbi = null;
         if (myOption is { UseIntlApi: false, UseTvApi: false } && Config.Current.Area == "")
         {
             Logger.Log("检测账号登录...");
             var (isLoggedIn, cookieExpired, newWbi) = await BBDownUtil.CheckLoginWithDetails(Config.Current.Cookie, cancellationToken);
             // 子方法提取的 wbi 不会自动回流（AsyncLocal 写入只影响子方法内部），
-            // 由父流程显式写入当前任务流的配置，后续请求的 w_rid 签名才能用上新密钥。
+            // 这里在本方法流程内显式写入：本方法后续的 fetcher 请求（ResolveAsync、
+            // FetchAsync）仍能读出新密钥。
             if (newWbi is not null) Core.Config.WBI_FLOW = newWbi;
+            returnedWbi = newWbi;
             if (!isLoggedIn)
             {
                 if (cookieExpired)
@@ -196,7 +199,11 @@ internal partial class Program
 
             Logger.Log($"P{p.index}: [{p.cid}] [{p.title}] [{BBDownUtil.FormatTime(p.dur)}]");
         }
-        return (aidOri, vInfo, apiType);
+        // 返回 newWbi 由父流程在自身流内应用：AsyncLocal 写入不会回流父调用方
+        // （父流程的 ExecutionContext 快照在 await 前已捕获）。父流程在 GetVideoInfoAsync
+        // 返回后继续调用 DownloadPagesAsync → Parser.WbiSign，必须用上这一版新密钥，
+        // 否则 w_rid 仍用旧密钥签名（密钥轮换后服务器会拒绝）。
+        return (aidOri, vInfo, apiType, returnedWbi);
     }
 
 }

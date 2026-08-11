@@ -73,7 +73,9 @@ public static class LiveStreamUtil
         // 每段独立文件：重连后的新 FLV 流含新的 FLV 头与重置时间戳，
         // 直接追加到旧流末尾的原始字节拼接不保证可播放。记录在独立分段里，
         // 录制结束后用 FFmpeg concat/remux 合成最终文件。
-        var segDir = path + ".segs";
+        // segDir 用绝对路径：自定义 --output 目录（如 --output E:/录制/xxx.flv）时
+        // 相对路径会让 FFmpeg concat 列表里的 file '...' 相对 CWD 解析失败。
+        var segDir = Path.GetFullPath(path) + ".segs";
         if (Directory.Exists(segDir)) Directory.Delete(segDir, true);
         Directory.CreateDirectory(segDir);
 
@@ -189,7 +191,12 @@ public static class LiveStreamUtil
         }
         else
         {
-            if (!await ConcatSegmentsAsync(segmentFiles, path, token))
+            // 用户取消录制（Ctrl+C）时 token 已取消，但已录分段仍需合成保存——用
+            // 已取消的令牌调 ConcatSegmentsAsync 会让 FFmpeg 进程立即被取消，留下
+            // 半截产物。这里用独立的合并令牌：录制停止后给合成阶段一个有限的
+            // 收尾窗口（MuxerTimeoutMinutes 以内），超时仍失败则保留分段供重录。
+            using var finalizeCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
+            if (!await ConcatSegmentsAsync(segmentFiles, path, finalizeCts.Token))
             {
                 Logger.LogWarn($"直播分段合成失败，已录制分段保留在 {segDir}");
                 return false;
@@ -199,13 +206,17 @@ public static class LiveStreamUtil
         return true;
     }
 
-    /// <summary>用 FFmpeg concat demuxer 把多个 FLV 分段合成一个文件。返回是否成功。</summary>
-    private static async Task<bool> ConcatSegmentsAsync(List<string> segmentFiles, string outPath, CancellationToken token)
+    /// <summary>用 FFmpeg concat demuxer 把多个 FLV 分段合成一个文件。返回是否成功。
+    /// internal 供测试注入假执行器捕获参数。</summary>
+    internal static async Task<bool> ConcatSegmentsAsync(List<string> segmentFiles, string outPath, CancellationToken token)
     {
         // concat demuxer 需要逐行列出文件，FFmpeg 通过 ArgumentList 传参无法直接传换行
         // 列表——这里写一个临时 concat 列表文件。路径含特殊字符时 concat 列表需要转义，
         // 用 file '...' 单引号包裹（路径中单引号已由 SanitizeFileName 在文件生成阶段处理）。
-        var listPath = outPath + ".concat.txt";
+        // 列表文件与输出都用绝对路径：自定义 --output 目录时若 CWD 与目标目录不同，
+        // 相对路径的 file '...' 条目会在 concat demuxer 读取时解析失败。
+        var listPath = Path.GetFullPath(outPath) + ".concat.txt";
+        var absoluteOutPath = Path.GetFullPath(outPath);
         try
         {
             await File.WriteAllLinesAsync(listPath, segmentFiles.Select(f => $"file '{f.Replace("'", "'\\''")}'"), token);
@@ -215,18 +226,20 @@ public static class LiveStreamUtil
                 "-f", "concat", "-safe", "0",
                 "-i", listPath,
                 "-c", "copy",
-                outPath,
+                absoluteOutPath,
             };
-            // 复用统一外部进程执行器（与混流一致）：支持超时/取消时 Kill 整棵进程树
+            // 复用统一外部进程执行器（与混流一致）：支持超时/取消时 Kill 整棵进程树。
+            // 用 BBDownMuxer.FFMPEG：FindBinaries 会把用户 --ffmpeg-path 或 PATH 探测的
+            // 路径写入该静态字段，此前硬编码 "ffmpeg" 会绕过用户的显式指定。
             var spec = new ExternalProcessSpec
             {
-                FileName = "ffmpeg",
+                FileName = BBDownMuxer.FFMPEG,
                 Arguments = args,
                 TimeoutMs = Core.Config.Current.MuxerTimeoutMinutes * 60_000,
                 ToolDisplayName = "ffmpeg",
             };
             int code = await BBDownMuxer.ProcessRunner.RunAsync(spec, token);
-            return code == 0 && File.Exists(outPath) && new FileInfo(outPath).Length > 0;
+            return code == 0 && File.Exists(absoluteOutPath) && new FileInfo(absoluteOutPath).Length > 0;
         }
         catch (Exception ex) when (ex is IOException or InvalidOperationException)
         {

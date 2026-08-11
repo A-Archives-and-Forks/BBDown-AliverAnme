@@ -5,15 +5,16 @@ namespace BBDown.Tests;
 
 /// <summary>
 /// URL 解析测试。
-/// 标记为 "Integration" 的测试需要网络访问 Bilibili API。
-/// CI 环境建议用 dotnet test --filter "Category!=Integration" 排除。
+/// 标记为 "NetworkIntegration" 的测试需要真实网络访问 Bilibili API。
+/// CI 的本地/单元 job 用 --filter "Category!=Integration & Category!=NetworkIntegration
+/// & Category!=LocalIntegration" 排除，网络集成 job 单独运行。
 /// </summary>
 public class UrlResolverTests
 {
     // ── 需要网络的集成测试 ──
 
     [Theory]
-    [Trait("Category", "Integration")]
+    [Trait("Category", "NetworkIntegration")]
     [InlineData("https://www.bilibili.com/video/av170001")]
     [InlineData("https://www.bilibili.com/video/Av170001")]
     public async Task ResolveAsync_AvVideoUrl_ReturnsAvId(string url)
@@ -24,7 +25,7 @@ public class UrlResolverTests
     }
 
     [Theory]
-    [Trait("Category", "Integration")]
+    [Trait("Category", "NetworkIntegration")]
     [InlineData("https://www.bilibili.com/video/BV1xx411c7mD")]
     [InlineData("https://www.bilibili.com/video/bv1xx411c7mD")]
     public async Task ResolveAsync_BvVideoUrl_ReturnsAvId(string url)
@@ -35,7 +36,7 @@ public class UrlResolverTests
     }
 
     [Theory]
-    [Trait("Category", "Integration")]
+    [Trait("Category", "NetworkIntegration")]
     [InlineData("av170001")]
     [InlineData("AV170001")]
     public async Task ResolveAsync_AvId_ReturnsAvId(string input)
@@ -45,7 +46,7 @@ public class UrlResolverTests
     }
 
     [Theory]
-    [Trait("Category", "Integration")]
+    [Trait("Category", "NetworkIntegration")]
     [InlineData("BV1xx411c7mD")]
     [InlineData("bv1xx411c7mD")]
     public async Task ResolveAsync_BvId_ReturnsAvId(string input)
@@ -56,7 +57,7 @@ public class UrlResolverTests
     }
 
     [Fact]
-    [Trait("Category", "Integration")]
+    [Trait("Category", "NetworkIntegration")]
     public async Task ResolveAsync_EpUrl_ReturnsEpId()
     {
         var result = await UrlResolver.ResolveAsync("https://www.bilibili.com/bangumi/play/ep12345");
@@ -64,7 +65,7 @@ public class UrlResolverTests
     }
 
     [Fact]
-    [Trait("Category", "Integration")]
+    [Trait("Category", "NetworkIntegration")]
     public async Task ResolveAsync_SsUrl_ReturnsEpFormat()
     {
         // SS ID requires a network call; use a currently valid public season.
@@ -106,7 +107,7 @@ public class UrlResolverTests
     // ── 额外本地解析测试 ──
 
     [Theory]
-    [Trait("Category", "Integration")] // av 前缀会经 FixAvidAsync 发起真实网络跳转检查，不能算纯本地解析
+    [Trait("Category", "NetworkIntegration")] // av 前缀会经 FixAvidAsync 发起真实网络跳转检查，不能算纯本地解析
     [InlineData("av12345", "12345")]
     [InlineData("AV99999", "99999")]
     public async Task ResolveAsync_RawAvId_LocalParsing(string input, string expected)

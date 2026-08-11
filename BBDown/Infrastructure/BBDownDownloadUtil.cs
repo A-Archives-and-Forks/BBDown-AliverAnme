@@ -29,12 +29,14 @@ internal static class BBDownDownloadUtil
         long clipLength = toPosition is > 0 ? toPosition.Value - fromPosition + 1 : long.MaxValue;
 
         // 超长旧分片：上次中断可能留下超出目标分片范围的尾部（内容异常变大）。
-        // 必须先把文件截断到目标长度再判完成——否则合并会带入多余尾部、
-        // 长度校验失败，且下次重试仍看到同一个超长分片，形成永久失败循环。
+        // 此时既有字节不可信——它可能是另一版本/另一资源在相同偏移留下的残留。
+        // 此前把尾部截断后仅凭长度判完成，若远端内容已变化但长度恰好相同，
+        // 会拼出"长度正确但内容损坏"的文件，且下次重试仍看到同一超长分片。
+        // 正确做法是清空并完整重下本分片，不信任截断后"恰好吻合"的长度。
         if (fileStream.Length > clipLength)
         {
-            fileStream.SetLength(clipLength);
-            fileStream.Seek(0, SeekOrigin.End);
+            fileStream.SetLength(0);
+            fileStream.Seek(0, SeekOrigin.Begin);
         }
         else
         {
@@ -71,6 +73,21 @@ internal static class BBDownDownloadUtil
             // 与新的短内容拼接成损坏文件。
             fileStream.SetLength(0);
             fileStream.Seek(0, SeekOrigin.Begin);
+        }
+        else if (response.StatusCode == HttpStatusCode.PartialContent)
+        {
+            // 严格校验 Content-Range 的起始偏移：服务器必须以我们请求的字节偏移响应。
+            // 若返回的起始字节与请求不符（远端资源变化导致偏移语义错位、或 CDN 行为异常），
+            // 既有文件前缀不可信，丢弃后完整重下——否则旧前缀 + 新后缀会拼出损坏文件。
+            var contentRange = response.Content.Headers.ContentRange;
+            if (contentRange is not { HasRange: true } || contentRange.From != downloadedBytes)
+            {
+                Logger.LogDebug("Content-Range 起始偏移({0})与请求偏移({1})不符，丢弃现有内容完整重下",
+                    contentRange?.From?.ToString() ?? "none", downloadedBytes);
+                fileStream.SetLength(0);
+                fileStream.Seek(0, SeekOrigin.Begin);
+                downloadedBytes = fromPosition;
+            }
         }
 
         using var stream = await response.Content.ReadAsStreamAsync(token);
@@ -280,6 +297,16 @@ internal static class BBDownDownloadUtil
         if (File.Exists(tmpName) && new FileInfo(tmpName).Length > 0)
         {
             Logger.LogDebug("断点续传: 从现有临时文件 {0} 字节处继续", new FileInfo(tmpName).Length);
+        }
+        // 临时文件比远端更大：既非"完整匹配"也非"可续传的前缀"（续传只会追加，
+        // 不可能让已有内容变短）。它只可能是远端资源变化（同长度语义错位）或上次
+        // 中断写入的越界尾部。若继续从现有长度处发 Range: bytes=N-，服务器要么 416、
+        // 要么返回偏移错位的片段，拼出损坏文件。这里删除让单线程下载完整重下。
+        if (fileSize > 0 && File.Exists(tmpName) && new FileInfo(tmpName).Length > fileSize)
+        {
+            Logger.LogDebug("断点续传: 临时文件({0} 字节)大于远端文件({1} 字节)，内容不可信，删除后完整重下",
+                new FileInfo(tmpName).Length, fileSize);
+            File.Delete(tmpName);
         }
         int maxRetry = Config.Current.MaxRetryCount;
         while (retry < maxRetry)

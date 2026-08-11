@@ -209,240 +209,221 @@ public static partial class Parser
         // 由 finally 统一释放（JsonDocument.Dispose 幂等，与 262/456 的显式释放不冲突）。
         try
         {
-        // 根据API版本自动定位数据节点
-        JsonElement root;
-        if (data.TryGetProperty("result", out var resultElem) && resultElem.ValueKind == JsonValueKind.Object)
-        {
-            root = resultElem.TryGetProperty("video_info", out var vi) ? vi : resultElem;
-        }
-        else if (data.TryGetProperty("data", out var dataElem))
-        {
-            root = dataElem;
-        }
-        else
-        {
-            root = data;
-        }
-
-        bool bangumi = aidOri.StartsWith("ep:");
-
-        if (root.TryGetProperty("dash", out _)) //dash
-        {
-            List<JsonElement>? audio = null;
-            List<JsonElement>? video = null;
-            List<JsonElement>? backgroundAudio = null;
-            List<JsonElement>? roleAudio = null;
-            int pDur = 0;
-
-            if (root.TryGetProperty("dash", out var dashElem) && dashElem.TryGetProperty("duration", out var durElem))
-                pDur = durElem.GetInt32();
-            else if (root.TryGetProperty("timelength", out var tlElem))
-                pDur = tlElem.GetInt32() / 1000;
-
-            parsedResult.ActualDurationSec = pDur;
-
-            // DRM metadata
-            if (root.TryGetProperty("is_drm", out var isDrmElem))
-                parsedResult.IsDrm = isDrmElem.GetBoolean();
-            if (root.TryGetProperty("drm_tech_type", out var techElem))
-                parsedResult.DrmTechType = techElem.GetInt32();
-            if (root.TryGetProperty("drm_type", out var typeElem))
-                parsedResult.DrmType = typeElem.GetString() ?? "";
-            if (parsedResult.IsDrm) Logger.LogDebug("DRM detected: type={0}, tech={1}", parsedResult.DrmType, parsedResult.DrmTechType);
-
-            //免二压视频需要重新请求
-            for (int reparsePass = 0; reparsePass < 2; reparsePass++)
+            // 根据API版本自动定位数据节点
+            JsonElement root;
+            if (data.TryGetProperty("result", out var resultElem) && resultElem.ValueKind == JsonValueKind.Object)
             {
-                // 第二轮若直接 respJson.Dispose() 再取值，重请求响应（未经业务校验，
-                // 风控/错误页时可能无 dash）会让 video/audio 引用已释放文档抛
-                // ObjectDisposedException。改为：新响应带 dash 才接管并退役旧文档，
-                // 否则丢弃新响应、沿用第一轮结果降级。
-                if (reparsePass == 1)
-                {
-                    if (appApi) break; //只有非APP接口需要免二压
-                    parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn(), token);
-                    var newResp = JsonDocument.Parse(parsedResult.WebJsonString);
-                    var newRoot = newResp.RootElement;
-                    var pickedRoot = newRoot.TryGetProperty("result", out var rr) && rr.ValueKind == JsonValueKind.Object && rr.TryGetProperty("video_info", out var vvii) ? vvii :
-                           newRoot.TryGetProperty("result", out var rr2) && rr2.ValueKind == JsonValueKind.Object ? rr2 :
-                           newRoot.TryGetProperty("data", out var dd) ? dd : newRoot;
-                    if (pickedRoot.TryGetProperty("dash", out var newDash) && newDash.TryGetProperty("video", out _))
-                    {
-                        // 新 dash 带 video 即可接管（保留免二压的高清视频轨）。
-                        // 不要求 audio 数组同时存在：杜比/FLAC-only 片源的普通 audio 数组本就缺失，
-                        // 音轨在其 dash.dolby.audio / dash.flac.audio 节点，由下方"处理杜比/Hi-Res"
-                        // 分支补出。仅当新响应连 video 都缺（风控/错误页）才整体沿用第一轮。
-                        respJson.Dispose(); // 旧文档退役，新文档接管生命周期
-                        respJson = newResp;
-                        root = pickedRoot;
-                        video = newDash.TryGetProperty("video", out var newVidArr) ? newVidArr.EnumerateArray().ToList() : null;
-                        // 新 dash 无 audio 数组时置 null：若其带 dolby/flac 则下方补出音轨；
-                        // 若完全无音频信息则退化为纯视频（优于整体降级第一轮低清）。
-                        audio = newDash.TryGetProperty("audio", out var newAudArr) ? newAudArr.EnumerateArray().ToList() : null;
-                    }
-                    else
-                    {
-                        // 重请求响应无 dash 或缺 video（风控/错误页等）：沿用第一轮结果，不替换 root，
-                        // 避免第二轮异常响应把第一轮已解析的完整轨道静默丢弃
-                        newResp.Dispose();
-                    }
-                }
-                if (root.TryGetProperty("dash", out var dash) && dash.TryGetProperty("video", out var vidArr))
-                    video = vidArr.EnumerateArray().ToList();
-                if (root.TryGetProperty("dash", out dash) && dash.TryGetProperty("audio", out var audArr))
-                    audio = audArr.EnumerateArray().ToList();
+                root = resultElem.TryGetProperty("video_info", out var vi) ? vi : resultElem;
+            }
+            else if (data.TryGetProperty("data", out var dataElem))
+            {
+                root = dataElem;
+            }
+            else
+            {
+                root = data;
+            }
 
-                if (appApi && bangumi)
+            bool bangumi = aidOri.StartsWith("ep:");
+
+            if (root.TryGetProperty("dash", out _)) //dash
+            {
+                List<JsonElement>? audio = null;
+                List<JsonElement>? video = null;
+                List<JsonElement>? backgroundAudio = null;
+                List<JsonElement>? roleAudio = null;
+                int pDur = 0;
+
+                if (root.TryGetProperty("dash", out var dashElem) && dashElem.TryGetProperty("duration", out var durElem))
+                    pDur = durElem.GetInt32();
+                else if (root.TryGetProperty("timelength", out var tlElem))
+                    pDur = tlElem.GetInt32() / 1000;
+
+                parsedResult.ActualDurationSec = pDur;
+
+                // DRM metadata
+                if (root.TryGetProperty("is_drm", out var isDrmElem))
+                    parsedResult.IsDrm = isDrmElem.GetBoolean();
+                if (root.TryGetProperty("drm_tech_type", out var techElem))
+                    parsedResult.DrmTechType = techElem.GetInt32();
+                if (root.TryGetProperty("drm_type", out var typeElem))
+                    parsedResult.DrmType = typeElem.GetString() ?? "";
+                if (parsedResult.IsDrm) Logger.LogDebug("DRM detected: type={0}, tech={1}", parsedResult.DrmType, parsedResult.DrmTechType);
+
+                //免二压视频需要重新请求
+                for (int reparsePass = 0; reparsePass < 2; reparsePass++)
                 {
-                    if (data.TryGetProperty("dubbing_info", out var dub) && dub.TryGetProperty("background_audio", out var bgArr))
-                        backgroundAudio = bgArr.EnumerateArray().ToList();
-                    if (data.TryGetProperty("dubbing_info", out dub) && dub.TryGetProperty("role_audio_list", out var roleArr))
-                        roleAudio = roleArr.EnumerateArray().ToList();
-                }
-                //处理杜比音频
-                try
-                {
-                    if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("dolby", out JsonElement dolby))
+                    // 第二轮若直接 respJson.Dispose() 再取值，重请求响应（未经业务校验，
+                    // 风控/错误页时可能无 dash）会让 video/audio 引用已释放文档抛
+                    // ObjectDisposedException。改为：新响应带 dash 才接管并退役旧文档，
+                    // 否则丢弃新响应、沿用第一轮结果降级。
+                    if (reparsePass == 1)
                     {
-                        if (dolby.TryGetProperty("audio", out JsonElement db))
+                        if (appApi) break; //只有非APP接口需要免二压
+                        parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn(), token);
+                        var newResp = JsonDocument.Parse(parsedResult.WebJsonString);
+                        var newRoot = newResp.RootElement;
+                        var pickedRoot = newRoot.TryGetProperty("result", out var rr) && rr.ValueKind == JsonValueKind.Object && rr.TryGetProperty("video_info", out var vvii) ? vvii :
+                               newRoot.TryGetProperty("result", out var rr2) && rr2.ValueKind == JsonValueKind.Object ? rr2 :
+                               newRoot.TryGetProperty("data", out var dd) ? dd : newRoot;
+                        if (pickedRoot.TryGetProperty("dash", out var newDash) && newDash.TryGetProperty("video", out _))
                         {
-                            audio ??= new List<JsonElement>();
-                            audio.AddRange(db.EnumerateArray());
+                            // 新 dash 带 video 即可接管（保留免二压的高清视频轨）。
+                            // 不要求 audio 数组同时存在：杜比/FLAC-only 片源的普通 audio 数组本就缺失，
+                            // 音轨在其 dash.dolby.audio / dash.flac.audio 节点，由下方"处理杜比/Hi-Res"
+                            // 分支补出。仅当新响应连 video 都缺（风控/错误页）才整体沿用第一轮。
+                            respJson.Dispose(); // 旧文档退役，新文档接管生命周期
+                            respJson = newResp;
+                            root = pickedRoot;
+                            video = newDash.TryGetProperty("video", out var newVidArr) ? newVidArr.EnumerateArray().ToList() : null;
+                            // 新 dash 无 audio 数组时置 null：若其带 dolby/flac 则下方补出音轨；
+                            // 若完全无音频信息则退化为纯视频（优于整体降级第一轮低清）。
+                            audio = newDash.TryGetProperty("audio", out var newAudArr) ? newAudArr.EnumerateArray().ToList() : null;
+                        }
+                        else
+                        {
+                            // 重请求响应无 dash 或缺 video（风控/错误页等）：沿用第一轮结果，不替换 root，
+                            // 避免第二轮异常响应把第一轮已解析的完整轨道静默丢弃
+                            newResp.Dispose();
                         }
                     }
-                }
-                catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException)
-                { Logger.LogDebug("杜比音频解析失败: {0}", e.Message); }
+                    if (root.TryGetProperty("dash", out var dash) && dash.TryGetProperty("video", out var vidArr))
+                        video = vidArr.EnumerateArray().ToList();
+                    if (root.TryGetProperty("dash", out dash) && dash.TryGetProperty("audio", out var audArr))
+                        audio = audArr.EnumerateArray().ToList();
 
-                //处理Hi-Res无损
-                try
-                {
-                    if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("flac", out JsonElement hiRes))
+                    if (appApi && bangumi)
                     {
-                        if (hiRes.TryGetProperty("audio", out JsonElement db))
+                        if (data.TryGetProperty("dubbing_info", out var dub) && dub.TryGetProperty("background_audio", out var bgArr))
+                            backgroundAudio = bgArr.EnumerateArray().ToList();
+                        if (data.TryGetProperty("dubbing_info", out dub) && dub.TryGetProperty("role_audio_list", out var roleArr))
+                            roleAudio = roleArr.EnumerateArray().ToList();
+                    }
+                    //处理杜比音频
+                    try
+                    {
+                        if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("dolby", out JsonElement dolby))
                         {
-                            if (db.ValueKind != JsonValueKind.Null)
+                            if (dolby.TryGetProperty("audio", out JsonElement db))
                             {
                                 audio ??= new List<JsonElement>();
-                                audio.Add(db);
+                                audio.AddRange(db.EnumerateArray());
                             }
                         }
                     }
-                }
-                catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException)
-                { Logger.LogDebug("Hi-Res音频解析失败: {0}", e.Message); }
+                    catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException)
+                    { Logger.LogDebug("杜比音频解析失败: {0}", e.Message); }
 
-                if (video != null)
+                    //处理Hi-Res无损
+                    try
+                    {
+                        if (!tvApi && root.GetPropertySafe("dash").TryGetProperty("flac", out JsonElement hiRes))
+                        {
+                            if (hiRes.TryGetProperty("audio", out JsonElement db))
+                            {
+                                if (db.ValueKind != JsonValueKind.Null)
+                                {
+                                    audio ??= new List<JsonElement>();
+                                    audio.Add(db);
+                                }
+                            }
+                        }
+                    }
+                    catch (Exception e) when (e is KeyNotFoundException or InvalidOperationException)
+                    { Logger.LogDebug("Hi-Res音频解析失败: {0}", e.Message); }
+
+                    if (video != null)
+                    {
+                        foreach (var node in video)
+                        {
+                            var urlList = new List<string>() { node.GetValueAsStringSafe("base_url") };
+                            if (node.TryGetProperty("backup_url", out JsonElement element) && element.ValueKind != JsonValueKind.Null)
+                            {
+                                urlList.AddRange(element.EnumerateArray().Select(i => i.ToString()));
+                            }
+                            var videoId = node.GetValueAsStringSafe("id");
+                            Video v = new()
+                            {
+                                dur = pDur,
+                                id = videoId,
+                                dfn = AppSettings.QualityMap.GetValueOrDefault(videoId, $"未知({videoId})"),
+                                bandwidth = node.GetInt64Safe("bandwidth") / 1000,
+                                baseUrl = urlList.FirstOrDefault(i => !BaseUrlRegex().IsMatch(i), urlList.First()),
+                                codecs = GetVideoCodec(node.GetValueAsStringSafe("codecid")),
+                                size = node.GetDoubleSafe("size")
+                            };
+                            if (!tvApi && !appApi)
+                            {
+                                v.res = node.GetValueAsStringSafe("width") + "x" + node.GetValueAsStringSafe("height");
+                                v.fps = node.GetValueAsStringSafe("frame_rate");
+                            }
+                            if (!parsedResult.VideoTracks.Contains(v)) parsedResult.VideoTracks.Add(v);
+                        }
+
+                        if (parsedResult.IsDrm && string.IsNullOrEmpty(parsedResult.KidHex))
+                        {
+                            try
+                            {
+                                var firstVideo = video.FirstOrDefault();
+                                if (firstVideo.ValueKind == System.Text.Json.JsonValueKind.Undefined)
+                                    throw new InvalidOperationException("视频轨道为空，无法提取 DRM 信息");
+                                if (firstVideo.TryGetProperty("bilidrm_uri", out var drmUri))
+                                {
+                                    var uri = drmUri.GetString() ?? "";
+                                    var lastSlash = uri.LastIndexOf("//", StringComparison.Ordinal);
+                                    if (lastSlash >= 0)
+                                        parsedResult.KidHex = uri[(lastSlash + 2)..];
+                                }
+                                if (firstVideo.TryGetProperty("widevine_pssh", out var pssh) && pssh.GetString() is string ps && ps.Length > 0)
+                                    parsedResult.PsshBase64 = ps;
+                            }
+                            catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
+                            { Logger.LogWarn($"DRM license info extraction error: {ex.Message}"); }
+                        }
+                    }
+
+                } // end for reparsePass
+
+                if (audio != null)
                 {
-                    foreach (var node in video)
+                    foreach (var node in audio)
                     {
                         var urlList = new List<string>() { node.GetValueAsStringSafe("base_url") };
                         if (node.TryGetProperty("backup_url", out JsonElement element) && element.ValueKind != JsonValueKind.Null)
                         {
                             urlList.AddRange(element.EnumerateArray().Select(i => i.ToString()));
                         }
-                        var videoId = node.GetValueAsStringSafe("id");
-                        Video v = new()
+                        var audioId = node.GetValueAsStringSafe("id");
+                        var codecs = node.GetValueAsStringSafe("codecs");
+                        codecs = codecs switch
                         {
+                            "mp4a.40.2" => "M4A",
+                            "mp4a.40.5" => "M4A",
+                            "ec-3" => "E-AC-3",
+                            "fLaC" => "FLAC",
+                            _ => codecs
+                        };
+
+                        parsedResult.AudioTracks.Add(new Audio()
+                        {
+                            id = audioId,
+                            dfn = audioId,
                             dur = pDur,
-                            id = videoId,
-                            dfn = AppSettings.QualityMap.GetValueOrDefault(videoId, $"未知({videoId})"),
                             bandwidth = node.GetInt64Safe("bandwidth") / 1000,
                             baseUrl = urlList.FirstOrDefault(i => !BaseUrlRegex().IsMatch(i), urlList.First()),
-                            codecs = GetVideoCodec(node.GetValueAsStringSafe("codecid")),
-                            size = node.GetDoubleSafe("size")
-                        };
-                        if (!tvApi && !appApi)
-                        {
-                            v.res = node.GetValueAsStringSafe("width") + "x" + node.GetValueAsStringSafe("height");
-                            v.fps = node.GetValueAsStringSafe("frame_rate");
-                        }
-                        if (!parsedResult.VideoTracks.Contains(v)) parsedResult.VideoTracks.Add(v);
-                    }
-
-                    if (parsedResult.IsDrm && string.IsNullOrEmpty(parsedResult.KidHex))
-                    {
-                        try
-                        {
-                            var firstVideo = video.FirstOrDefault();
-                            if (firstVideo.ValueKind == System.Text.Json.JsonValueKind.Undefined)
-                                throw new InvalidOperationException("视频轨道为空，无法提取 DRM 信息");
-                            if (firstVideo.TryGetProperty("bilidrm_uri", out var drmUri))
-                            {
-                                var uri = drmUri.GetString() ?? "";
-                                var lastSlash = uri.LastIndexOf("//", StringComparison.Ordinal);
-                                if (lastSlash >= 0)
-                                    parsedResult.KidHex = uri[(lastSlash + 2)..];
-                            }
-                            if (firstVideo.TryGetProperty("widevine_pssh", out var pssh) && pssh.GetString() is string ps && ps.Length > 0)
-                                parsedResult.PsshBase64 = ps;
-                        }
-                        catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
-                        { Logger.LogWarn($"DRM license info extraction error: {ex.Message}"); }
+                            codecs = codecs
+                        });
                     }
                 }
 
-            } // end for reparsePass
-
-            if (audio != null)
-            {
-                foreach (var node in audio)
+                if (backgroundAudio != null && roleAudio != null)
                 {
-                    var urlList = new List<string>() { node.GetValueAsStringSafe("base_url") };
-                    if (node.TryGetProperty("backup_url", out JsonElement element) && element.ValueKind != JsonValueKind.Null)
-                    {
-                        urlList.AddRange(element.EnumerateArray().Select(i => i.ToString()));
-                    }
-                    var audioId = node.GetValueAsStringSafe("id");
-                    var codecs = node.GetValueAsStringSafe("codecs");
-                    codecs = codecs switch
-                    {
-                        "mp4a.40.2" => "M4A",
-                        "mp4a.40.5" => "M4A",
-                        "ec-3" => "E-AC-3",
-                        "fLaC" => "FLAC",
-                        _ => codecs
-                    };
-
-                    parsedResult.AudioTracks.Add(new Audio()
-                    {
-                        id = audioId,
-                        dfn = audioId,
-                        dur = pDur,
-                        bandwidth = node.GetInt64Safe("bandwidth") / 1000,
-                        baseUrl = urlList.FirstOrDefault(i => !BaseUrlRegex().IsMatch(i), urlList.First()),
-                        codecs = codecs
-                    });
-                }
-            }
-
-            if (backgroundAudio != null && roleAudio != null)
-            {
-                foreach (var node in backgroundAudio)
-                {
-                    var audioId = node.GetValueAsStringSafe("id");
-                    var urlList = new List<string> { node.GetValueAsStringSafe("base_url") };
-                    urlList.AddRange(node.EnumerateArraySafe("backup_url").Select(i => i.ToString()));
-                    parsedResult.BackgroundAudioTracks.Add(new Audio()
-                    {
-                        id = audioId,
-                        dfn = audioId,
-                        dur = pDur,
-                        bandwidth = node.GetInt64Safe("bandwidth") / 1000,
-                        baseUrl = urlList.FirstOrDefault(i => !BaseUrlRegex().IsMatch(i), urlList.First()),
-                        codecs = node.GetValueAsStringSafe("codecs")
-                    });
-                }
-
-                foreach (var role in roleAudio)
-                {
-                    var roleAudioTracks = new List<Audio>();
-                    foreach (var node in role.EnumerateArraySafe("audio"))
+                    foreach (var node in backgroundAudio)
                     {
                         var audioId = node.GetValueAsStringSafe("id");
                         var urlList = new List<string> { node.GetValueAsStringSafe("base_url") };
                         urlList.AddRange(node.EnumerateArraySafe("backup_url").Select(i => i.ToString()));
-                        roleAudioTracks.Add(new Audio()
+                        parsedResult.BackgroundAudioTracks.Add(new Audio()
                         {
                             id = audioId,
                             dfn = audioId,
@@ -452,101 +433,120 @@ public static partial class Parser
                             codecs = node.GetValueAsStringSafe("codecs")
                         });
                     }
-                    parsedResult.RoleAudioList.Add(new AudioMaterialInfo()
+
+                    foreach (var role in roleAudio)
                     {
-                        title = role.GetValueAsStringSafe("title"),
-                        personName = role.GetValueAsStringSafe("person_name"),
-                        path = $"{aid}/{aid}.{cid}.{role.GetValueAsStringSafe("audio_id")}.m4a",
-                        audio = roleAudioTracks
-                    });
+                        var roleAudioTracks = new List<Audio>();
+                        foreach (var node in role.EnumerateArraySafe("audio"))
+                        {
+                            var audioId = node.GetValueAsStringSafe("id");
+                            var urlList = new List<string> { node.GetValueAsStringSafe("base_url") };
+                            urlList.AddRange(node.EnumerateArraySafe("backup_url").Select(i => i.ToString()));
+                            roleAudioTracks.Add(new Audio()
+                            {
+                                id = audioId,
+                                dfn = audioId,
+                                dur = pDur,
+                                bandwidth = node.GetInt64Safe("bandwidth") / 1000,
+                                baseUrl = urlList.FirstOrDefault(i => !BaseUrlRegex().IsMatch(i), urlList.First()),
+                                codecs = node.GetValueAsStringSafe("codecs")
+                            });
+                        }
+                        parsedResult.RoleAudioList.Add(new AudioMaterialInfo()
+                        {
+                            title = role.GetValueAsStringSafe("title"),
+                            personName = role.GetValueAsStringSafe("person_name"),
+                            path = $"{aid}/{aid}.{cid}.{role.GetValueAsStringSafe("audio_id")}.m4a",
+                            audio = roleAudioTracks
+                        });
+                    }
                 }
             }
-        }
-        else if (root.TryGetProperty("durl", out _)) //flv
-        {
-            //默认以最高清晰度解析
-            parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn(), token);
+            else if (root.TryGetProperty("durl", out _)) //flv
+            {
+                //默认以最高清晰度解析
+                parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn(), token);
+                respJson.Dispose();
+                respJson = JsonDocument.Parse(parsedResult.WebJsonString);
+                var newData = respJson.RootElement;
+                if (newData.TryGetProperty("result", out var r) && r.ValueKind == JsonValueKind.Object)
+                    root = r.TryGetProperty("video_info", out var vi) ? vi : r;
+                else if (newData.TryGetProperty("data", out var d))
+                    root = d;
+                else
+                    root = newData;
+                string quality = "";
+                string videoCodecid = "";
+                string url = "";
+                double size = 0;
+                double length = 0;
+
+                quality = root.GetValueAsStringSafe("quality");
+                videoCodecid = root.GetValueAsStringSafe("video_codecid");
+                //获取所有分段
+                foreach (var node in root.EnumerateArraySafe("durl"))
+                {
+                    parsedResult.Clips.Add(node.GetValueAsStringSafe("url"));
+                    size += node.GetDoubleSafe("size");
+                    length += node.GetDoubleSafe("length");
+                }
+                //TV模式可用清晰度
+                if (root.TryGetProperty("qn_extras", out JsonElement qnExtras))
+                {
+                    parsedResult.Dfns.AddRange(qnExtras.EnumerateArray().Select(node => node.GetValueAsStringSafe("qn")));
+                }
+                else if (root.TryGetProperty("accept_quality", out JsonElement acceptQuality)) //非tv模式可用清晰度
+                {
+                    parsedResult.Dfns.AddRange(acceptQuality.EnumerateArray()
+                        .Select(node => node.ToString())
+                        .Where(_qn => !string.IsNullOrEmpty(_qn)));
+                }
+
+                // 分段累加出的长度才是本次真正能拿到的内容长度；
+                // 充电试看片段正是在这里与 timelength 声称的完整时长产生分歧。
+                parsedResult.ActualDurationSec = (int)length / 1000;
+
+                Video v = new()
+                {
+                    id = quality,
+                    dfn = AppSettings.QualityMap.GetValueOrDefault(quality, $"未知({quality})"),
+                    baseUrl = url,
+                    codecs = GetVideoCodec(videoCodecid),
+                    dur = (int)length / 1000,
+                    size = size
+                };
+                if (!parsedResult.VideoTracks.Contains(v)) parsedResult.VideoTracks.Add(v);
+            }
+
+            // 番剧片头片尾转分段信息, 预计效果: 正片? -> 片头 -> 正片 -> 片尾
+            if (bangumi)
+            {
+                if (root.TryGetProperty("clip_info_list", out JsonElement clipList))
+                {
+                    parsedResult.ExtraPoints.AddRange(clipList.EnumerateArray().Select(clip => new ViewPoint()
+                    {
+                        title = clip.GetValueAsStringSafe("toastText").Replace("即将跳过", ""),
+                        start = clip.GetInt32Safe("start"),
+                        end = clip.GetInt32Safe("end")
+                    })
+                    );
+                    parsedResult.ExtraPoints.Sort((p1, p2) => p1.start.CompareTo(p2.start));
+                    var newPoints = new List<ViewPoint>();
+                    int lastEnd = 0;
+                    foreach (var point in parsedResult.ExtraPoints)
+                    {
+                        if (lastEnd < point.start)
+                            newPoints.Add(new ViewPoint() { title = "正片", start = lastEnd, end = point.start });
+                        newPoints.Add(point);
+                        lastEnd = point.end;
+                    }
+                    parsedResult.ExtraPoints = newPoints;
+                }
+
+            }
+
             respJson.Dispose();
-            respJson = JsonDocument.Parse(parsedResult.WebJsonString);
-            var newData = respJson.RootElement;
-            if (newData.TryGetProperty("result", out var r) && r.ValueKind == JsonValueKind.Object)
-                root = r.TryGetProperty("video_info", out var vi) ? vi : r;
-            else if (newData.TryGetProperty("data", out var d))
-                root = d;
-            else
-                root = newData;
-            string quality = "";
-            string videoCodecid = "";
-            string url = "";
-            double size = 0;
-            double length = 0;
-
-            quality = root.GetValueAsStringSafe("quality");
-            videoCodecid = root.GetValueAsStringSafe("video_codecid");
-            //获取所有分段
-            foreach (var node in root.EnumerateArraySafe("durl"))
-            {
-                parsedResult.Clips.Add(node.GetValueAsStringSafe("url"));
-                size += node.GetDoubleSafe("size");
-                length += node.GetDoubleSafe("length");
-            }
-            //TV模式可用清晰度
-            if (root.TryGetProperty("qn_extras", out JsonElement qnExtras))
-            {
-                parsedResult.Dfns.AddRange(qnExtras.EnumerateArray().Select(node => node.GetValueAsStringSafe("qn")));
-            }
-            else if (root.TryGetProperty("accept_quality", out JsonElement acceptQuality)) //非tv模式可用清晰度
-            {
-                parsedResult.Dfns.AddRange(acceptQuality.EnumerateArray()
-                    .Select(node => node.ToString())
-                    .Where(_qn => !string.IsNullOrEmpty(_qn)));
-            }
-
-            // 分段累加出的长度才是本次真正能拿到的内容长度；
-            // 充电试看片段正是在这里与 timelength 声称的完整时长产生分歧。
-            parsedResult.ActualDurationSec = (int)length / 1000;
-
-            Video v = new()
-            {
-                id = quality,
-                dfn = AppSettings.QualityMap.GetValueOrDefault(quality, $"未知({quality})"),
-                baseUrl = url,
-                codecs = GetVideoCodec(videoCodecid),
-                dur = (int)length / 1000,
-                size = size
-            };
-            if (!parsedResult.VideoTracks.Contains(v)) parsedResult.VideoTracks.Add(v);
-        }
-
-        // 番剧片头片尾转分段信息, 预计效果: 正片? -> 片头 -> 正片 -> 片尾
-        if (bangumi)
-        {
-            if (root.TryGetProperty("clip_info_list", out JsonElement clipList))
-            {
-                parsedResult.ExtraPoints.AddRange(clipList.EnumerateArray().Select(clip => new ViewPoint()
-                {
-                    title = clip.GetValueAsStringSafe("toastText").Replace("即将跳过", ""),
-                    start = clip.GetInt32Safe("start"),
-                    end = clip.GetInt32Safe("end")
-                })
-                );
-                parsedResult.ExtraPoints.Sort((p1, p2) => p1.start.CompareTo(p2.start));
-                var newPoints = new List<ViewPoint>();
-                int lastEnd = 0;
-                foreach (var point in parsedResult.ExtraPoints)
-                {
-                    if (lastEnd < point.start)
-                        newPoints.Add(new ViewPoint() { title = "正片", start = lastEnd, end = point.start });
-                    newPoints.Add(point);
-                    lastEnd = point.end;
-                }
-                parsedResult.ExtraPoints = newPoints;
-            }
-
-        }
-
-        respJson.Dispose();
-        return parsedResult;
+            return parsedResult;
         }
         finally
         {

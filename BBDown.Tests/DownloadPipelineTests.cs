@@ -1,9 +1,20 @@
 using System.Net;
+using System.Security.Cryptography;
 using BBDown;
 using BBDown.Core;
 using static BBDown.Core.Entity.Entity;
 
 namespace BBDown.Tests;
+
+/// <summary>计算字节数组的 SHA-256 十六进制摘要，用于下载产物内容一致性断言。</summary>
+internal static class TestHash
+{
+    public static string ComputeSha256Hex(byte[] data)
+    {
+        var hash = SHA256.HashData(data);
+        return Convert.ToHexStringLower(hash);
+    }
+}
 
 /// <summary>
 /// 本类通过 <see cref="BBDownDownloadUtil.ActivePathLockCount"/> 断言全局路径锁字典
@@ -126,6 +137,9 @@ public class DownloadPipelineTests
             // 目标文件已合并且内容完整（与服务端字节一致）
             Assert.True(File.Exists(target), "目标文件应已合并生成");
             Assert.Equal(256 * 1024, new FileInfo(target).Length);
+            // 内容哈希一致：仅断言长度无法发现"长度正确但内容损坏"（错误内容也能通过）。
+            // 必须与服务端的真实载荷逐字节一致，断点续传/分片拼接的任何错位都会反映在哈希上。
+            Assert.Equal(server.PayloadHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
             // 分片已清理：目录里不应残留 .vclip
             Assert.Empty(Directory.GetFiles(dir, "*.vclip"));
             // 锁已释放
@@ -140,16 +154,18 @@ public class DownloadPipelineTests
     [Fact]
     public async Task MultiThreadDownloadAndMerge_OversizedStaleClip_IsTruncatedNotMerged()
     {
-        // 回归：旧分片若比目标分片更长（上次中断留下的超长尾部），必须在完成判定前
-        // SetLength 截断，否则合并带入多余尾部、长度校验失败、重试仍见同一超长分片
-        // → 永久失败循环。这里预置一个超长 .vclip，验证最终产物长度仍等于服务器总长。
+        // 回归：旧分片若比目标分片更长（上次中断留下的超长尾部），不能把截断后"恰好吻合"
+        // 的长度当成内容可信——远端内容可能已变化但长度相同，会拼出损坏文件。
+        // 正确行为是丢弃既有内容完整重下，产物必须与服务端载荷逐字节一致（哈希校验）。
         using var server = new LocalByteServer(256 * 1024);
         var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         var target = Path.Combine(dir, "video.mp4");
         try
         {
-            // 预置超长分片：stem=video、扩展名 .mp4 → 分片名 00000_video.vclip
+            // 预置超长分片：stem=video、扩展名 .mp4 → 分片名 00000_video.vclip。
+            // 用与服务端完全不同的随机内容（不是服务端载荷的前缀）——若实现错误地
+            // 沿用旧分片尾部，哈希必然失配，直接暴露。
             var clipPath = Path.Combine(dir, "00000_video.vclip");
             var oversized = new byte[512 * 1024]; // 目标 256KB，旧分片 512KB
             new Random(1).NextBytes(oversized);
@@ -171,6 +187,9 @@ public class DownloadPipelineTests
             // 产物长度等于服务器总长：超长旧分片尾部未被带入
             Assert.True(File.Exists(target), "目标文件应已合并生成");
             Assert.Equal(256 * 1024, new FileInfo(target).Length);
+            // 内容哈希与服务端载荷一致：即便旧分片被截断到相同长度，也不允许把旧内容
+            // 当成已下载内容（否则会拼出长度正确但内容损坏的文件）
+            Assert.Equal(server.PayloadHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
             // 分片已清理
             Assert.Empty(Directory.GetFiles(dir, "*.vclip"));
             Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
@@ -190,10 +209,14 @@ public class DownloadPipelineTests
         private readonly Task _loop;
         public int Port { get; }
 
+        /// <summary>服务端载荷的 SHA-256 十六进制串。测试用它校验下载产物内容一致（而非仅长度）。</summary>
+        public string PayloadHash { get; }
+
         public LocalByteServer(int size)
         {
             _payload = new byte[size];
             new Random(42).NextBytes(_payload);
+            PayloadHash = TestHash.ComputeSha256Hex(_payload);
             Port = 24000 + (Environment.ProcessId % 2000);
             _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
             _listener.Start();

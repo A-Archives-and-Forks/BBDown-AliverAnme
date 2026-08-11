@@ -29,6 +29,17 @@ public class LiveCommand : Command<LiveSettings>
         {
             try
             {
+                // 解析 ffmpeg：录制结束后的分段合成依赖 ffmpeg。直播命令不走主下载的
+                // SetUpWork/FindBinaries 流程，这里显式探测——若 PATH/当前目录均无
+                // ffmpeg，合成阶段会失败且只在收尾时暴露；提前报错让用户尽快安装。
+                if (string.IsNullOrEmpty(BBDownMuxer.FFMPEG) || !File.Exists(BBDownMuxer.FFMPEG))
+                {
+                    var binPath = ExternalToolHelper.FindExecutable("ffmpeg");
+                    if (string.IsNullOrEmpty(binPath))
+                        throw new FileNotFoundException("找不到可执行的ffmpeg文件，直播分段合成需要 ffmpeg");
+                    BBDownMuxer.FFMPEG = binPath;
+                }
+
                 Logger.Log($"正在解析直播间 {settings.RoomId}...");
                 var (_, title, uname, _) = await LiveStreamUtil.ResolveAsync(settings.RoomId, cancellationToken);
                 Logger.Log($"直播间: {title} (UP: {uname})");

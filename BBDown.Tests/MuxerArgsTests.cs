@@ -232,10 +232,10 @@ public class MuxerArgsTests
     /// <summary>
     /// 真实 ffmpeg 集成冒烟测试：本机 ffmpeg 可用时，用假源生成 1 秒 H.264 + AAC，
     /// 走 MuxAV 的 ffmpeg 分支做 -c copy 混流，断言产物存在且非空。
-    /// 不可用时直接返回（CI 约定 --filter "Category!=Integration" 跳过本类）。
+    /// 不可用时直接返回（本测试本地可重复、无外部网络依赖，CI 作为硬性门禁运行）。
     /// </summary>
     [Fact]
-    [Trait("Category", "Integration")]
+    [Trait("Category", "LocalIntegration")]
     public async Task MuxAV_RealFfmpeg_MuxesVideoAndAudio()
     {
         if (!TryLocateFfmpeg(out var ffmpeg)) return;
@@ -276,7 +276,7 @@ public class MuxerArgsTests
     /// 这里断言退出码 0 且产物生成成功，即回归校验字幕索引错位缺陷。
     /// </summary>
     [Fact]
-    [Trait("Category", "Integration")]
+    [Trait("Category", "LocalIntegration")]
     public async Task MuxAV_RealFfmpeg_SkipsEmptySubtitleAndMuxesValidSubtitle()
     {
         if (!TryLocateFfmpeg(out var ffmpeg)) return;
