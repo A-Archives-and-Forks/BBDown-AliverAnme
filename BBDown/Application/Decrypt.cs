@@ -64,14 +64,17 @@ internal partial class Program
                 Logger.LogWarn($"自动密钥提取异常: {ex.Message}");
             }
 
-            if (string.IsNullOrEmpty(parsed.KeyHex))
+            // 取钥必须同时得到 Key 与 Kid：mp4decrypt 的 key-file 行格式是 "kid:key"，
+            // Kid 为空会生成 ":key" 无效行导致解密失败或静默产出错误输出。
+            // 仅检查 KeyHex 会放过 KidHex 为空的半成品（手动 --key 未配 --kid）。
+            if (string.IsNullOrEmpty(parsed.KeyHex) || string.IsNullOrEmpty(parsed.KidHex))
             {
                 // 用户显式请求了 DRM 解密（--decrypt-drm / --key / --kid）但取钥失败：
                 // 若只是打印警告并 return，任务会继续把"仍是加密的流"当成功产物混流/交付，
                 // 用户拿到加密文件却被告知下载成功。这里抛异常让调用方把任务标记为失败，
                 // 而不是静默交付加密产物。
                 throw new InvalidOperationException(
-                    "DRM 解密密钥获取失败，无法解密。请确保 device.wvd 位于程序目录，或使用 --key --kid 手动提供密钥。");
+                    "DRM 解密密钥获取失败（Key 或 Kid 缺失），无法解密。请确保 device.wvd 位于程序目录，或使用 --key --kid 同时提供密钥。");
             }
         }
 
@@ -158,6 +161,12 @@ internal partial class Program
                 var err = await stderrTask;
                 try { if (File.Exists(output)) File.Delete(output); } catch (IOException) { }
                 throw new InvalidOperationException($"mp4decrypt 解密失败 (code={proc.ExitCode}): {err}");
+            }
+            // 进程退出 0 但未产出有效文件：静默忽略会让调用方保留原加密文件、
+            // 任务却继续"解密成功"。这里把缺失输出当作失败抛出。
+            if (!File.Exists(output) || new FileInfo(output).Length == 0)
+            {
+                throw new InvalidOperationException("mp4decrypt 退出码为 0 但未产出有效的解密文件");
             }
         }
         finally

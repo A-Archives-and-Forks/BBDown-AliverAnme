@@ -50,13 +50,11 @@ jobs:
         # NuGet 官方要求显式包含传递依赖
         run: dotnet list BBDown.sln package --vulnerable --include-transitive
 
-  # 格式门禁：存量文件存在大量 CHARSET/ENDOFLINE 问题（7350 处），
-  # 硬性失败会挡死所有 PR。先用 continue-on-error 把结果暴露在 CI 日志，
-  # 待纯机械格式修复 PR（BOM→UTF-8、CRLF→LF）合入后再改为硬性门禁。
+  # 格式门禁（硬性）：此前的存量 CRLF/BOM 问题已随格式修复 PR 清理，
+  # 报告确认 dotnet format --verify-no-changes 当前通过，升级为硬性门禁防回归。
   format:
-    name: Format Check (informational)
+    name: Format Check
     runs-on: ubuntu-latest
-    continue-on-error: true
     steps:
       - uses: actions/checkout@v4
 
@@ -70,6 +68,26 @@ jobs:
 
       - name: Verify formatting
         run: dotnet format BBDown.sln --verify-no-changes --no-restore
+
+  # 集成测试：真实网络访问 B 站 API，验证解析/重定向/登录检测等端到端路径。
+  # 不阻断 PR（网络抖动易误报），但必须运行并报告结果。
+  integration-test:
+    name: Integration Tests
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up dotnet
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+
+      - name: Restore
+        run: dotnet restore BBDown.sln
+
+      - name: Test (integration)
+        run: dotnet test BBDown.sln -c Release --no-build --filter "Category=Integration"
 
   # Native AOT smoke：BBDown 的 Directory.Build.props 全局 PublishAot=true，
   # 确保 PR 能产出可运行的 AOT 二进制（与 release.yml 的 linux-x64 对齐）

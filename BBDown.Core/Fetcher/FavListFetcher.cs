@@ -85,7 +85,13 @@ public class FavListFetcher : IFetcher
                             pagesInfo.Add(p);
                         }
                     }
-                    // 单个多P稿件失效（删除/私密/风控）不应中断整个收藏夹解析
+                    // 单个多P稿件失效（删除/私密/风控）不应中断整个收藏夹解析，
+                    // 但真正的用户取消必须向上传播中止整个流程——否则取消被吞成
+                    // "某个稿件解析失败"，批量下载会在取消信号下继续空转。
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
                     catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
                                                   or InvalidOperationException or TaskCanceledException)
                     {

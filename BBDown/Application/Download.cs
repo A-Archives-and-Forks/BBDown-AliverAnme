@@ -243,6 +243,10 @@ internal partial class Program
         // 全部分P（-p all）时，<pageNumberWithZero> 应产生相同宽度的文件名，
         // 否则同一视频因筛选方式不同会得到不同路径（P01 vs P1）。
         var pagesCount = vInfo.PagesInfo.Count;
+        // 产物成功判定：是否实际生成了至少一个请求的输出产物。
+        // SubOnly/VideoOnly/AudioOnly/DanmakuOnly 等提前返回模式若零产物，
+        // 必须返回 false 而非假成功（否则 CLI/Serve 报成功、SavePaths 为空）。
+        bool anyProductProduced = false;
         List<Subtitle> subtitleInfo = [];
         string title = vInfo.Title;
         string pic = vInfo.Pic;
@@ -315,6 +319,7 @@ internal partial class Program
                                 // 记录最终产物：SubOnly 提前返回不经过下方统一 AddSavePath，
                                 // 若这里不记录，serve API 的成功响应里产物列表会缺字幕文件。
                                 relatedTask?.AddSavePath(_outSubPath);
+                                anyProductProduced = true;
                             }
                         }
                     }
@@ -322,6 +327,13 @@ internal partial class Program
                     if (myOption.SubOnly)
                     {
                         if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0) Directory.Delete(p.aid, true);
+                        // SubOnly 但没有任何字幕生成（视频无字幕/全部跳过）→ 零产物成功。
+                        // 必须返回 false，避免 CLI 报成功、serve 标记 Succeeded、SavePaths 为空。
+                        if (!anyProductProduced)
+                        {
+                            Logger.LogWarn("SubOnly 模式未生成任何字幕文件");
+                            return false;
+                        }
                         return true;
                     }
                 }
@@ -395,12 +407,14 @@ internal partial class Program
                     if (parsedResult.VideoTracks.Count == 0)
                     {
                         Logger.LogWarn("没有找到符合要求的视频流");
-                        if (myOption.VideoOnly) return true;
+                        // VideoOnly 但没有任何视频流 → 零产物：返回 false 而非假成功
+                        if (myOption.VideoOnly) return false;
                     }
                     if (parsedResult.AudioTracks.Count == 0)
                     {
                         Logger.LogWarn("没有找到符合要求的音频流");
-                        if (myOption.AudioOnly) return true;
+                        // AudioOnly 但没有任何音频流 → 零产物：返回 false 而非假成功
+                        if (myOption.AudioOnly) return false;
                     }
 
                     if (myOption.AudioOnly)
@@ -495,13 +509,27 @@ internal partial class Program
                         {
                             // 记录最终产物：DanmakuOnly 提前返回不经过下方统一 AddSavePath，
                             // 若这里不记录，serve API 的成功响应里产物列表会缺弹幕文件。
+                            bool danmakuProduced = false;
                             if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                            {
                                 relatedTask?.AddSavePath(danmakuXmlPath);
+                                danmakuProduced = true;
+                            }
                             if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass) && File.Exists(danmakuAssPath))
+                            {
                                 relatedTask?.AddSavePath(danmakuAssPath);
+                                danmakuProduced = true;
+                            }
                             if (Directory.Exists(p.aid))
                             {
                                 Directory.Delete(p.aid);
+                            }
+                            // DanmakuOnly 但没有任何有效弹幕文件（解析失败/为空/过滤后为空被删除）
+                            // → 零产物：返回 false 而非假成功
+                            if (!danmakuProduced)
+                            {
+                                Logger.LogWarn("DanmakuOnly 模式未生成任何弹幕文件");
+                                return false;
                             }
                             return true;
                         }
@@ -512,6 +540,14 @@ internal partial class Program
                         // 仅下载封面：封面保存成功后必须立即 return，否则会继续执行下方
                         // 轨道解析、视频/音频下载与混流——用户只要封面却白白下载完整视频。
                         var coverUrl = pic == "" ? p.cover! : pic;
+                        // coverUrl 为空时 DownloadFileAsync 直接返回（不生成文件）：
+                        // 此时若仍 AddSavePath 并 return true，SavePaths 指向不存在的文件。
+                        // 无封面资源时明确失败，避免零产物成功。
+                        if (string.IsNullOrEmpty(coverUrl))
+                        {
+                            Logger.LogWarn("CoverOnly 模式无封面资源可下载");
+                            return false;
+                        }
                         var newCoverPath = Path.ChangeExtension(savePath, Path.GetExtension(coverUrl));
                         await BBDownDownloadUtil.DownloadFileAsync(coverUrl, newCoverPath, downloadConfig, cancellationToken);
                         if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0) Directory.Delete(p.aid, true);
@@ -603,6 +639,12 @@ internal partial class Program
                             {
                                 Logger.LogWarn($"评论数量达到抓取上限（{commentPage.Items.Count} 条），可能还有更多评论未导出");
                             }
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            // 用户取消：必须向上传播，不能当"评论失败已跳过"吞掉——
+                            // 否则取消信号丢失，后续 SkipMux 等分支仍返回成功。
+                            throw;
                         }
                         catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException
                                                     or IOException or TaskCanceledException or KeyNotFoundException or FormatException)

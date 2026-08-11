@@ -13,12 +13,41 @@ public static class HTTPUtil
             AllowAutoRedirect = true,
             AutomaticDecompression = DecompressionMethods.All,
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            SslOptions = CreateSslOptions(),
         };
-        // 注意：不能在客户端创建时把 SkipSslCheck 固化成闭包。CLI 的更新检查
-        // （CheckUpdateAsync）会先于 SetUpWork 的 Config.Apply 触发本 Lazy 初始化，
-        // 固化会导致 --insecure 永不生效；serve 模式下每个任务流的取值还可能不同。
-        // 因此在每次证书校验时读取当前流（AsyncLocal）的配置。
-        handler.SslOptions = new System.Net.Security.SslClientAuthenticationOptions
+        return new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(2) };
+    }
+
+    // 并发下载与 serve 模式会从多个线程首次访问，Lazy 保证只创建一个 HttpClient，
+    // 否则多余实例各自持有一份 SocketsHttpHandler 连接池，造成 socket 泄漏。
+    private static readonly Lazy<HttpClient> _appHttpClient =
+        new(CreateAppHttpClient, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    public static HttpClient AppHttpClient => _appHttpClient.Value;
+
+    /// <summary>
+    /// 禁自动跳转的共享客户端：供逐跳校验重定向（GetWebLocationCheckedAsync /
+    /// GetWebSourceAnonymousCheckedAsync）复用。手动逐跳跟随需要 AllowAutoRedirect=false，
+    /// 每次跳转新建 HttpClient 会重复建连接池；共享实例避免 socket 泄漏与握手开销。
+    /// 与 AppHttpClient 相同的 SSL 校验策略（读取当前流配置的 SkipSslCheck）。
+    /// </summary>
+    private static readonly Lazy<HttpClient> _noRedirectClient = new(() =>
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = false,
+            AutomaticDecompression = DecompressionMethods.All,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            SslOptions = CreateSslOptions(),
+        };
+        return new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(1) };
+    }, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    private static System.Net.Security.SslClientAuthenticationOptions CreateSslOptions()
+    {
+        if (Config.Current.SkipSslCheck)
+            Logger.LogDebug("SSL 证书验证已禁用");
+        return new System.Net.Security.SslClientAuthenticationOptions
         {
             RemoteCertificateValidationCallback = (sender, cert, chain, errors) =>
             {
@@ -31,17 +60,7 @@ public static class HTTPUtil
                 return errors == System.Net.Security.SslPolicyErrors.None;
             },
         };
-        if (Config.Current.SkipSslCheck)
-            Logger.LogDebug("SSL 证书验证已禁用");
-        return new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(2) };
     }
-
-    // 并发下载与 serve 模式会从多个线程首次访问，Lazy 保证只创建一个 HttpClient，
-    // 否则多余实例各自持有一份 SocketsHttpHandler 连接池，造成 socket 泄漏。
-    private static readonly Lazy<HttpClient> _appHttpClient =
-        new(CreateAppHttpClient, LazyThreadSafetyMode.ExecutionAndPublication);
-
-    public static HttpClient AppHttpClient => _appHttpClient.Value;
 
     private static readonly string[] platforms = { "Windows NT 10.0; Win64", "Macintosh; Intel Mac OS X 10_15", "X11; Linux x86_64" };
 
@@ -80,13 +99,6 @@ public static class HTTPUtil
     public static async Task<string> GetWebSourceAnonymousCheckedAsync(string url,
         Func<Uri, bool> validateNextHop, string? userAgent = null, int maxHops = 10, CancellationToken token = default)
     {
-        var handler = new SocketsHttpHandler
-        {
-            AllowAutoRedirect = false,
-            AutomaticDecompression = DecompressionMethods.All,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(1),
-        };
-        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(1) };
         string current = url;
         for (int hop = 0; hop < maxHops; hop++)
         {
@@ -96,7 +108,7 @@ public static class HTTPUtil
             webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
             webRequest.Headers.Connection.Clear();
 
-            using var response = await client.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
+            using var response = await _noRedirectClient.Value.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
             if ((int)response.StatusCode is >= 300 and < 400)
             {
                 var location = response.Headers.Location;
@@ -185,13 +197,7 @@ public static class HTTPUtil
     public static async Task<string> GetWebLocationCheckedAsync(string url,
         Func<Uri, bool> validateNextHop, int maxHops = 10, CancellationToken token = default)
     {
-        var handler = new SocketsHttpHandler
-        {
-            AllowAutoRedirect = false,
-            AutomaticDecompression = DecompressionMethods.All,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(1),
-        };
-        using var client = new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(1) };
+        // 复用共享的禁自动跳转客户端：每次跳转新建 HttpClient 会重复建连接池
         string current = url;
         for (int hop = 0; hop < maxHops; hop++)
         {
@@ -205,7 +211,7 @@ public static class HTTPUtil
                 webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
                 webRequest.Headers.Connection.Clear();
 
-                using var response = await client.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
+                using var response = await _noRedirectClient.Value.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
                 if ((int)response.StatusCode is >= 300 and < 400)
                 {
                     var location = response.Headers.Location;
@@ -247,7 +253,7 @@ public static class HTTPUtil
                     getRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
                     getRequest.Headers.Connection.Clear();
 
-                    using var getResponse = await client.SendAsync(getRequest, HttpCompletionOption.ResponseHeadersRead, token);
+                    using var getResponse = await _noRedirectClient.Value.SendAsync(getRequest, HttpCompletionOption.ResponseHeadersRead, token);
                     if ((int)getResponse.StatusCode is >= 300 and < 400)
                     {
                         var location = getResponse.Headers.Location;

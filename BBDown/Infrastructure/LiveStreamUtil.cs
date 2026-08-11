@@ -70,25 +70,31 @@ public static class LiveStreamUtil
     public static async Task<bool> DownloadToFileAsync(string roomId, string path, Action<long>? onProgress, CancellationToken token = default)
     {
         const int ReconnectLimit = 3;
-        var partPath = path + ".part";
-        // 清理上次录制留下的 .part（本次会话从头录制，会话内断流重连才续写）
-        if (File.Exists(partPath)) File.Delete(partPath);
+        // 每段独立文件：重连后的新 FLV 流含新的 FLV 头与重置时间戳，
+        // 直接追加到旧流末尾的原始字节拼接不保证可播放。记录在独立分段里，
+        // 录制结束后用 FFmpeg concat/remux 合成最终文件。
+        var segDir = path + ".segs";
+        if (Directory.Exists(segDir)) Directory.Delete(segDir, true);
+        Directory.CreateDirectory(segDir);
 
         long total = 0;
         int reconnect = 0;
+        int segIndex = 0;
+        var segmentFiles = new List<string>();
 
-        // 重连逻辑：重连计数递增，超限则保留 .part 并抛原异常，否则日志并等待 3 秒。
-        // HttpClient 超时（OCE 但 token 未取消）与一般瞬态故障两个 catch 共用。
+        // 重连逻辑：重连计数递增，超限则保留已录分段并抛原异常。
+        // 等待采用指数退避：零进展 EOF 也计入重试预算（见下），避免高速轮询。
         async Task ReconnectOrThrow(Exception ex)
         {
             reconnect++;
             if (reconnect > ReconnectLimit)
             {
-                Logger.LogWarn($"直播流中断且 {ReconnectLimit} 次重连失败，已录制内容保留在 {partPath}");
+                Logger.LogWarn($"直播流中断且 {ReconnectLimit} 次重连失败，已录制内容保留在 {segDir}");
                 ExceptionDispatchInfo.Capture(ex).Throw();
             }
-            Logger.LogWarn($"直播流中断（{ex.Message}），3 秒后重连（{reconnect}/{ReconnectLimit}）...");
-            await Task.Delay(3000, token);
+            int backoffMs = Math.Min(3000 * reconnect, 15000); // 3s → 6s → 9s → 15s
+            Logger.LogWarn($"直播流中断（{ex.Message}），{backoffMs / 1000} 秒后重连（{reconnect}/{ReconnectLimit}）...");
+            await Task.Delay(backoffMs, token);
         }
 
         try
@@ -99,20 +105,41 @@ public static class LiveStreamUtil
                 try
                 {
                     var (url, _, _, _) = await ResolveAsync(roomId, token);
-                    long before = total;
-                    total = await StreamToFileAsync(url, partPath, total, onProgress, token);
-                    // 流读到 EOF：可能是主播下播，也可能是 CDN 切换/连接到期产生的正常 EOF。
-                    // 若直接当作"主播下播"结束，CDN 切换时的截断录像会被当成成功产物。
-                    // 因此 EOF 后重新查询直播状态：仍在直播则重新解析地址续录，确认下播才结束。
-                    // 成功持续传输（本次会话收到新字节）后重置重连计数，避免偶发 EOF 消耗重连额度。
-                    if (total > before)
+                    var segPath = Path.Combine(segDir, $"seg-{segIndex++:000}.flv");
+                    long segBytes = await StreamToFileAsync(url, segPath, onProgress, token);
+                    // 本段收到任何字节都算有效传输，重置重连预算
+                    if (segBytes > 0)
                     {
+                        segmentFiles.Add(segPath);
+                        total += segBytes;
                         reconnect = 0;
                     }
+                    else
+                    {
+                        // 零字节 EOF：连接刚建立就结束。若直播仍进行，这是连接到期/CDN 切换，
+                        // 计入重试预算并退避，避免高速轮询（此前直接 continue 不延迟）。
+                        File.Delete(segPath);
+                        try
+                        {
+                            _ = await ResolveAsync(roomId, token);
+                            Logger.LogWarn("直播流连接立即结束但直播间仍在直播，正在退避后重连...");
+                            await ReconnectOrThrow(new IOException("直播流零字节 EOF"));
+                            continue;
+                        }
+                        catch (InvalidOperationException ex) when (ex.Message.Contains("当前未在直播"))
+                        {
+                            break; // 确认下播：结束录制
+                        }
+                        catch (Exception ex) when (ex is HttpRequestException or JsonException)
+                        {
+                            await ReconnectOrThrow(ex);
+                            continue;
+                        }
+                    }
+                    // EOF 后重新查询直播状态：仍在直播则重新解析地址续录，确认下播才结束。
                     try
                     {
                         _ = await ResolveAsync(roomId, token);
-                        // 仍在直播：EOF 是连接到期/CDN 切换，重解析地址续录
                         Logger.LogWarn("直播流连接结束但直播间仍在直播，正在重新解析流地址续录...");
                         continue;
                     }
@@ -122,13 +149,12 @@ public static class LiveStreamUtil
                     }
                     catch (Exception ex) when (ex is HttpRequestException or JsonException)
                     {
-                        // 重新查询直播状态失败：按瞬态故障重连
                         await ReconnectOrThrow(ex);
                     }
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)
                 {
-                    break; // 用户取消：保留已录制内容，退出后改名保存
+                    break; // 用户取消：保留已录分段，退出后合成保存
                 }
                 catch (OperationCanceledException ex)
                 {
@@ -137,7 +163,7 @@ public static class LiveStreamUtil
                 }
                 catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or JsonException)
                 {
-                    // 直播间下播（"当前未在直播"）是终结态而非可恢复故障：正常结束，走改名保存
+                    // 直播间下播（"当前未在直播"）是终结态而非可恢复故障：正常结束，走合成保存
                     if (ex is InvalidOperationException && ex.Message.Contains("当前未在直播"))
                         break;
                     await ReconnectOrThrow(ex);
@@ -146,35 +172,84 @@ public static class LiveStreamUtil
         }
         catch (OperationCanceledException) when (token.IsCancellationRequested)
         {
-            // 取消发生在重连等待 Task.Delay 或 while 顶部检查（try 外）：先走到循环后的改名保存再退出
+            // 取消发生在重连等待 Task.Delay 或 while 顶部检查（try 外）：先走到循环后的合成保存再退出
         }
 
         // 未收到任何字节：不生成空文件，返回 false 让调用方明确失败
         if (total == 0)
         {
-            if (File.Exists(partPath))
-            {
-                try { File.Delete(partPath); }
-                catch (IOException) { /* 清理失败不影响 */ }
-            }
+            try { if (Directory.Exists(segDir)) Directory.Delete(segDir, true); } catch (IOException) { }
             return false;
         }
 
-        if (File.Exists(partPath))
-            File.Move(partPath, path, true);
+        // 多段 → FFmpeg concat 合成最终文件；单段直接改名。
+        if (segmentFiles.Count == 1)
+        {
+            File.Move(segmentFiles[0], path, true);
+        }
+        else
+        {
+            if (!await ConcatSegmentsAsync(segmentFiles, path, token))
+            {
+                Logger.LogWarn($"直播分段合成失败，已录制分段保留在 {segDir}");
+                return false;
+            }
+        }
+        try { if (Directory.Exists(segDir)) Directory.Delete(segDir, true); } catch (IOException) { }
         return true;
     }
 
-    /// <summary>把一条直播流写到 <paramref name="partPath"/>（追加模式，续写重连前的已录内容），返回累计字节数。</summary>
-    private static async Task<long> StreamToFileAsync(string url, string partPath, long total, Action<long>? onProgress, CancellationToken token = default)
+    /// <summary>用 FFmpeg concat demuxer 把多个 FLV 分段合成一个文件。返回是否成功。</summary>
+    private static async Task<bool> ConcatSegmentsAsync(List<string> segmentFiles, string outPath, CancellationToken token)
+    {
+        // concat demuxer 需要逐行列出文件，FFmpeg 通过 ArgumentList 传参无法直接传换行
+        // 列表——这里写一个临时 concat 列表文件。路径含特殊字符时 concat 列表需要转义，
+        // 用 file '...' 单引号包裹（路径中单引号已由 SanitizeFileName 在文件生成阶段处理）。
+        var listPath = outPath + ".concat.txt";
+        try
+        {
+            await File.WriteAllLinesAsync(listPath, segmentFiles.Select(f => $"file '{f.Replace("'", "'\\''")}'"), token);
+            var args = new List<string>
+            {
+                "-loglevel", "warning", "-y",
+                "-f", "concat", "-safe", "0",
+                "-i", listPath,
+                "-c", "copy",
+                outPath,
+            };
+            // 复用统一外部进程执行器（与混流一致）：支持超时/取消时 Kill 整棵进程树
+            var spec = new ExternalProcessSpec
+            {
+                FileName = "ffmpeg",
+                Arguments = args,
+                TimeoutMs = Core.Config.Current.MuxerTimeoutMinutes * 60_000,
+                ToolDisplayName = "ffmpeg",
+            };
+            int code = await BBDownMuxer.ProcessRunner.RunAsync(spec, token);
+            return code == 0 && File.Exists(outPath) && new FileInfo(outPath).Length > 0;
+        }
+        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        {
+            Logger.LogDebug("直播分段合成失败: {0}", ex.Message);
+            return false;
+        }
+        finally
+        {
+            try { if (File.Exists(listPath)) File.Delete(listPath); } catch (IOException) { }
+        }
+    }
+
+    /// <summary>把一条直播流写到独立分段文件，返回本段写入的字节数。</summary>
+    private static async Task<long> StreamToFileAsync(string url, string segPath, Action<long>? onProgress, CancellationToken token = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.UserAgent);
         req.Headers.TryAddWithoutValidation("Referer", "https://live.bilibili.com/");
         using var response = (await HTTPUtil.AppHttpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
         await using var stream = await response.Content.ReadAsStreamAsync(token);
-        await using var fs = new FileStream(partPath, FileMode.Append, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true);
+        await using var fs = new FileStream(segPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true);
         var buffer = ArrayPool<byte>.Shared.Rent(1 << 20);
+        long written = 0;
         try
         {
             while (true)
@@ -182,10 +257,10 @@ public static class LiveStreamUtil
                 var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), token);
                 if (read == 0) break; // 流结束（主播下播）
                 await fs.WriteAsync(buffer.AsMemory(0, read), token);
-                total += read;
-                onProgress?.Invoke(total);
+                written += read;
+                onProgress?.Invoke(written);
             }
-            return total;
+            return written;
         }
         finally
         {

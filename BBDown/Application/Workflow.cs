@@ -86,7 +86,10 @@ internal partial class Program
         if (myOption is { UseIntlApi: false, UseTvApi: false } && Config.Current.Area == "")
         {
             Logger.Log("检测账号登录...");
-            var (isLoggedIn, cookieExpired) = await BBDownUtil.CheckLoginWithDetails(Config.Current.Cookie, cancellationToken);
+            var (isLoggedIn, cookieExpired, newWbi) = await BBDownUtil.CheckLoginWithDetails(Config.Current.Cookie, cancellationToken);
+            // 子方法提取的 wbi 不会自动回流（AsyncLocal 写入只影响子方法内部），
+            // 由父流程显式写入当前任务流的配置，后续请求的 w_rid 签名才能用上新密钥。
+            if (newWbi is not null) Core.Config.WBI_FLOW = newWbi;
             if (!isLoggedIn)
             {
                 if (cookieExpired)

@@ -1114,18 +1114,42 @@ record struct MyOptionBindingResult<T>(T? Result, Exception? Exception)
             {
                 return new(default, new InvalidOperationException($"Cannot find TypeInfo for type {typeof(T)}"));
             }
-            var json = await new StreamReader(httpContext.Request.Body).ReadToEndAsync(httpContext.RequestAborted);
+            // 请求体大小限制：/add-task 的合法负载很小（Url + 少量选项）。
+            // 不设上限会让攻击者用超大 body 耗尽内存/带宽（长驻 serve 进程）。
+            // Content-Length 超限直接 413；无 Content-Length（chunked）时读满上限即止。
+            if (httpContext.Request.ContentLength is > MaxRequestBodyBytes)
+            {
+                return new(default, new InvalidOperationException("请求体过大"));
+            }
+            using var ms = new MemoryStream();
+            var buffer = new byte[4096];
+            long total = 0;
+            while (true)
+            {
+                int read = await httpContext.Request.Body.ReadAsync(buffer.AsMemory(0, buffer.Length), httpContext.RequestAborted);
+                if (read == 0) break;
+                total += read;
+                if (total > MaxRequestBodyBytes)
+                {
+                    return new(default, new InvalidOperationException("请求体过大"));
+                }
+                ms.Write(buffer, 0, read);
+            }
+            var json = System.Text.Encoding.UTF8.GetString(ms.ToArray());
             var item = JsonSerializer.Deserialize<T>(json, typedInfo);
 
             if (item is null) return new(default, new NoNullAllowedException());
 
             return new((T)item, null);
         }
-        catch (Exception ex) when (ex is JsonException or NotSupportedException)
+        catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException)
         {
             return new(default, ex);
         }
     }
+
+    /// <summary>/add-task 请求体大小上限：合法负载远小于此值，超限即拒。</summary>
+    private const long MaxRequestBodyBytes = 64 * 1024;
 }
 
 [JsonSerializable(typeof(ProblemDetails))]

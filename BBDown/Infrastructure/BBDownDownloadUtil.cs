@@ -26,19 +26,28 @@ internal static class BBDownDownloadUtil
     private static async Task RangeDownloadToTmpAsync(int id, string url, string tmpName, long fromPosition, long? toPosition, Action<int, long, long> onProgress, bool failOnRangeNotSupported = false, CancellationToken token = default)
     {
         using var fileStream = new FileStream(tmpName, FileMode.OpenOrCreate);
-        // 分片起点：若旧分片已超出目标分片范围（上次中断后内容异常变大），Seek 到 End
-        // 会让 Range 起点越过目标分片末尾，持续返回 416。这里把起点钳制在分片范围内，
-        // 超出的旧尾部在写回时会被覆盖/截断。
         long clipLength = toPosition is > 0 ? toPosition.Value - fromPosition + 1 : long.MaxValue;
-        long startPos = Math.Min(fileStream.Length, clipLength);
-        fileStream.Seek(startPos, SeekOrigin.Begin);
-        if (toPosition > 0 && startPos == clipLength)
+
+        // 超长旧分片：上次中断可能留下超出目标分片范围的尾部（内容异常变大）。
+        // 必须先把文件截断到目标长度再判完成——否则合并会带入多余尾部、
+        // 长度校验失败，且下次重试仍看到同一个超长分片，形成永久失败循环。
+        if (fileStream.Length > clipLength)
+        {
+            fileStream.SetLength(clipLength);
+            fileStream.Seek(0, SeekOrigin.End);
+        }
+        else
+        {
+            fileStream.Seek(0, SeekOrigin.End);
+        }
+
+        if (toPosition > 0 && fileStream.Length == clipLength)
         {
             // 已下载完成 直接汇报进度并跳过下载
-            onProgress(id, startPos, startPos);
+            onProgress(id, clipLength, clipLength);
             return;
         }
-        var downloadedBytes = fromPosition + startPos;
+        var downloadedBytes = fromPosition + fileStream.Position;
 
         using var httpRequestMessage = new HttpRequestMessage();
         if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
@@ -265,10 +274,12 @@ internal static class BBDownDownloadUtil
             File.Move(tmpName, path, true);
             return;
         }
-        if (File.Exists(tmpName))
+        // 部分下载的临时文件直接续传：RangeDownloadToTmpAsync 会从现有长度处
+        // 发起 Range: bytes=N- 续传。此前这里删除不完整临时文件导致大文件/弱网
+        // 每次中断都从头重下，实际无法断点续传。
+        if (File.Exists(tmpName) && new FileInfo(tmpName).Length > 0)
         {
-            Logger.LogDebug("断点续传: 临时文件大小不匹配, 删除残留: {0}", tmpName);
-            File.Delete(tmpName);
+            Logger.LogDebug("断点续传: 从现有临时文件 {0} 字节处继续", new FileInfo(tmpName).Length);
         }
         int maxRetry = Config.Current.MaxRetryCount;
         while (retry < maxRetry)

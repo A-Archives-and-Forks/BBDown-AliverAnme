@@ -26,7 +26,7 @@ public static partial class Parser
         bool bangumi = cheese || aidOri.StartsWith("ep:");
         Logger.LogDebug("bangumi={0},cheese={1}", bangumi, cheese);
 
-        if (appApi) return await AppHelper.DoReqAsync(aid, cid, epId, qn, bangumi, encoding, Config.Current.Token);
+        if (appApi) return await AppHelper.DoReqAsync(aid, cid, epId, qn, bangumi, encoding, Config.Current.Token, token);
 
         string prefix = tvApi ? bangumi ? $"{Config.Current.TvHost}/pgc/player/api/playurltv" : $"{Config.Current.TvHost}/x/tv/playurl"
             : bangumi ? $"{Config.Current.Host}/pgc/player/web/v2/playurl" : "api.bilibili.com/x/player/wbi/playurl";
@@ -110,7 +110,15 @@ public static partial class Parser
         //调用解析
         parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, qn, token);
 
-        Logger.LogDebug(parsedResult.WebJsonString);
+        // 调试日志不记录完整播放 JSON：其中包含带签名的媒体地址（deadline/sign 参数），
+        // 全文落盘会把可用的临时签名 URL 写进日志文件。只记录长度 + 前 1KB 摘要，
+        // 排查问题足够，避免签名媒体地址泄漏到日志。
+        if (Config.Current.DebugLog)
+        {
+            Logger.LogDebug("PlayJson {0} chars: {1}",
+                parsedResult.WebJsonString.Length,
+                parsedResult.WebJsonString.Length > 1024 ? parsedResult.WebJsonString[..1024] + "…" : parsedResult.WebJsonString);
+        }
 
         //intl接口需要两次请求(code=0和code=1)
         if (intlApi)
@@ -196,6 +204,11 @@ public static partial class Parser
             respJson.Dispose();
             throw;
         }
+        // 外层 try/finally：覆盖 356 行 DRM 提取 throw、250/455 行 GetPlayJsonAsync
+        // await 抛错等所有中途异常路径——respJson 已 parse 但未走到方法末尾 dispose 时，
+        // 由 finally 统一释放（JsonDocument.Dispose 幂等，与 262/456 的显式释放不冲突）。
+        try
+        {
         // 根据API版本自动定位数据节点
         JsonElement root;
         if (data.TryGetProperty("result", out var resultElem) && resultElem.ValueKind == JsonValueKind.Object)
@@ -534,6 +547,11 @@ public static partial class Parser
 
         respJson.Dispose();
         return parsedResult;
+        }
+        finally
+        {
+            respJson.Dispose();
+        }
     }
 
     internal static void ThrowIfPlayLimited(JsonElement root)

@@ -316,7 +316,7 @@ public static partial class BBDownUtil
         return tmp.ToString();
     }
 
-    public static async Task<(bool isLoggedIn, bool cookieExpired)> CheckLoginWithDetails(string cookie, CancellationToken token = default)
+    public static async Task<(bool isLoggedIn, bool cookieExpired, string? newWbi)> CheckLoginWithDetails(string cookie, CancellationToken token = default)
     {
         try
         {
@@ -329,7 +329,10 @@ public static partial class BBDownUtil
             // wbi 密钥必须在判断登录状态之前提取：nav 接口在未登录（code=-101）时
             // 依然会返回 wbi_img，而此前的提前 return 会跳过这一步，
             // 使未登录用户的 Config.WBI 恒为空串、w_rid 恒为无效签名。
-            TryUpdateWbiKey(json);
+            // 提取结果随元组返回，由父流程显式 Apply（AsyncLocal 写入不会回流父调用方）。
+            string? newWbi = ExtractWbiKey(json);
+            if (newWbi is not null)
+                Logger.LogDebug("wbi: {0}", newWbi);
 
             if (code == -101)
             {
@@ -341,23 +344,24 @@ public static partial class BBDownUtil
                 Logger.LogDebug(hasCookie
                     ? "Cookie 已过期或无效 (code=-101)"
                     : "尚未登录 (code=-101，本地无 Cookie)");
-                return (false, hasCookie);
+                return (false, hasCookie, newWbi);
             }
             var is_login = json.GetPropertySafe("data").GetPropertySafe("isLogin").GetBoolean();
-            return (is_login, false);
+            return (is_login, false, newWbi);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException)
         {
             Logger.LogDebug("检测登录状态失败: {0}", ex.Message);
-            return (false, false);
+            return (false, false, null);
         }
     }
 
     /// <summary>
-    /// 从 nav 响应中提取 wbi 混淆密钥。缺失时保持原值并记录，
-    /// 不因此让登录状态检测失败。
+    /// 从 nav 响应中提取 wbi 混淆密钥。返回新密钥；缺失/提取失败返回 null（保持原值）。
+    /// 注意：不在此处写入 Config——AsyncLocal 写入发生在子异步方法内不会回流父调用方
+    /// （父流程的 ExecutionContext 快照在 await 前已捕获）。由调用方拿到返回值后显式 Apply。
     /// </summary>
-    private static void TryUpdateWbiKey(JsonElement navRoot)
+    private static string? ExtractWbiKey(JsonElement navRoot)
     {
         try
         {
@@ -367,22 +371,23 @@ public static partial class BBDownUtil
             if (string.IsNullOrEmpty(imgUrl) || string.IsNullOrEmpty(subUrl))
             {
                 Logger.LogDebug("nav 响应中缺少 wbi_img，跳过 wbi 密钥更新");
-                return;
+                return null;
             }
-            // 只更新当前异步流的 wbi：serve 并发任务下，同时写全局会被最后执行的任务覆盖，
-            // 使其它任务读到串号后的密钥。这里用 flow-scoped setter，改动只对本任务流程生效。
-            Core.Config.WBI_FLOW = GetMixinKey(RSubString(imgUrl) + RSubString(subUrl));
-            Logger.LogDebug("wbi: {0}", Core.Config.WBI_FLOW);
+            return GetMixinKey(RSubString(imgUrl) + RSubString(subUrl));
         }
         catch (Exception ex) when (ex is KeyNotFoundException or InvalidOperationException)
         {
             Logger.LogDebug("提取 wbi 密钥失败: {0}", ex.Message);
+            return null;
         }
     }
 
     public static async Task<bool> CheckLogin(string cookie)
     {
-        var (isLoggedIn, _) = await CheckLoginWithDetails(cookie);
+        var (isLoggedIn, _, newWbi) = await CheckLoginWithDetails(cookie);
+        // 同步提取出的 wbi：CheckLogin 是 CLI 顶层单流程调用，子方法返回的新密钥
+        // 需由本调用方 Apply（AsyncLocal 写入不会自动回流）。
+        if (newWbi is not null) Core.Config.WBI_FLOW = newWbi;
         return isLoggedIn;
     }
     [GeneratedRegex("(^|&)?(\\w+)=([^&]+)(&|$)?", RegexOptions.Compiled)]

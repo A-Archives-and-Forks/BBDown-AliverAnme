@@ -127,6 +127,9 @@ public static class SubscriptionStore
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {
+            // 历史文件损坏/不可读时不能静默当作"空历史"：会让已下载过的内容被
+            // 当作新增重新下载一遍（批量重复下载）。至少明确警告用户原因。
+            Logger.LogWarn($"读取订阅历史失败（{ex.Message}），已当作无历史处理，可能重新下载已下载内容: {HistoryFile}");
             return [];
         }
     }

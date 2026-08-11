@@ -142,6 +142,7 @@ public class SubCheckCommand : Command<SubCheckSettings>
                 UseAppApi = settings.UseAppApi,
             });
 
+            int failedSubs = 0;
             foreach (var sub in subs)
             {
                 Logger.Log($"检查订阅: {sub.Name} ({sub.Target})");
@@ -174,8 +175,16 @@ public class SubCheckCommand : Command<SubCheckSettings>
                 catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
                                             or InvalidOperationException or IOException or ArgumentException)
                 {
+                    // 单个订阅失败不中止其余订阅，但必须计入失败数：
+                    // 全部失败仍返回 0 会让脚本/CI 无法区分"全部成功"与"全部失败"
+                    failedSubs++;
                     Logger.LogWarn($"  订阅检查失败: {ex.Message}");
                 }
+            }
+            if (failedSubs > 0)
+            {
+                Logger.LogWarn($"订阅检查完成，{failedSubs} 个订阅失败");
+                return 1;
             }
             return 0;
         }).GetAwaiter().GetResult();
