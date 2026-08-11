@@ -207,7 +207,12 @@ internal partial class Program
             }
             return MuxOutcome.Skipped;
         }
-        int code = await BBDownMuxer.MuxAV(useMp4box, p.bvid, videoPath, audioPath, audioMaterial, savePath,
+        // 混流产物事务化：ffmpeg/mp4box 写入唯一的 .muxing-{guid} 临时路径而非最终 savePath。
+        // 此前直接写最终路径，非零退出/取消后只返回 Failed 不删除半成品，下次运行发现
+        // "存在且非空"就跳过，可能永久保留截断视频并报告成功。临时产物成功且校验通过后
+        // 才原子替换到最终路径；失败/取消清理临时产物，绝不留半成品当成品。
+        var muxingPath = savePath + $".muxing-{Guid.NewGuid():N}";
+        int code = await BBDownMuxer.MuxAV(useMp4box, p.bvid, videoPath, audioPath, audioMaterial, muxingPath,
             desc,
             title,
             p.ownerName ?? "",
@@ -215,8 +220,21 @@ internal partial class Program
             File.Exists(coverPath) ? coverPath : "",
             lang,
             subtitleInfo, audioOnly, videoOnly, p.points, p.pubTime, myOption.SimplyMux, isHevc, cancellationToken);
-        if (code != 0 || !File.Exists(savePath) || new FileInfo(savePath).Length == 0)
+        if (code != 0 || !File.Exists(muxingPath) || new FileInfo(muxingPath).Length == 0)
         {
+            // 混流失败/取消：清理半成品临时产物，返回失败（不留截断文件被下次误当成功）
+            try { if (File.Exists(muxingPath)) File.Delete(muxingPath); } catch (IOException) { }
+            return MuxOutcome.Failed;
+        }
+        // 产物合法：原子替换到最终路径。File.Move(overwrite) 在 Windows 上是"删除目标+改名"，
+        // 但目标原本不存在（fastSkipChecked 已判定），不会破坏已有文件。
+        try
+        {
+            File.Move(muxingPath, savePath, true);
+        }
+        catch (IOException)
+        {
+            try { if (File.Exists(muxingPath)) File.Delete(muxingPath); } catch (IOException) { }
             return MuxOutcome.Failed;
         }
         Logger.Log("清理临时文件...");

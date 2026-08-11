@@ -24,7 +24,7 @@ internal static class BBDownDownloadUtil
         public DownloadTask? RelatedTask { get; set; } = null;
     }
 
-    private static async Task<long> RangeDownloadToTmpAsync(int id, string url, string tmpName, long fromPosition, long? toPosition, Action<int, long, long> onProgress, bool failOnRangeNotSupported = false, CancellationToken token = default)
+    private static async Task<long> RangeDownloadToTmpAsync(int id, string url, string tmpName, long fromPosition, long? toPosition, Action<int, long, long> onProgress, bool failOnRangeNotSupported = false, string? ifRange = null, CancellationToken token = default)
     {
         using var fileStream = new FileStream(tmpName, FileMode.OpenOrCreate);
         long clipLength = toPosition is > 0 ? toPosition.Value - fromPosition + 1 : long.MaxValue;
@@ -62,6 +62,11 @@ internal static class BBDownDownloadUtil
         // LastWriteTimeUtc 当 If-Range，它不是服务器的 Last-Modified，符合协议的服务器
         // 会因不匹配返回完整 200，导致续传被误判为"服务器不支持多线程"。
         httpRequestMessage.Headers.Range = new(downloadedBytes, toPosition);
+        // 续传时带 If-Range：有 ETag/Last-Modified 时让服务器校验本地前缀仍属于当前对象。
+        // 若对象已变化（ETag 不符），服务器返回完整 200，下方 200 分支清空重下，
+        // 不会把旧前缀与新后缀拼成损坏文件。
+        if (!string.IsNullOrEmpty(ifRange))
+            httpRequestMessage.Headers.TryAddWithoutValidation("If-Range", ifRange);
         httpRequestMessage.RequestUri = new(url);
 
         using var response = (await HTTPUtil.AppHttpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
@@ -317,6 +322,7 @@ internal static class BBDownDownloadUtil
         // 部分下载的临时文件直接续传：RangeDownloadToTmpAsync 会从现有长度处
         // 发起 Range: bytes=N- 续传。此前这里删除不完整临时文件导致大文件/弱网
         // 每次中断都从头重下，实际无法断点续传。
+        string? resumeIfRange = null;
         if (File.Exists(tmpName) && new FileInfo(tmpName).Length > 0)
         {
             // 续传同样要求资源身份一致：清单缺失/不符时删除 .tmp 完整重下，
@@ -324,6 +330,8 @@ internal static class BBDownDownloadUtil
             if (CanResumeFrom(tmpName, url, fileSize, out var reason))
             {
                 Logger.LogDebug("断点续传: 从现有临时文件 {0} 字节处继续（资源身份一致）", new FileInfo(tmpName).Length);
+                // 续传时带 If-Range（ETag/Last-Modified）：让服务器校验本地前缀仍属于当前对象
+                resumeIfRange = ReadManifestIfRange(tmpName);
             }
             else
             {
@@ -344,16 +352,16 @@ internal static class BBDownDownloadUtil
             DeleteResumeManifest(tmpName);
         }
         int maxRetry = Config.Current.MaxRetryCount;
+        // 下载首字节前就写入续传清单：真正中断（进程被杀/Ctrl+C）留下的 .tmp 必须带清单，
+        // 下次运行才能确认其资源身份而续传。若等下载完成才写，中断的 .tmp 无清单，
+        // 下次一定被删除——跨进程续传实际不可用。
+        WriteResumeManifest(tmpName, url, fileSize, probeHeaders, probeContentHeaders);
         while (retry < maxRetry)
         {
             try
             {
                 using var progress = new ProgressBar(config.RelatedTask);
-                long written = await RangeDownloadToTmpAsync(0, url, tmpName, 0, null, (_, downloaded, total) => progress.Report((double)downloaded / total, downloaded), token: token);
-                // 下载完成后写入/更新续传清单：记录本次资源的身份（URL + 总长 + 服务器头），
-                // 供下次运行的断点续传校验。放在移动最终路径前——若本次中断，.tmp 与清单
-                // 都保留，下次续传能用清单确认身份。
-                WriteResumeManifest(tmpName, url, fileSize, probeHeaders, probeContentHeaders);
+                long written = await RangeDownloadToTmpAsync(0, url, tmpName, 0, null, (_, downloaded, total) => progress.Report((double)downloaded / total, downloaded), ifRange: resumeIfRange, token: token);
                 // 移动最终路径前验证总长度：探测到的远端大小 > 0 时，临时文件必须与之一致。
                 // 若响应 Content-Range 错位被上方拒绝重试后仍拿到错误内容，长度校验能拦住
                 // 假成功——此前直接 File.Move 把未校验内容当作成品。
@@ -430,12 +438,20 @@ internal static class BBDownDownloadUtil
                 }
             }
             File.Move(tmpMerged, path, true);
-            // 清理分片
+            // 清理分片与轨道清单（清单随分片一起移除，下次干净开始）
             foreach (var clip in clips)
             {
                 try { File.Delete(clip); }
                 catch (IOException) { /* 清理失败不影响主流程 */ }
             }
+            try
+            {
+                string trackManifest = ResumeManifestPath(Path.Combine(Path.GetDirectoryName(path)!,
+                    "00000_" + Path.GetFileNameWithoutExtension(path)
+                    + (Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip")));
+                if (File.Exists(trackManifest)) File.Delete(trackManifest);
+            }
+            catch (IOException) { /* 清理失败不影响主流程 */ }
         }, token);
     }
 
@@ -452,7 +468,7 @@ internal static class BBDownDownloadUtil
             Console.WriteLine();
             return [];
         }
-        long fileSize = (await GetFileSizeAndHeadersAsync(url, token)).size;
+        var (fileSize, probeHeaders, probeContentHeaders) = await GetFileSizeAndHeadersAsync(url, token);
         Logger.LogDebug("文件大小：{0} bytes", fileSize);
         // 分片必须依赖已知的文件大小：拿不到 Content-Length 时 GetAllClips 会返回空列表，
         // 于是既不下载也不报错，最终在混流阶段才以"找不到文件"的形式暴露出来。
@@ -475,6 +491,26 @@ internal static class BBDownDownloadUtil
         List<Clip> allClips = GetAllClips(url, fileSize);
         int total = allClips.Count;
         Logger.LogDebug("分段数量：{0}", total);
+        // 轨道级资源身份清单：多线程分片（.vclip/.aclip）由同一 URL 切出，轨道清单记录
+        // 整条轨道的资源身份。身份不符（1080P→720P / AVC→HEVC）时一次性删除该轨道
+        // 全部分片，而不是逐片按长度判断——长度相同的前缀会被复用拼入新资源，内容混合。
+        string dir0 = Path.GetDirectoryName(path)!;
+        string stem0 = Path.GetFileNameWithoutExtension(path);
+        string clipExt0 = Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip";
+        string trackManifestPath = Path.Combine(dir0, stem0 + clipExt0 + ".manifest.json");
+        // 已存在轨道分片且身份与当前资源一致 → 保留续传；不一致 → 清空整轨重下
+        if (Directory.EnumerateFiles(dir0, stem0 + "*" + clipExt0).Any())
+        {
+            // 用第一个分片名作为续传清单名（CanResumeFrom 以 .manifest.json 为约定）
+            string firstClip = Path.Combine(dir0, "00000_" + stem0 + clipExt0);
+            if (File.Exists(firstClip) && !CanResumeFrom(firstClip, url, fileSize, out var trackReason))
+            {
+                Logger.LogDebug("多线程: 轨道分片资源身份不可信（{0}），删除全部分片后完整重下", trackReason ?? "未知原因");
+                CleanStaleClipsFor(path);
+            }
+        }
+        // 下载分片前写入轨道清单（真正中断也会留下清单，下次可确认身份续传）
+        WriteResumeManifest(Path.Combine(dir0, "00000_" + stem0 + clipExt0), url, fileSize, probeHeaders, probeContentHeaders);
         // 分片进度按下标存放并维护一个原子累计值。
         // 此前每次回调都要对 ConcurrentDictionary.Values 求两次和，
         // 而 Values 每次访问都会复制出一份快照 —— 回调频率是每分片每 256KB 一次，
@@ -508,7 +544,7 @@ internal static class BBDownDownloadUtil
                         var previous = Interlocked.Exchange(ref clipProgress[index], downloaded);
                         var current = Interlocked.Add(ref downloadedTotal, downloaded - previous);
                         progress.Report(fileSize > 0 ? (double)current / fileSize : 0, current);
-                    }, true, _);
+                    }, true, token: _);
                     break;
                 }
                 catch (NotSupportedException)
@@ -607,8 +643,40 @@ internal static class BBDownDownloadUtil
     /// "长度相同但内容来自另一资源"被静默续传/采用（同一 aid/cid 从 1080P 切 720P、
     /// AVC 切 HEVC 时路径不变但内容不同）。仅当清单与当前请求的资源身份一致时，
     /// 已有的 .tmp 前缀才是可信的续传素材。
+    /// 身份用 <see cref="StableResourceIdentity"/>（剥离会刷新的签名 query 参数），
+    /// 而非完整签名 URL——媒体 URL 的 deadline/sign 等参数每次请求都会刷新。
     /// </summary>
-    internal sealed record ResumeManifest(string Url, long TotalLength, string? LastModified, string? ETag);
+    internal sealed record ResumeManifest(string Identity, long TotalLength, string? LastModified, string? ETag);
+
+    /// <summary>
+    /// 签名/时间戳等每次请求都会刷新的 query 参数：它们不构成资源身份，续传清单比较
+    /// 时必须剥离，否则同一资源在不同时刻的 URL 会被误判为不同资源而永远无法续传。
+    /// </summary>
+    private static readonly HashSet<string> SignatureQueryKeys = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "deadline", "sign", "w_rid", "wts", "ts", "expires", "auth_key", "ok", "ok_av",
+        "oid", "trid", "platform", "fnval", "fnver", "fourk", "type", "uparams", "t",
+    };
+
+    /// <summary>剥离签名 query 参数后的稳定资源身份（路径 + 非签名参数，按参数名排序）。</summary>
+    internal static string StableResourceIdentity(string url)
+    {
+        var qIndex = url.IndexOf('?');
+        if (qIndex < 0) return url;
+        var path = url[..qIndex];
+        var query = url[(qIndex + 1)..];
+        var kept = new List<string>();
+        foreach (var pair in query.Split('&'))
+        {
+            if (pair.Length == 0) continue;
+            var sep = pair.IndexOf('=');
+            var key = sep > 0 ? pair[..sep] : pair;
+            if (SignatureQueryKeys.Contains(key)) continue;
+            kept.Add(pair);
+        }
+        kept.Sort(StringComparer.Ordinal);
+        return kept.Count == 0 ? path : path + "?" + string.Join("&", kept);
+    }
 
     private static string ResumeManifestPath(string tmpName) => tmpName + ".manifest.json";
 
@@ -619,7 +687,7 @@ internal static class BBDownDownloadUtil
         try
         {
             var m = new ResumeManifest(
-                url,
+                StableResourceIdentity(url),
                 totalLength,
                 contentHeaders?.LastModified?.ToString("R"),
                 headers?.ETag?.Tag);
@@ -656,7 +724,10 @@ internal static class BBDownDownloadUtil
                 reason = "续传清单为空";
                 return false;
             }
-            if (m.Url != url)
+            // 用稳定身份比较（剥离签名参数）：媒体 URL 的 deadline/sign 每次请求刷新，
+            // 直接用完整 URL 相等会让同一资源永远无法续传。
+            var currentIdentity = StableResourceIdentity(url);
+            if (m.Identity != currentIdentity)
             {
                 reason = $"续传清单资源与当前资源不一致";
                 return false;
@@ -680,6 +751,24 @@ internal static class BBDownDownloadUtil
     {
         try { if (File.Exists(ResumeManifestPath(tmpName))) File.Delete(ResumeManifestPath(tmpName)); }
         catch (IOException) { /* 清理失败不影响主流程 */ }
+    }
+
+    /// <summary>读取续传清单里的 If-Range 值（ETag 优先，其次 Last-Modified）；清单缺失返回 null。</summary>
+    internal static string? ReadManifestIfRange(string tmpName)
+    {
+        try
+        {
+            if (!File.Exists(ResumeManifestPath(tmpName))) return null;
+            var m = System.Text.Json.JsonSerializer.Deserialize(
+                File.ReadAllText(ResumeManifestPath(tmpName)), DownloadManifestJsonContext.Default.ResumeManifest);
+            if (m is null) return null;
+            if (!string.IsNullOrEmpty(m.ETag)) return m.ETag;
+            return m.LastModified;
+        }
+        catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException)
+        {
+            return null;
+        }
     }
 
     /// <summary>

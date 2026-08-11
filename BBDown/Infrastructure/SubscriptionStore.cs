@@ -39,15 +39,17 @@ public static class SubscriptionStore
     private static string HistoryFile => Path.Combine(StoreRoot, "BBDownSubscriptions.history.json");
 
     /// <summary>
-    /// 把损坏的持久化文件隔离为 .corrupt-时间戳 并返回隔离路径；返回 null 表示隔离失败
-    /// （文件被占用等，保留原位）。internal 供测试验证"损坏数据不静默当空/重置"。
+    /// 把损坏的持久化文件隔离为 .corrupt-毫秒-GUID 并返回隔离路径；返回 null 表示隔离失败
+    /// （文件被占用等，保留原位）。内部供测试验证"损坏数据不静默当空/重置"。
+    /// 隔离名含毫秒 + GUID：同一时刻再次出现损坏不会覆盖上一份恢复副本（此前只精确到秒
+    /// 且 overwrite:true，同秒第二次损坏会覆盖第一份）。
     /// </summary>
     internal static string? IsolateCorruptFile(string path)
     {
-        string corrupt = path + $".corrupt-{DateTimeOffset.Now.ToUnixTimeSeconds()}";
+        string corrupt = $"{path}.corrupt-{DateTimeOffset.Now:yyyyMMddHHmmssfff}-{Guid.NewGuid():N}";
         try
         {
-            if (File.Exists(path)) File.Move(path, corrupt, true);
+            if (File.Exists(path)) File.Move(path, corrupt);
             return corrupt;
         }
         catch (IOException)
@@ -143,20 +145,36 @@ public static class SubscriptionStore
 
     /// <summary>某个订阅已成功下载过的 avid 集合。
     /// 历史文件损坏时隔离为 .corrupt-时间戳 并抛异常（调用方应中止该订阅，不能当空历史
-    /// 继续——否则已下载内容会被当作新增重新下载一遍）。</summary>
+    /// 继续——否则已下载内容会被当作新增重新下载一遍）。严格验证结构：目标字段存在但
+    /// 不是数组（如 {"mid:1":"broken"}）、数组元素不是字符串，都按损坏处理并隔离，
+    /// 不能静默当空历史。</summary>
     public static HashSet<string> LoadHistory(string target)
     {
         try
         {
             if (!File.Exists(HistoryFile)) return [];
             using var doc = JsonDocument.Parse(File.ReadAllText(HistoryFile));
-            if (!doc.RootElement.TryGetProperty(target, out var arr) || arr.ValueKind != JsonValueKind.Array)
-                return [];
-            return arr.EnumerateArray()
-                .Select(e => e.GetString())
-                .Where(s => s is not null)
-                .Select(s => s!)
-                .ToHashSet();
+            // 根节点必须是对象：历史文件是 {"target": [avid,...]} 结构
+            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            {
+                throw new JsonException($"历史文件根节点不是对象（实际 {doc.RootElement.ValueKind}）");
+            }
+            if (!doc.RootElement.TryGetProperty(target, out var arr))
+                return []; // 该订阅尚无历史（合法：从未下载过）
+            // 目标字段存在但不是数组 → 结构损坏，不能当空历史（否则全部内容会被当新增重下）
+            if (arr.ValueKind != JsonValueKind.Array)
+            {
+                throw new JsonException($"订阅 {target} 的历史字段不是数组（实际 {arr.ValueKind}）");
+            }
+            var result = new HashSet<string>();
+            foreach (var e in arr.EnumerateArray())
+            {
+                // 数组元素不是字符串（数字/对象/null）→ 结构损坏
+                if (e.ValueKind != JsonValueKind.String)
+                    throw new JsonException($"订阅 {target} 的历史数组包含非字符串元素（{e.ValueKind}）");
+                result.Add(e.GetString()!);
+            }
+            return result;
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {

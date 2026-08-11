@@ -50,6 +50,44 @@ public class SubscriptionStoreTests : IDisposable
     }
 
     /// <summary>
+    /// 回归：目标字段存在但不是数组（如 {"mid:1":"broken"}）必须按损坏处理并抛专用异常，
+    /// 不能静默当空历史——否则该订阅全部内容会被当作新增重新下载一遍。
+    /// </summary>
+    [Fact]
+    public void LoadHistory_TargetFieldNotArray_IsolatesAndThrowsCorruptException()
+    {
+        // 合法 JSON 但结构错误：目标字段是字符串而非数组
+        File.WriteAllText(HistoryFile, """{"mid:1":"broken"}""");
+
+        var ex = Assert.Throws<SubscriptionDataCorruptException>(() => SubscriptionStore.LoadHistory("mid:1"));
+        Assert.Contains(".corrupt-", ex.Message);
+        Assert.False(File.Exists(HistoryFile));
+    }
+
+    /// <summary>
+    /// 回归：历史数组包含非字符串元素（数字/对象）也必须按损坏处理并抛专用异常。
+    /// </summary>
+    [Fact]
+    public void LoadHistory_ArrayWithNonStringElement_IsolatesAndThrowsCorruptException()
+    {
+        // 数组内含数字元素：结构不符
+        File.WriteAllText(HistoryFile, """{"mid:1":[12345, "67890"]}""");
+
+        var ex = Assert.Throws<SubscriptionDataCorruptException>(() => SubscriptionStore.LoadHistory("mid:1"));
+        Assert.Contains(".corrupt-", ex.Message);
+        Assert.False(File.Exists(HistoryFile));
+    }
+
+    /// <summary>目标字段不存在（该订阅从未下载过）是合法场景，返回空集合并隔离历史文件损坏除外。</summary>
+    [Fact]
+    public void LoadHistory_TargetNotPresent_ReturnsEmpty()
+    {
+        File.WriteAllText(HistoryFile, """{"mid:2":["170001"]}""");
+        Assert.Empty(SubscriptionStore.LoadHistory("mid:1"));
+        Assert.True(File.Exists(HistoryFile)); // 未损坏，不隔离
+    }
+
+    /// <summary>
     /// 回归：主订阅清单损坏必须隔离并抛专用异常，不能返回空列表。
     /// 此前 Load 损坏时返回空列表 → sub list/check 显示"没有订阅"并成功，
     /// 下一次 sub add/remove 会用空列表覆盖原文件（与历史文件问题同类）。

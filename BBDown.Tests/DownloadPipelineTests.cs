@@ -311,6 +311,59 @@ public class DownloadPipelineTests
         }
     }
 
+    /// <summary>
+    /// 稳定资源身份必须剥离会刷新的签名 query 参数（deadline/sign/w_rid/ts 等）：
+    /// 媒体 URL 的签名每次请求刷新，若用完整 URL 相等，同一资源永远无法跨进程续传。
+    /// </summary>
+    [Fact]
+    public void StableResourceIdentity_StripsSignatureParams_AndKeepsStableOnes()
+    {
+        var a = "https://upos.example.com/video.mp4?mid=1&deadline=1700000000&sign=abc&wts=1700000000&qn=80";
+        var b = "https://upos.example.com/video.mp4?mid=1&deadline=1700000300&sign=def&wts=1700000300&qn=80";
+        // 同一资源、刷新签名 → 稳定身份必须相同
+        Assert.Equal(BBDownDownloadUtil.StableResourceIdentity(a), BBDownDownloadUtil.StableResourceIdentity(b));
+        // 稳定参数（mid/qn）保留，签名参数剥离
+        var stable = BBDownDownloadUtil.StableResourceIdentity(a);
+        Assert.Contains("mid=1", stable);
+        Assert.Contains("qn=80", stable);
+        Assert.DoesNotContain("sign=", stable);
+        Assert.DoesNotContain("deadline=", stable);
+        // 不同资源（不同路径）→ 稳定身份不同
+        Assert.NotEqual(
+            BBDownDownloadUtil.StableResourceIdentity("https://upos.example.com/other.mp4?mid=1&deadline=1&sign=x"),
+            stable);
+    }
+
+    /// <summary>
+    /// 回归：单线程续传的 .tmp 清单在下载前就已写入（真正中断也带清单可续传）。
+    /// 验证 CanResumeFrom 用稳定身份匹配——签名刷新后的同一资源仍可续传。
+    /// </summary>
+    [Fact]
+    public void CanResumeFrom_RefreshedSignature_SameResourceStillResumable()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var tmp = Path.Combine(dir, "video.mp4.tmp");
+            File.WriteAllText(tmp, "prefix");
+            // 清单记录旧签名的 URL（Identity 用稳定身份）
+            var manifest = new BBDownDownloadUtil.ResumeManifest(
+                BBDownDownloadUtil.StableResourceIdentity("https://cdn.example.com/1080p.mp4?deadline=100&sign=old&qn=80"),
+                12345, null, null);
+            File.WriteAllText(tmp + ".manifest.json",
+                System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
+
+            // 当前请求是签名刷新的同一资源 → 稳定身份一致 → 可续传
+            Assert.True(BBDownDownloadUtil.CanResumeFrom(tmp,
+                "https://cdn.example.com/1080p.mp4?deadline=999&sign=new&qn=80", 12345, out _));
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
     /// <summary>返回错误 Content-Range 起始偏移的本地服务：验证下载必须拒绝而非接受错位区间。</summary>
     private sealed class MisleadingRangeServer : IDisposable
     {
