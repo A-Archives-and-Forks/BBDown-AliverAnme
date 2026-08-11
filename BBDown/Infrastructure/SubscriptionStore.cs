@@ -9,6 +9,17 @@ namespace BBDown;
 
 public record Subscription(string Target, string Name, long AddedAt);
 
+/// <summary>
+/// 订阅持久化数据损坏（订阅清单或历史文件 JSON 解析失败）时抛出。
+/// 与普通 I/O/网络失败不同：数据损坏意味着"哪些已下载过"的信息不可信，
+/// 继续按空历史/空清单执行会触发大规模重复下载或覆盖，必须中止整个流程。
+/// SubCheck 等调用方应捕获本异常并终止整批，而非按单订阅失败继续。
+/// </summary>
+public sealed class SubscriptionDataCorruptException : InvalidOperationException
+{
+    public SubscriptionDataCorruptException(string message, Exception inner) : base(message, inner) { }
+}
+
 [JsonSerializable(typeof(List<Subscription>))]
 [JsonSerializable(typeof(Dictionary<string, List<string>>))]
 internal partial class SubscriptionJsonContext : JsonSerializerContext
@@ -21,20 +32,22 @@ internal partial class SubscriptionJsonContext : JsonSerializerContext
 /// </summary>
 public static class SubscriptionStore
 {
-    private static readonly string SubFile = Path.Combine(Program.APP_DIR, "BBDownSubscriptions.json");
-    private static readonly string HistoryFile = Path.Combine(Program.APP_DIR, "BBDownSubscriptions.history.json");
+    /// <summary>存储根目录（程序目录）。internal 供测试注入临时目录，避免污染真实安装目录。</summary>
+    internal static string StoreRoot = Program.APP_DIR;
+
+    private static string SubFile => Path.Combine(StoreRoot, "BBDownSubscriptions.json");
+    private static string HistoryFile => Path.Combine(StoreRoot, "BBDownSubscriptions.history.json");
 
     /// <summary>
-    /// 把损坏的历史文件隔离为 .corrupt-时间戳 并返回隔离路径。
-    /// 返回 null 表示隔离失败（文件被占用等，保留原位）。
-    /// internal 供测试验证"损坏历史不静默当空/重置"。
+    /// 把损坏的持久化文件隔离为 .corrupt-时间戳 并返回隔离路径；返回 null 表示隔离失败
+    /// （文件被占用等，保留原位）。internal 供测试验证"损坏数据不静默当空/重置"。
     /// </summary>
-    internal static string? IsolateCorruptHistoryFile()
+    internal static string? IsolateCorruptFile(string path)
     {
-        string corrupt = HistoryFile + $".corrupt-{DateTimeOffset.Now.ToUnixTimeSeconds()}";
+        string corrupt = path + $".corrupt-{DateTimeOffset.Now.ToUnixTimeSeconds()}";
         try
         {
-            if (File.Exists(HistoryFile)) File.Move(HistoryFile, corrupt, true);
+            if (File.Exists(path)) File.Move(path, corrupt, true);
             return corrupt;
         }
         catch (IOException)
@@ -91,8 +104,12 @@ public static class SubscriptionStore
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {
-            Logger.LogWarn($"读取订阅文件失败: {ex.Message}");
-            return [];
+            // 订阅清单损坏不能静默当空：否则 sub list/check 显示"没有订阅"并成功，
+            // 下一次 sub add/remove 会用空列表覆盖原文件。隔离为 .corrupt-时间戳并抛
+            // 专用异常，调用方据此中止流程。
+            string? corrupt = IsolateCorruptFile(SubFile);
+            Logger.LogError($"订阅清单损坏（{ex.Message}），已隔离为 {corrupt ?? SubFile}，中止操作以避免覆盖订阅");
+            throw new SubscriptionDataCorruptException($"订阅清单损坏，已隔离为 {corrupt ?? SubFile}，请检查后恢复", ex);
         }
     }
 
@@ -143,11 +160,13 @@ public static class SubscriptionStore
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {
-            // 损坏历史隔离而非当空历史/静默重置：保留现场供排查，同时中止当前订阅。
+            // 损坏历史隔离而非当空历史/静默重置：保留现场供排查，同时以专用异常中止。
             // 静默当空历史会让已下载内容被当作新增重新下载；静默重置会丢失所有订阅的历史。
-            string? corrupt = IsolateCorruptHistoryFile();
+            // 调用方必须捕获 SubscriptionDataCorruptException 终止整个 sub check——
+            // 若按普通订阅失败继续，后续订阅会因历史文件已不存在而把全部内容当新增重新下载。
+            string? corrupt = IsolateCorruptFile(HistoryFile);
             Logger.LogError($"订阅历史文件损坏（{ex.Message}），已隔离为 {corrupt ?? HistoryFile}，中止当前订阅以避免重复下载");
-            throw new InvalidOperationException($"订阅历史文件损坏，已隔离为 {corrupt ?? HistoryFile}，请检查后恢复", ex);
+            throw new SubscriptionDataCorruptException($"订阅历史文件损坏，已隔离为 {corrupt ?? HistoryFile}，请检查后恢复", ex);
         }
     }
 
@@ -166,9 +185,9 @@ public static class SubscriptionStore
                 {
                     // 历史文件损坏：隔离而非静默重置。静默重置会让已下载过的内容在下次
                     // 检查时被当作新增重新下载一遍，且丢失全部订阅的历史。
-                    string? corrupt = IsolateCorruptHistoryFile();
+                    string? corrupt = IsolateCorruptFile(HistoryFile);
                     Logger.LogError($"订阅历史文件损坏（{ex.Message}），已隔离为 {corrupt ?? HistoryFile}，中止记录以避免覆盖历史");
-                    throw new InvalidOperationException($"订阅历史文件损坏，已隔离为 {corrupt ?? HistoryFile}，请检查后恢复", ex);
+                    throw new SubscriptionDataCorruptException($"订阅历史文件损坏，已隔离为 {corrupt ?? HistoryFile}，请检查后恢复", ex);
                 }
             }
 

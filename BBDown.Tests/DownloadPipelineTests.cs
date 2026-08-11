@@ -282,6 +282,35 @@ public class DownloadPipelineTests
         }
     }
 
+    /// <summary>
+    /// 回归：断点续传的 .tmp 必须通过资源身份清单校验。等长但 URL 不同的 .tmp
+    /// （同一输出路径被另一清晰度/编码资源复用）必须被拒绝，不能仅凭长度采用。
+    /// </summary>
+    [Fact]
+    public void CanResumeFrom_SameLengthButDifferentUrl_RejectsResume()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var tmp = Path.Combine(dir, "video.mp4.tmp");
+            File.WriteAllText(tmp, "fake-prefix-content-of-any-length");
+            // 写入清单：URL A 与总长，但当前请求是 URL B（同长度不同资源）
+            var manifest = new BBDownDownloadUtil.ResumeManifest("https://cdn.example.com/1080p.mp4", 12345, null, null);
+            File.WriteAllText(tmp + ".manifest.json",
+                System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
+
+            // 清单 URL 与当前请求 URL 不同 → 拒绝续传
+            Assert.False(BBDownDownloadUtil.CanResumeFrom(tmp, "https://cdn.example.com/720p.mp4", 12345, out var reason));
+            Assert.NotNull(reason);
+            Assert.Contains("不一致", reason);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
     /// <summary>返回错误 Content-Range 起始偏移的本地服务：验证下载必须拒绝而非接受错位区间。</summary>
     private sealed class MisleadingRangeServer : IDisposable
     {

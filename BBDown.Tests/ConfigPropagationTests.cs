@@ -145,28 +145,38 @@ public class ConfigPropagationTests
     [Fact]
     public async Task Session_ReturnedByChild_WhenAppliedInParent_MakesCredentialsVisible()
     {
-        // 父流程初始：无 Cookie（模拟未显式传参、尚未加载本地凭据）
-        Config.Apply(Config.Current with { Cookie = "", Wbi = "old" });
-
-        // 子方法模拟 InitializeRequestSessionAsync：加载凭据 + 提取 wbi，
-        // 返回完整 AppSettings 但不 Apply（真实实现正是如此，避免 AsyncLocal 丢失）
-        async Task<AppSettings?> Child()
+        // 记录初始全局配置并在 finally 恢复：Config.Apply 写全局 _settings，
+        // xUnit 并行执行时若不恢复会污染其他测试类。
+        var original = Config.Current;
+        try
         {
-            await Task.Yield();
-            var loaded = Config.Current with { Cookie = "SESSDATA=local-cookie", Wbi = "new-key" };
-            return loaded;
+            // 父流程初始：无 Cookie（模拟未显式传参、尚未加载本地凭据）
+            Config.Apply(Config.Current with { Cookie = "", Wbi = "old" });
+
+            // 子方法模拟 InitializeRequestSessionAsync：加载凭据 + 提取 wbi，
+            // 返回完整 AppSettings 但不 Apply（真实实现正是如此，避免 AsyncLocal 丢失）
+            async Task<AppSettings?> Child()
+            {
+                await Task.Yield();
+                var loaded = Config.Current with { Cookie = "SESSDATA=local-cookie", Wbi = "new-key" };
+                return loaded;
+            }
+            var session = await Child();
+
+            // 子方法内不 Apply：父流程此刻仍读旧值（证明子方法的修改没回流）
+            Assert.Equal("", Config.Current.Cookie);
+
+            // 父流程应用返回值——修复后的契约行为
+            if (session is not null) Config.Apply(session);
+
+            // 应用后凭据与 wbi 在父流程内可见
+            Assert.Equal("SESSDATA=local-cookie", Config.Current.Cookie);
+            Assert.Equal("new-key", Config.Current.Wbi);
         }
-        var session = await Child();
-
-        // 子方法内不 Apply：父流程此刻仍读旧值（证明子方法的修改没回流）
-        Assert.Equal("", Config.Current.Cookie);
-
-        // 父流程应用返回值——修复后的契约行为
-        if (session is not null) Config.Apply(session);
-
-        // 应用后凭据与 wbi 在父流程内可见
-        Assert.Equal("SESSDATA=local-cookie", Config.Current.Cookie);
-        Assert.Equal("new-key", Config.Current.Wbi);
+        finally
+        {
+            Config.Apply(original);
+        }
     }
 
     /// <summary>

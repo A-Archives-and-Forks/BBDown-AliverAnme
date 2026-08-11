@@ -288,10 +288,10 @@ internal partial class Program
     }
 
     /// <summary>
-    /// 加载用户的认证信息（cookie或token）。internal：watchlater 等命令在批量下载前
-    /// 需要先加载本地登录凭据，以便调用需要登录态的接口。
+    /// 计算用户最终应使用的凭据（cookie/token）：显式传入优先，否则本地凭据文件。
+    /// 纯函数：不写 Config（AsyncLocal 语义下写入不回流父流程），由调用方拿返回值应用。
     /// </summary>
-    internal static void LoadCredentials(MyOption myOption)
+    internal static (string cookie, string token) LoadCredentials(MyOption myOption)
     {
         // 用户显式传入的凭据优先于本地文件；否则从 Config.Current / BBDown.data 加载
         string cookie = !string.IsNullOrEmpty(myOption.Cookie) ? myOption.Cookie : Config.Current.Cookie;
@@ -318,10 +318,7 @@ internal partial class Program
             token = File.ReadAllText(Path.Combine(APP_DIR, "BBDownApp.data")).Replace("access_token=", "");
         }
 
-        if (cookie != Config.Current.Cookie || token != Config.Current.Token)
-        {
-            Config.Apply(Config.Current with { Cookie = cookie, Token = token });
-        }
+        return (cookie, token);
     }
 
 }

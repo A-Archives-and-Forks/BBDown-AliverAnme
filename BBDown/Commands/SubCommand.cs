@@ -179,6 +179,13 @@ public class SubCheckCommand : Command<SubCheckSettings>
                         SubscriptionStore.RecordDownloaded(sub.Target, aid);
                     }
                 }
+                catch (SubscriptionDataCorruptException)
+                {
+                    // 订阅持久化数据损坏（历史/清单损坏）：必须终止整个 sub check，不能按
+                    // 普通单订阅失败继续——否则后续订阅会因历史文件已不存在而把全部内容
+                    // 当作新增重新下载，并覆盖一份不完整的历史。
+                    throw;
+                }
                 catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
                                             or InvalidOperationException or IOException or ArgumentException)
                 {

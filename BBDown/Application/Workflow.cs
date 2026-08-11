@@ -189,28 +189,7 @@ internal partial class Program
     {
         // 计算加载后的凭据（显式传参优先，否则本地文件），但不 Apply——
         // 由调用方拿返回值在自身流内应用，避免子方法内的 AsyncLocal 写入丢失。
-        string cookie = !string.IsNullOrEmpty(myOption.Cookie) ? myOption.Cookie : Config.Current.Cookie;
-        string token = !string.IsNullOrEmpty(myOption.AccessToken)
-            ? myOption.AccessToken.Replace("access_token=", "")
-            : Config.Current.Token;
-        if (string.IsNullOrEmpty(cookie) && File.Exists(Path.Combine(APP_DIR, "BBDown.data")))
-        {
-            Logger.Log("加载本地cookie...");
-            Logger.LogDebug("文件路径：{0}", Path.Combine(APP_DIR, "BBDown.data"));
-            cookie = File.ReadAllText(Path.Combine(APP_DIR, "BBDown.data"));
-        }
-        if (string.IsNullOrEmpty(token) && File.Exists(Path.Combine(APP_DIR, "BBDownTV.data")) && myOption.UseTvApi)
-        {
-            Logger.Log("加载本地token...");
-            Logger.LogDebug("文件路径：{0}", Path.Combine(APP_DIR, "BBDownTV.data"));
-            token = File.ReadAllText(Path.Combine(APP_DIR, "BBDownTV.data")).Replace("access_token=", "");
-        }
-        if (string.IsNullOrEmpty(token) && File.Exists(Path.Combine(APP_DIR, "BBDownApp.data")) && myOption.UseAppApi)
-        {
-            Logger.Log("加载本地token...");
-            Logger.LogDebug("文件路径：{0}", Path.Combine(APP_DIR, "BBDownApp.data"));
-            token = File.ReadAllText(Path.Combine(APP_DIR, "BBDownApp.data")).Replace("access_token=", "");
-        }
+        var (cookie, token) = LoadCredentials(myOption);
 
         string? newWbi = null;
         // 检测是否登录了账号并提取 wbi。WBI 是元数据 fetcher（SpaceVideoFetcher 的
@@ -220,6 +199,12 @@ internal partial class Program
         if (Config.Current.Area == "")
         {
             Logger.Log("检测账号登录...");
+            // CheckLoginWithDetails 内部经 HTTPUtil 读 Config.Current.Cookie（不消费传入的
+            // cookie 参数），而本方法尚未把计算出的本地凭据写入当前流。若不清空旧值，用户
+            // 显式传 --cookie 时 HTTPUtil 仍读 Config.Current.Cookie（可能是旧的/空的），
+            // 导致登录检测用错误的凭据误报"Cookie 已过期"。这里把凭据应用到当前异步流
+            // （只影响本方法上下文，不影响全局/父流），使检测使用正确凭据。
+            Core.Config.ApplyToCurrentAsyncFlow(Config.Current with { Cookie = cookie, Token = token });
             var (isLoggedIn, cookieExpired, wbi) = await BBDownUtil.CheckLoginWithDetails(cookie, cancellationToken);
             newWbi = wbi;
             if (!isLoggedIn)

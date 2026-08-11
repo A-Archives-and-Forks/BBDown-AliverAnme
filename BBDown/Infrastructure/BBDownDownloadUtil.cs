@@ -7,6 +7,7 @@ using System.IO;
 using System.Linq;
 using System.Net.Http;
 using System.Net;
+using System.Net.Http.Headers;
 using System.Threading.Tasks;
 using static BBDown.Core.Entity.Entity;
 
@@ -289,7 +290,7 @@ internal static class BBDownDownloadUtil
         // 留下的 1MB 视频数据会被下次音频下载当成音频前缀续传（长度正确但内容损坏）。
         // 保留扩展名即隔离音视频的临时文件，且与多线程分片（.vclip/.aclip）的隔离一致。
         string tmpName = path + ".tmp";
-        long fileSize = await GetFileSizeAsync(url, token);
+        var (fileSize, probeHeaders, probeContentHeaders) = await GetFileSizeAndHeadersAsync(url, token);
         // 必须要求 fileSize > 0：服务器未返回 Content-Length 时 fileSize 为 0，
         // 此时若 path 恰好是上次失败留下的空文件，会被误判成"已下载完成"
         if (fileSize > 0 && File.Exists(path) && new FileInfo(path).Length == fileSize)
@@ -299,16 +300,37 @@ internal static class BBDownDownloadUtil
         }
         if (fileSize > 0 && File.Exists(tmpName) && new FileInfo(tmpName).Length == fileSize)
         {
-            Logger.LogDebug("断点续传: 检测到已完整下载的临时文件, 直接移动");
-            File.Move(tmpName, path, true);
-            return;
+            // 长度相等不等于内容可信：同一输出路径可能被 1080P→720P / AVC→HEVC 的
+            // 另一个资源复用（长度恰好相同）。只有续传清单确认资源身份一致时才直接采用，
+            // 否则删除完整重下——杜绝"长度正确但内容损坏"的假成功。
+            if (CanResumeFrom(tmpName, url, fileSize, out var resumeReason))
+            {
+                Logger.LogDebug("断点续传: 检测到已完整下载的临时文件且资源身份一致, 直接移动");
+                File.Move(tmpName, path, true);
+                DeleteResumeManifest(tmpName);
+                return;
+            }
+            Logger.LogDebug("断点续传: 临时文件长度与远端一致但资源身份不可信（{0}），删除后完整重下", resumeReason ?? "未知原因");
+            File.Delete(tmpName);
+            DeleteResumeManifest(tmpName);
         }
         // 部分下载的临时文件直接续传：RangeDownloadToTmpAsync 会从现有长度处
         // 发起 Range: bytes=N- 续传。此前这里删除不完整临时文件导致大文件/弱网
         // 每次中断都从头重下，实际无法断点续传。
         if (File.Exists(tmpName) && new FileInfo(tmpName).Length > 0)
         {
-            Logger.LogDebug("断点续传: 从现有临时文件 {0} 字节处继续", new FileInfo(tmpName).Length);
+            // 续传同样要求资源身份一致：清单缺失/不符时删除 .tmp 完整重下，
+            // 否则旧前缀可能与新响应拼接（长度仍正确但内容损坏）。
+            if (CanResumeFrom(tmpName, url, fileSize, out var reason))
+            {
+                Logger.LogDebug("断点续传: 从现有临时文件 {0} 字节处继续（资源身份一致）", new FileInfo(tmpName).Length);
+            }
+            else
+            {
+                Logger.LogDebug("断点续传: 现有临时文件资源身份不可信（{0}），删除后完整重下", reason ?? "未知原因");
+                File.Delete(tmpName);
+                DeleteResumeManifest(tmpName);
+            }
         }
         // 临时文件比远端更大：既非"完整匹配"也非"可续传的前缀"（续传只会追加，
         // 不可能让已有内容变短）。它只可能是远端资源变化（同长度语义错位）或上次
@@ -319,6 +341,7 @@ internal static class BBDownDownloadUtil
             Logger.LogDebug("断点续传: 临时文件({0} 字节)大于远端文件({1} 字节)，内容不可信，删除后完整重下",
                 new FileInfo(tmpName).Length, fileSize);
             File.Delete(tmpName);
+            DeleteResumeManifest(tmpName);
         }
         int maxRetry = Config.Current.MaxRetryCount;
         while (retry < maxRetry)
@@ -327,12 +350,17 @@ internal static class BBDownDownloadUtil
             {
                 using var progress = new ProgressBar(config.RelatedTask);
                 long written = await RangeDownloadToTmpAsync(0, url, tmpName, 0, null, (_, downloaded, total) => progress.Report((double)downloaded / total, downloaded), token: token);
+                // 下载完成后写入/更新续传清单：记录本次资源的身份（URL + 总长 + 服务器头），
+                // 供下次运行的断点续传校验。放在移动最终路径前——若本次中断，.tmp 与清单
+                // 都保留，下次续传能用清单确认身份。
+                WriteResumeManifest(tmpName, url, fileSize, probeHeaders, probeContentHeaders);
                 // 移动最终路径前验证总长度：探测到的远端大小 > 0 时，临时文件必须与之一致。
                 // 若响应 Content-Range 错位被上方拒绝重试后仍拿到错误内容，长度校验能拦住
                 // 假成功——此前直接 File.Move 把未校验内容当作成品。
                 if (fileSize > 0 && written != fileSize)
                     throw new IOException($"下载产物长度({written})与服务器声明({fileSize})不符，触发重试");
                 File.Move(tmpName, path, true);
+                DeleteResumeManifest(tmpName);
                 break;
             }
             catch (Exception ex) when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
@@ -378,7 +406,7 @@ internal static class BBDownDownloadUtil
         await WithPathLockAsync(path, async () =>
         {
             // 已完整下载过：直接跳过（不再产生分片，也不做任何合并/清理）
-            long fileSize = await GetFileSizeAsync(url, token);
+            long fileSize = (await GetFileSizeAndHeadersAsync(url, token)).size;
             if (fileSize > 0 && File.Exists(path) && new FileInfo(path).Length == fileSize)
             {
                 Logger.LogDebug("文件已下载过, 跳过下载");
@@ -424,7 +452,7 @@ internal static class BBDownDownloadUtil
             Console.WriteLine();
             return [];
         }
-        long fileSize = await GetFileSizeAsync(url, token);
+        long fileSize = (await GetFileSizeAndHeadersAsync(url, token)).size;
         Logger.LogDebug("文件大小：{0} bytes", fileSize);
         // 分片必须依赖已知的文件大小：拿不到 Content-Length 时 GetAllClips 会返回空列表，
         // 于是既不下载也不报错，最终在混流阶段才以"找不到文件"的形式暴露出来。
@@ -559,7 +587,7 @@ internal static class BBDownDownloadUtil
         return clips;
     }
 
-    private static async Task<long> GetFileSizeAsync(string url, CancellationToken token = default)
+    private static async Task<(long size, HttpResponseHeaders? headers, HttpContentHeaders? contentHeaders)> GetFileSizeAndHeadersAsync(string url, CancellationToken token = default)
     {
         using var httpRequestMessage = new HttpRequestMessage();
         if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
@@ -571,7 +599,87 @@ internal static class BBDownDownloadUtil
             .EnsureSuccessStatusCode();
         long totalSizeBytes = response.Content.Headers.ContentLength ?? 0;
 
-        return totalSizeBytes;
+        return (totalSizeBytes, response.Headers, response.Content.Headers);
+    }
+
+    /// <summary>
+    /// 断点续传的资源身份清单：记录某份 .tmp 临时文件对应的远端资源身份，防止
+    /// "长度相同但内容来自另一资源"被静默续传/采用（同一 aid/cid 从 1080P 切 720P、
+    /// AVC 切 HEVC 时路径不变但内容不同）。仅当清单与当前请求的资源身份一致时，
+    /// 已有的 .tmp 前缀才是可信的续传素材。
+    /// </summary>
+    internal sealed record ResumeManifest(string Url, long TotalLength, string? LastModified, string? ETag);
+
+    private static string ResumeManifestPath(string tmpName) => tmpName + ".manifest.json";
+
+    /// <summary>把本次下载的资源身份写入清单（.tmp.manifest.json 旁车文件）。
+    /// LastModified 来自内容头（HttpContentHeaders），ETag 来自响应头。</summary>
+    private static void WriteResumeManifest(string tmpName, string url, long totalLength, HttpResponseHeaders? headers, HttpContentHeaders? contentHeaders)
+    {
+        try
+        {
+            var m = new ResumeManifest(
+                url,
+                totalLength,
+                contentHeaders?.LastModified?.ToString("R"),
+                headers?.ETag?.Tag);
+            File.WriteAllText(ResumeManifestPath(tmpName),
+                System.Text.Json.JsonSerializer.Serialize(m, DownloadManifestJsonContext.Default.ResumeManifest));
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            // 清单写入失败只降级为日志：资源身份校验退化为"仅长度"，与旧行为一致。
+            // 不阻断下载（清单是信任增强，不是必需）。
+            Logger.LogDebug("写入续传清单失败: {0}", ex.Message);
+        }
+    }
+
+    /// <summary>
+    /// 校验某份 .tmp 是否可用于续传当前资源。返回 true 表示身份一致可续传；
+    /// 返回 false 表示身份不符/清单缺失/长度不符，调用方应删除 .tmp 完整重下。
+    /// internal 供测试验证"等长但资源身份不同"的 .tmp 被拒绝。
+    /// </summary>
+    internal static bool CanResumeFrom(string tmpName, string url, long totalLength, out string? reason)
+    {
+        reason = null;
+        try
+        {
+            if (!File.Exists(ResumeManifestPath(tmpName)))
+            {
+                reason = "缺少续传清单（无法确认 .tmp 内容属于当前资源）";
+                return false;
+            }
+            var m = System.Text.Json.JsonSerializer.Deserialize(
+                File.ReadAllText(ResumeManifestPath(tmpName)), DownloadManifestJsonContext.Default.ResumeManifest);
+            if (m is null)
+            {
+                reason = "续传清单为空";
+                return false;
+            }
+            if (m.Url != url)
+            {
+                reason = $"续传清单资源与当前资源不一致";
+                return false;
+            }
+            if (m.TotalLength != totalLength)
+            {
+                reason = $"续传清单总长({m.TotalLength})与当前探测({totalLength})不一致";
+                return false;
+            }
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or System.Text.Json.JsonException)
+        {
+            reason = $"续传清单读取失败: {ex.Message}";
+            return false;
+        }
+    }
+
+    /// <summary>清理 .tmp 的续传清单（下载完成后随 .tmp 一起移除）。</summary>
+    private static void DeleteResumeManifest(string tmpName)
+    {
+        try { if (File.Exists(ResumeManifestPath(tmpName))) File.Delete(ResumeManifestPath(tmpName)); }
+        catch (IOException) { /* 清理失败不影响主流程 */ }
     }
 
     /// <summary>
@@ -590,4 +698,10 @@ internal static class BBDownDownloadUtil
         Logger.LogDebug("将https更改为http");
         return url.Replace("https:", "http:");
     }
+}
+
+/// <summary>AOT 裁剪安全的续传清单 JSON 序列化上下文。</summary>
+[System.Text.Json.Serialization.JsonSerializable(typeof(BBDownDownloadUtil.ResumeManifest))]
+internal partial class DownloadManifestJsonContext : System.Text.Json.Serialization.JsonSerializerContext
+{
 }

@@ -4,70 +4,82 @@ using BBDown.Core;
 namespace BBDown.Tests;
 
 /// <summary>
-/// 订阅持久化可靠性测试：损坏历史必须隔离而非静默当空/重置。
-/// 由于 SubscriptionStore 的 SubFile/HistoryFile 绑定 Program.APP_DIR（程序集目录），
-/// 直接调用 LoadHistory/RecordDownloaded 会读写真实安装目录。因此这里通过 internal
-/// 的 IsolateCorruptHistoryFile 验证核心隔离行为，并通过单测断言损坏文件被改名隔离。
+/// 订阅持久化可靠性测试：损坏数据（清单/历史）必须隔离而非静默当空/重置。
+/// 通过 <see cref="SubscriptionStore.StoreRoot"/> 注入独立临时目录，不污染真实安装目录。
 /// </summary>
-public class SubscriptionStoreTests
+public class SubscriptionStoreTests : IDisposable
 {
+    private readonly string _tempRoot;
+    private readonly string _origRoot;
+
+    public SubscriptionStoreTests()
+    {
+        _tempRoot = Path.Combine(Path.GetTempPath(), "bbdown-sub-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(_tempRoot);
+        _origRoot = SubscriptionStore.StoreRoot;
+        SubscriptionStore.StoreRoot = _tempRoot;
+    }
+
+    public void Dispose()
+    {
+        SubscriptionStore.StoreRoot = _origRoot;
+        try { if (Directory.Exists(_tempRoot)) Directory.Delete(_tempRoot, true); } catch { }
+    }
+
+    private string HistoryFile => Path.Combine(_tempRoot, "BBDownSubscriptions.history.json");
+    private string SubFile => Path.Combine(_tempRoot, "BBDownSubscriptions.json");
+
     /// <summary>
-    /// 回归：损坏历史文件必须被隔离为 .corrupt-时间戳（保留现场），而不是静默当空历史
+    /// 回归：损坏历史文件必须被隔离为 .corrupt-时间戳 并抛专用异常，而不是静默当空历史
     /// 或重置。此前 LoadHistory 损坏时返回空集合、RecordDownloaded 损坏时静默重置，
     /// 会让已下载内容被当作新增重新下载一遍，且丢失全部订阅历史。
     /// </summary>
     [Fact]
-    public void LoadHistory_CorruptFile_IsolatesInsteadOfTreatingAsEmpty()
+    public void LoadHistory_CorruptFile_IsolatesAndThrowsCorruptException()
     {
-        // 通过 reflection 拿到 HistoryFile 路径，构造一个损坏文件
-        var historyFile = GetHistoryFilePath();
-        var dir = Path.GetDirectoryName(historyFile)!;
-        Assert.True(Directory.Exists(dir), "程序集目录应存在");
+        // 写入损坏 JSON
+        File.WriteAllText(HistoryFile, "{ this is not valid json !!!");
 
-        var corruptPath = historyFile + ".test-corrupt";
-        // 备份原文件（若存在）
-        string? backup = null;
-        if (File.Exists(historyFile))
-        {
-            backup = historyFile + ".test-backup";
-            File.Copy(historyFile, backup, true);
-        }
-        try
-        {
-            // 写入损坏 JSON
-            File.WriteAllText(historyFile, "{ this is not valid json !!!");
-            var corruptCountBefore = Directory.GetFiles(dir, "BBDownSubscriptions.history.json.corrupt-*").Length;
+        // LoadHistory 必须抛专用异常（中止整个 sub check），而非返回空集合
+        var ex = Assert.Throws<SubscriptionDataCorruptException>(() => SubscriptionStore.LoadHistory("mid:1"));
 
-            // LoadHistory 必须抛异常（中止订阅），而非返回空集合
-            Assert.Throws<InvalidOperationException>(() => SubscriptionStore.LoadHistory("mid:1"));
-
-            // 损坏文件已被隔离（.corrupt-* 文件数 +1）
-            var corruptFiles = Directory.GetFiles(dir, "BBDownSubscriptions.history.json.corrupt-*");
-            Assert.Equal(corruptCountBefore + 1, corruptFiles.Length);
-            // 原文件已被移走（不再存在于原路径）
-            Assert.False(File.Exists(historyFile));
-        }
-        finally
-        {
-            // 清理隔离文件与测试文件
-            foreach (var f in Directory.GetFiles(dir, "BBDownSubscriptions.history.json.corrupt-*")) File.Delete(f);
-            if (backup != null && File.Exists(backup))
-            {
-                File.Copy(backup, historyFile, true);
-                File.Delete(backup);
-            }
-            else if (File.Exists(historyFile))
-            {
-                File.Delete(historyFile);
-            }
-        }
+        // 损坏文件已被隔离（.corrupt-* 存在），原文件被移走
+        Assert.Contains(".corrupt-", ex.Message);
+        Assert.False(File.Exists(HistoryFile));
+        Assert.Single(Directory.GetFiles(_tempRoot, "BBDownSubscriptions.history.json.corrupt-*"));
     }
 
-    /// <summary>通过反射读取 SubscriptionStore 的私有 HistoryFile 路径（测试需构造损坏文件）。</summary>
-    private static string GetHistoryFilePath()
+    /// <summary>
+    /// 回归：主订阅清单损坏必须隔离并抛专用异常，不能返回空列表。
+    /// 此前 Load 损坏时返回空列表 → sub list/check 显示"没有订阅"并成功，
+    /// 下一次 sub add/remove 会用空列表覆盖原文件（与历史文件问题同类）。
+    /// </summary>
+    [Fact]
+    public void Load_CorruptSubFile_IsolatesAndThrowsCorruptException()
     {
-        var field = typeof(SubscriptionStore).GetField("HistoryFile", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static);
-        Assert.NotNull(field);
-        return (string)field!.GetValue(null)!;
+        // 先写入合法订阅清单，再改成损坏 JSON
+        SubscriptionStore.Add("mid:1", "UP主1");
+        Assert.Single(SubscriptionStore.Load());
+        File.WriteAllText(SubFile, "{ broken !!!");
+
+        // Load 必须抛专用异常而非返回空列表
+        var ex = Assert.Throws<SubscriptionDataCorruptException>(() => SubscriptionStore.Load());
+        Assert.Contains(".corrupt-", ex.Message);
+        Assert.False(File.Exists(SubFile));
+        Assert.Single(Directory.GetFiles(_tempRoot, "BBDownSubscriptions.json.corrupt-*"));
+    }
+
+    /// <summary>
+    /// 回归：RecordDownloaded 遇到损坏历史也必须抛专用异常（而非静默重置），
+    /// 否则已下载内容会在下次检查时被当作新增重新下载，且丢失全部历史。
+    /// </summary>
+    [Fact]
+    public void RecordDownloaded_CorruptHistory_IsolatesAndThrowsCorruptException()
+    {
+        File.WriteAllText(HistoryFile, "{ broken !!!");
+
+        var ex = Assert.Throws<SubscriptionDataCorruptException>(() => SubscriptionStore.RecordDownloaded("mid:1", "170001"));
+        Assert.Contains(".corrupt-", ex.Message);
+        Assert.False(File.Exists(HistoryFile));
     }
 }
