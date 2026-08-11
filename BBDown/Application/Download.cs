@@ -799,7 +799,13 @@ internal partial class Program
                     {
                         Logger.LogError(parsedResult.WebJsonString);
                     }
-                    Logger.LogDebug("{0}", parsedResult.WebJsonString);
+                    // 完整播放 JSON 含带签名的媒体地址（deadline/sign 等参数），全文落盘
+                    // 会把可用的临时签名 URL 写进日志文件。与 Parser 的 debug 摘要一致，
+                    // 只记录长度 + 前 1KB 摘要，避免签名 URL 泄漏。
+                    var webJson = parsedResult.WebJsonString;
+                    Logger.LogDebug("WebJson {0} chars: {1}",
+                        webJson.Length,
+                        webJson.Length > 1024 ? webJson[..1024] + "…" : webJson);
                     return false;
                 }
 

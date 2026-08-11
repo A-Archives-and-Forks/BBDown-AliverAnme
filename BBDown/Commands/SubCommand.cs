@@ -134,13 +134,19 @@ public class SubCheckCommand : Command<SubCheckSettings>
             // 订阅解析与拉取（VIP/登录态内容）需要凭据：
             // LoadCredentials 会优先应用命令行 --cookie/--access-token，否则加载本地 BBDown.data。
             // 此前只处理显式传参，已登录但未传参时枚举阶段以匿名身份执行，VIP/区域订阅会被误判为空。
-            Program.LoadCredentials(new MyOption
+            var sessionOption = new MyOption
             {
                 Cookie = settings.Cookie,
                 AccessToken = settings.AccessToken,
                 UseTvApi = settings.UseTvApi,
                 UseAppApi = settings.UseAppApi,
-            });
+                UseIntlApi = settings.UseIntlApi,
+            };
+            // 统一初始化请求会话：订阅枚举（mid: 空间/收藏夹/合集等）经 SpaceVideoFetcher →
+            // Parser.WbiSign 签名，必须先取得 wbi，否则空 wbi 的 w_rid 会被 B 站拒绝。
+            // 返回的新 wbi 在父流程（SubCheck 自身异步流）内显式应用。
+            var newWbi = await Program.InitializeRequestSessionAsync(sessionOption, cancellationToken);
+            if (newWbi is not null) Core.Config.WBI_FLOW = newWbi;
 
             int failedSubs = 0;
             foreach (var sub in subs)

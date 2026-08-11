@@ -112,8 +112,10 @@ jobs:
         run: dotnet restore BBDown.sln
 
       - name: Test (network integration)
-        # 独立 runner 无其他 job 的构建产物，必须显式构建（dotnet test 自带 build）
-        run: dotnet test BBDown.sln -c Release --filter "Category=NetworkIntegration"
+        # 独立 runner 无其他 job 的构建产物，必须显式构建（dotnet test 自带 build）。
+        # --logger trx 产出 TRX 测试结果供失败分析：此前无 logger 时通常没有 .trx 可上传，
+        # 失败时只能靠 console 输出人工判断，网络 job 的"报告结果"形同虚设。
+        run: dotnet test BBDown.sln -c Release --filter "Category=NetworkIntegration" --logger "trx;LogFileName=network.trx"
 
       - name: Upload test results
         if: always()

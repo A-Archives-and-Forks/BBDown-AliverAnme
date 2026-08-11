@@ -33,7 +33,7 @@ public class SpaceVideoFetcher : IFetcher
         // EnsureAsync 返回注入后的新 Cookie，由本方法在其流程内显式应用
         // （AsyncLocal 写入不会自动回流，见 BuvidProvider 说明）——本方法后续请求
         // 读取 Config.Current.Cookie 时才能带上 buvid3。
-        var updatedCookie = await BuvidProvider.EnsureAsync();
+        var updatedCookie = await BuvidProvider.EnsureAsync(cancellationToken);
         if (updatedCookie is not null) Core.Config.COOKIE_FLOW = updatedCookie;
         // using the live API can bypass w_rid
         string userInfoApi = $"https://api.live.bilibili.com/live_user/v1/Master/info?uid={id}";

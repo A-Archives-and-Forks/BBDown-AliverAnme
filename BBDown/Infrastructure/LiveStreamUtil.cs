@@ -73,10 +73,15 @@ public static class LiveStreamUtil
         // 每段独立文件：重连后的新 FLV 流含新的 FLV 头与重置时间戳，
         // 直接追加到旧流末尾的原始字节拼接不保证可播放。记录在独立分段里，
         // 录制结束后用 FFmpeg concat/remux 合成最终文件。
-        // segDir 用绝对路径：自定义 --output 目录（如 --output E:/录制/xxx.flv）时
+        // 分段根目录用绝对路径：自定义 --output 目录（如 --output E:/录制/xxx.flv）时
         // 相对路径会让 FFmpeg concat 列表里的 file '...' 相对 CWD 解析失败。
-        var segDir = Path.GetFullPath(path) + ".segs";
-        if (Directory.Exists(segDir)) Directory.Delete(segDir, true);
+        var segRoot = Path.GetFullPath(path) + ".segs";
+
+        // 每次录制用带时间戳的独立会话子目录：合并失败保留的分段是用户的可恢复资产，
+        // 若下一次启动直接递归删除整个 .segs（旧实现正是如此），保留内容即丢失。
+        // 这里只隔离旧会话（提示保留路径），不自动删除非空会话；当前会话完成后清理自己的目录。
+        ReportStaleSessions(segRoot);
+        var segDir = Path.Combine(segRoot, $"session-{DateTime.Now:yyyyMMdd_HHmmss}");
         Directory.CreateDirectory(segDir);
 
         long total = 0;
@@ -108,7 +113,9 @@ public static class LiveStreamUtil
                 {
                     var (url, _, _, _) = await ResolveAsync(roomId, token);
                     var segPath = Path.Combine(segDir, $"seg-{segIndex++:000}.flv");
-                    long segBytes = await StreamToFileAsync(url, segPath, onProgress, token);
+                    // progressBase = 已录完分段的累计字节（total），进度回调上报累计值，
+                    // 重连后新分段从 total 起报而不是从 0 倒退。
+                    long segBytes = await StreamToFileAsync(url, segPath, total, onProgress, token);
                     // 本段收到任何字节都算有效传输，重置重连预算
                     if (segBytes > 0)
                     {
@@ -198,12 +205,32 @@ public static class LiveStreamUtil
             using var finalizeCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
             if (!await ConcatSegmentsAsync(segmentFiles, path, finalizeCts.Token))
             {
-                Logger.LogWarn($"直播分段合成失败，已录制分段保留在 {segDir}");
+                // 合并失败：删除可能残留的半成品最终文件（避免下次被误当作完整录制），
+                // 但保留分段目录——那是用户可恢复的资产。
+                try { if (File.Exists(path)) File.Delete(path); } catch (IOException) { }
+                Logger.LogWarn($"直播分段合成失败，已删除半成品输出并保留分段在 {segDir}");
                 return false;
             }
         }
+        // 合成成功：清理本次会话的分段目录（仅本会话，不动其它会话/旧会话）
         try { if (Directory.Exists(segDir)) Directory.Delete(segDir, true); } catch (IOException) { }
         return true;
+    }
+
+    /// <summary>
+    /// 扫描分段根目录下的旧会话子目录并提示保留位置，但**不删除任何非空会话**。
+    /// 旧实现启动时递归删除整个 .segs 目录，把上次合并失败保留的可恢复分段丢掉了。
+    /// internal 供测试验证"非空会话不被删除"。
+    /// </summary>
+    internal static void ReportStaleSessions(string segRoot)
+    {
+        if (!Directory.Exists(segRoot)) return;
+        foreach (var stale in Directory.GetDirectories(segRoot))
+        {
+            // 非空旧会话：提示用户保留位置，供手动恢复/重合并
+            if (Directory.EnumerateFiles(stale).Any())
+                Logger.LogWarn($"发现上次直播录制未完成的分段，保留在: {stale}（可用 ffmpeg 手动 concat 恢复）");
+        }
     }
 
     /// <summary>用 FFmpeg concat demuxer 把多个 FLV 分段合成一个文件。返回是否成功。
@@ -252,8 +279,13 @@ public static class LiveStreamUtil
         }
     }
 
-    /// <summary>把一条直播流写到独立分段文件，返回本段写入的字节数。</summary>
-    private static async Task<long> StreamToFileAsync(string url, string segPath, Action<long>? onProgress, CancellationToken token = default)
+    /// <summary>
+    /// 把一条直播流写到独立分段文件，返回本段写入的字节数。
+    /// <paramref name="progressBase"/> 为已录完分段的累计字节数：进度回调上报
+    /// progressBase + 当前分段写入量，避免重连后进度从零跳回（此前每段从 0 起报，
+    /// 用户看到的进度会在重连时倒退）。
+    /// </summary>
+    private static async Task<long> StreamToFileAsync(string url, string segPath, long progressBase, Action<long>? onProgress, CancellationToken token = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.UserAgent);
@@ -271,7 +303,7 @@ public static class LiveStreamUtil
                 if (read == 0) break; // 流结束（主播下播）
                 await fs.WriteAsync(buffer.AsMemory(0, read), token);
                 written += read;
-                onProgress?.Invoke(written);
+                onProgress?.Invoke(progressBase + written);
             }
             return written;
         }

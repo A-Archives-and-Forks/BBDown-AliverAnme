@@ -100,6 +100,36 @@ public class LiveStreamUtilTests
         }
     }
 
+    /// <summary>
+    /// 上次录制合并失败保留的分段会话目录，在下次录制启动时**不得被删除**。
+    /// 旧实现启动时递归删除整个 .segs 目录，把可恢复资产丢掉（可恢复数据丢失）。
+    /// ReportStaleSessions 只提示保留位置，不删除任何非空会话。
+    /// </summary>
+    [Fact]
+    public void ReportStaleSessions_PreservesNonEmptySessionDirectories()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "live-segs-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            // 模拟上次失败保留的会话：根目录下有一个带分段的会话子目录
+            var segRoot = Path.Combine(dir, "output.flv.segs");
+            var staleSession = Path.Combine(segRoot, "session-20260101_000000");
+            Directory.CreateDirectory(staleSession);
+            File.WriteAllText(Path.Combine(staleSession, "seg-000.flv"), "recoverable-data");
+
+            LiveStreamUtil.ReportStaleSessions(segRoot);
+
+            // 非空旧会话必须原样保留（文件仍存在）
+            Assert.True(File.Exists(Path.Combine(staleSession, "seg-000.flv")),
+                "上次录制保留的分段不应在下次启动时被删除");
+        }
+        finally
+        {
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
     /// <summary>记录收到的调用与取消令牌的假执行器。能捕获外部进程的 stdin 输入。
     /// 模拟真实 concat 产物：在 args 最后一个参数（输出路径）生成非空文件，使
     /// ConcatSegmentsAsync 的"产物存在且非空"校验通过。</summary>

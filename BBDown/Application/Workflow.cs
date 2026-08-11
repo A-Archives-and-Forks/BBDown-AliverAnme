@@ -79,42 +79,12 @@ internal partial class Program
 
     public static async Task<(string fetchedAid, VInfo vInfo, string apiType, string? newWbi)> GetVideoInfoAsync(MyOption myOption, string aidOri, string input, CancellationToken cancellationToken = default)
     {
-        // 加载认证信息
-        LoadCredentials(myOption);
-
-        // 检测是否登录了账号
-        string? returnedWbi = null;
-        if (myOption is { UseIntlApi: false, UseTvApi: false } && Config.Current.Area == "")
-        {
-            Logger.Log("检测账号登录...");
-            var (isLoggedIn, cookieExpired, newWbi) = await BBDownUtil.CheckLoginWithDetails(Config.Current.Cookie, cancellationToken);
-            // 子方法提取的 wbi 不会自动回流（AsyncLocal 写入只影响子方法内部），
-            // 这里在本方法流程内显式写入：本方法后续的 fetcher 请求（ResolveAsync、
-            // FetchAsync）仍能读出新密钥。
-            if (newWbi is not null) Core.Config.WBI_FLOW = newWbi;
-            returnedWbi = newWbi;
-            if (!isLoggedIn)
-            {
-                if (cookieExpired)
-                {
-                    Logger.LogWarn("========================================");
-                    Logger.LogWarn("  Cookie 已过期！");
-                    Logger.LogWarn("  请运行 BBDown login 重新扫码登录以获取新 Cookie。");
-                    Logger.LogWarn("  或者使用 --use-tv-api 配合 --access-token 下载。");
-                    Logger.LogWarn("  （若已执行 BBDown logintv，请加上 --use-tv-api）");
-                    Logger.LogWarn("========================================");
-                }
-                else
-                {
-                    Logger.LogWarn("========================================");
-                    Logger.LogWarn("  你尚未登录B站账号！");
-                    Logger.LogWarn("  未登录状态下仅能下载6分钟试看片段。");
-                    Logger.LogWarn("  请运行 BBDown login 扫码登录以获取完整视频。");
-                    Logger.LogWarn("  （若已执行 BBDown logintv，请在下载命令中加上 --use-tv-api）");
-                    Logger.LogWarn("========================================");
-                }
-            }
-        }
+        // 统一初始化请求会话：加载凭据 + 登录检查 + 提取 wbi（WEB API 路径）。
+        // InitializeRequestSessionAsync 不写 Config（AsyncLocal 不回流），返回的
+        // newWbi 由本方法在自身流内显式应用（本方法后续 fetcher 请求用得上），
+        // 同时带回父流程由调用方在自身流内应用。
+        string? returnedWbi = await InitializeRequestSessionAsync(myOption, cancellationToken);
+        if (returnedWbi is not null) Core.Config.WBI_FLOW = returnedWbi;
 
         Logger.Log("获取aid...");
         aidOri = await UrlResolver.ResolveAsync(input, cancellationToken);
@@ -204,6 +174,52 @@ internal partial class Program
         // 返回后继续调用 DownloadPagesAsync → Parser.WbiSign，必须用上这一版新密钥，
         // 否则 w_rid 仍用旧密钥签名（密钥轮换后服务器会拒绝）。
         return (aidOri, vInfo, apiType, returnedWbi);
+    }
+
+    /// <summary>
+    /// 统一初始化一次请求会话：加载凭据 → 登录检查 → 提取 wbi（仅 WEB API 路径）。
+    /// 返回提取到的新 wbi（可能为 null），由调用方在自身异步流内显式应用——
+    /// 本方法不写 Config（AsyncLocal 写入只影响本方法上下文，不会回流调用方）。
+    /// CLI 下载（DoWorkAsync → GetVideoInfoAsync）、Serve 任务、订阅检查（SubCheck）、
+    /// 稍后再看（WatchLater）都应先调用本方法，否则空间/收藏夹/合集等经
+    /// Parser.WbiSign 签名的请求会用空 wbi 发出（B 站返回签名错误）。
+    /// </summary>
+    public static async Task<string?> InitializeRequestSessionAsync(MyOption myOption, CancellationToken cancellationToken = default)
+    {
+        // 加载认证信息
+        LoadCredentials(myOption);
+
+        // 检测是否登录了账号。WBI 只在 WEB API 路径需要：INTL/TV 走各自签名，
+        // APP 走 access_key，均不涉及 w_rid。
+        if (myOption is { UseIntlApi: false, UseTvApi: false } && Config.Current.Area == "")
+        {
+            Logger.Log("检测账号登录...");
+            var (isLoggedIn, cookieExpired, newWbi) = await BBDownUtil.CheckLoginWithDetails(Config.Current.Cookie, cancellationToken);
+            // 返回 newWbi 由调用方在自身流内 Apply（AsyncLocal 语义），本方法不写。
+            if (!isLoggedIn)
+            {
+                if (cookieExpired)
+                {
+                    Logger.LogWarn("========================================");
+                    Logger.LogWarn("  Cookie 已过期！");
+                    Logger.LogWarn("  请运行 BBDown login 重新扫码登录以获取新 Cookie。");
+                    Logger.LogWarn("  或者使用 --use-tv-api 配合 --access-token 下载。");
+                    Logger.LogWarn("  （若已执行 BBDown logintv，请加上 --use-tv-api）");
+                    Logger.LogWarn("========================================");
+                }
+                else
+                {
+                    Logger.LogWarn("========================================");
+                    Logger.LogWarn("  你尚未登录B站账号！");
+                    Logger.LogWarn("  未登录状态下仅能下载6分钟试看片段。");
+                    Logger.LogWarn("  请运行 BBDown login 扫码登录以获取完整视频。");
+                    Logger.LogWarn("  （若已执行 BBDown logintv，请在下载命令中加上 --use-tv-api）");
+                    Logger.LogWarn("========================================");
+                }
+            }
+            return newWbi;
+        }
+        return null;
     }
 
 }

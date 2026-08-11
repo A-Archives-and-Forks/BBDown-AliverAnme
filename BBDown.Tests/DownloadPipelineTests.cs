@@ -200,6 +200,112 @@ public class DownloadPipelineTests
         }
     }
 
+    /// <summary>
+    /// 回归：206 响应的 Content-Range 起始偏移与请求偏移不符时，必须丢弃本地内容并
+    /// 抛可重试的 IOException，绝不能把错误区间的字节写到本地偏移 0（旧实现如此会
+    /// 拼出"长度正确但内容损坏"的文件）。这里预置一个续传偏移，服务器却从错误的
+    /// 起始偏移返回内容，验证下载以异常终止且不产生错误内容。
+    /// </summary>
+    [Fact]
+    public async Task MultiThreadDownloadAndMerge_ContentRangeMismatch_ThrowsAndDoesNotProduceCorruptFile()
+    {
+        using var server = new MisleadingRangeServer(payloadSize: 128 * 1024, wrongOffset: 50 * 1024);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            var config = new BBDownDownloadUtil.DownloadConfig { MultiThread = true };
+            var original = Config.Current.ThreadSegmentSizeMb;
+            try
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = 1 }); // 1MB 分片 → 1 个分片
+                // 服务器始终从错误偏移返回（即使请求从 0 开始）：下载必须失败，而非产出损坏文件
+                await Assert.ThrowsAsync<IOException>(() =>
+                    BBDownDownloadUtil.MultiThreadDownloadAndMergeAsync(
+                        $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None));
+            }
+            finally
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = original });
+            }
+
+            // 失败后不得留下被当成成品的错误内容：目标文件要么不存在，要么是合法的空占位
+            if (File.Exists(target))
+                Assert.True(new FileInfo(target).Length == 0, "Content-Range 错位失败后不应产出错误内容文件");
+            // 锁应已释放
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>返回错误 Content-Range 起始偏移的本地服务：验证下载必须拒绝而非接受错位区间。</summary>
+    private sealed class MisleadingRangeServer : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private readonly CancellationTokenSource _cts = new();
+        private readonly byte[] _payload;
+        private readonly long _wrongOffset;
+        private readonly Task _loop;
+        public int Port { get; }
+
+        public MisleadingRangeServer(int payloadSize, long wrongOffset)
+        {
+            _payload = new byte[payloadSize];
+            new Random(7).NextBytes(_payload);
+            _wrongOffset = wrongOffset;
+            Port = 24000 + (Environment.ProcessId % 2000);
+            _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
+            _listener.Start();
+            _loop = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!_cts.IsCancellationRequested)
+                    {
+                        var ctx = await _listener.GetContextAsync();
+                        try
+                        {
+                            var resp = ctx.Response;
+                            var rangeHeader = ctx.Request.Headers["Range"];
+                            if (string.IsNullOrEmpty(rangeHeader))
+                            {
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _payload.Length;
+                                await resp.OutputStream.WriteAsync(_payload, _cts.Token);
+                            }
+                            else
+                            {
+                                // 故意返回与请求不符的起始偏移：声明 bytes {wrongOffset}- ，
+                                // 但实际写入的内容从错误位置开始——正常客户端必须拒绝此响应
+                                long count = _payload.Length - _wrongOffset;
+                                resp.StatusCode = 206;
+                                resp.ContentLength64 = count;
+                                resp.AddHeader("Content-Range", $"bytes {_wrongOffset}-{_payload.Length - 1}/{_payload.Length}");
+                                await resp.OutputStream.WriteAsync(_payload.AsMemory((int)_wrongOffset, (int)count), _cts.Token);
+                            }
+                            resp.Close();
+                        }
+                        catch { /* 客户端中止：忽略 */ }
+                    }
+                }
+                catch (HttpListenerException) { /* 服务停止 */ }
+            });
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            try { _listener.Stop(); } catch { }
+            _listener.Close();
+            try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { }
+            _cts.Dispose();
+        }
+    }
+
     /// <summary>本地 HTTP 服务，返回固定长度的字节流（用于多线程下载测试）。</summary>
     private sealed class LocalByteServer : IDisposable
     {

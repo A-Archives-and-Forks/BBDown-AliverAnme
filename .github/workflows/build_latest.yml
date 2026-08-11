@@ -31,8 +31,13 @@ jobs:
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
 
+      - name: Install ffmpeg (for LocalIntegration gate)
+        run: sudo apt-get update && sudo apt-get install -y ffmpeg
+
       - name: Test
-        run: dotnet test -c Release --filter "Category!=Integration&Category!=NetworkIntegration&Category!=LocalIntegration"
+        # 单元测试 + 本地可重复的 ffmpeg 集成测试（无外部网络依赖，可硬性门禁）：
+        # 此前只跑单元测试，master 推送会绕过 FFmpeg 集成门禁。
+        run: dotnet test -c Release --filter "Category!=Integration&Category!=NetworkIntegration"
 
   build-win-x64-arm64:
     runs-on: windows-latest

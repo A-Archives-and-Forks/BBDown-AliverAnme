@@ -23,7 +23,7 @@ internal static class BBDownDownloadUtil
         public DownloadTask? RelatedTask { get; set; } = null;
     }
 
-    private static async Task RangeDownloadToTmpAsync(int id, string url, string tmpName, long fromPosition, long? toPosition, Action<int, long, long> onProgress, bool failOnRangeNotSupported = false, CancellationToken token = default)
+    private static async Task<long> RangeDownloadToTmpAsync(int id, string url, string tmpName, long fromPosition, long? toPosition, Action<int, long, long> onProgress, bool failOnRangeNotSupported = false, CancellationToken token = default)
     {
         using var fileStream = new FileStream(tmpName, FileMode.OpenOrCreate);
         long clipLength = toPosition is > 0 ? toPosition.Value - fromPosition + 1 : long.MaxValue;
@@ -47,7 +47,7 @@ internal static class BBDownDownloadUtil
         {
             // 已下载完成 直接汇报进度并跳过下载
             onProgress(id, clipLength, clipLength);
-            return;
+            return fileStream.Length;
         }
         var downloadedBytes = fromPosition + fileStream.Position;
 
@@ -78,15 +78,22 @@ internal static class BBDownDownloadUtil
         {
             // 严格校验 Content-Range 的起始偏移：服务器必须以我们请求的字节偏移响应。
             // 若返回的起始字节与请求不符（远端资源变化导致偏移语义错位、或 CDN 行为异常），
-            // 既有文件前缀不可信，丢弃后完整重下——否则旧前缀 + 新后缀会拼出损坏文件。
+            // 或 206 响应缺失 Content-Range（协议异常），**当前响应体对应的区间不可信**——
+            // 它可能是错误偏移的字节，也可能与本地既有前缀不连续。
+            // 关键：不能清空本地文件后继续把这段错误区间的字节写到偏移 0（旧实现正是如此，
+            // 把 Content-Range: bytes 50-999 的内容写到本地偏移 0，随后因长度恰好匹配而被
+            // 当成完整下载）。必须丢弃本地内容并立即抛可重试的 IOException，
+            // 让上层重试从正确起点（偏移 0）重新发起完整请求。
             var contentRange = response.Content.Headers.ContentRange;
             if (contentRange is not { HasRange: true } || contentRange.From != downloadedBytes)
             {
-                Logger.LogDebug("Content-Range 起始偏移({0})与请求偏移({1})不符，丢弃现有内容完整重下",
-                    contentRange?.From?.ToString() ?? "none", downloadedBytes);
+                // 直接抛错，由 using 释放连接；不读取响应体——若服务器忽略 Range
+                // 返回整文件 206，读入缓冲会浪费巨量内存。
                 fileStream.SetLength(0);
                 fileStream.Seek(0, SeekOrigin.Begin);
-                downloadedBytes = fromPosition;
+                throw new IOException(
+                    $"Content-Range 起始偏移({contentRange?.From?.ToString() ?? "none"})与请求偏移({downloadedBytes})不符，" +
+                    "远端内容已变化或服务器行为异常，已丢弃本地内容并重新下载");
             }
         }
 
@@ -136,6 +143,7 @@ internal static class BBDownDownloadUtil
             if (written != declaredLength.Value)
                 throw new InvalidOperationException("写入大小与HTTP响应声明不符，触发重试");
         }
+        return fileStream.Length;
     }
 
     private sealed class PathLock
@@ -314,7 +322,12 @@ internal static class BBDownDownloadUtil
             try
             {
                 using var progress = new ProgressBar(config.RelatedTask);
-                await RangeDownloadToTmpAsync(0, url, tmpName, 0, null, (_, downloaded, total) => progress.Report((double)downloaded / total, downloaded), token: token);
+                long written = await RangeDownloadToTmpAsync(0, url, tmpName, 0, null, (_, downloaded, total) => progress.Report((double)downloaded / total, downloaded), token: token);
+                // 移动最终路径前验证总长度：探测到的远端大小 > 0 时，临时文件必须与之一致。
+                // 若响应 Content-Range 错位被上方拒绝重试后仍拿到错误内容，长度校验能拦住
+                // 假成功——此前直接 File.Move 把未校验内容当作成品。
+                if (fileSize > 0 && written != fileSize)
+                    throw new IOException($"下载产物长度({written})与服务器声明({fileSize})不符，触发重试");
                 File.Move(tmpName, path, true);
                 break;
             }
