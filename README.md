@@ -316,7 +316,7 @@ BBDown serve
 BBDown serve -l http://0.0.0.0:12450 --serve-token <token>
 ```
 
-> 安全提示：CLI 默认仅监听回环地址且无认证，仅建议在可信网络内使用。对外网开放时必须显式 `-l http://0.0.0.0:<port>` 并配合 `--serve-token`（所有 API 请求需携带 `X-Serve-Token` 请求头，否则 401）。`/add-task` 提交的 `host/epHost/tvHost` 仅接受 B 站官方域名、执行路径/代理/工作目录字段一律忽略。API 服务器不支持 HTTPS，如有需要请使用 nginx 等反向代理。
+> 安全提示：CLI 默认仅监听回环地址且无认证，仅建议在可信网络内使用。对外网开放时必须显式 `-l http://0.0.0.0:<port>` 并配合 `--serve-token`（所有 API 请求需携带 `X-Serve-Token` 请求头，否则 401）。**注意：API 服务器仅支持 HTTP，`X-Serve-Token` 在局域/公网链路上是明文传输的，token 只提供访问控制、不提供传输加密**——跨不可信网络使用时请务必前置 HTTPS 反向代理（如 nginx/caddy），并避免把 token 写在进程列表可见的明文命令行（可考虑环境变量注入的启动脚本）。`/add-task` 提交的 `host/epHost/tvHost` 仅接受 B 站官方域名、执行路径/代理/工作目录字段一律忽略、请求体上限 64KB。API 服务器不支持 HTTPS。
 
 > 配置注入说明：`serve` 为子命令，其选项（`-l` / `--max-concurrent` / `--serve-token`）**不支持**从配置文件 `BBDown.config` 或环境变量读取，只能通过命令行传入。配置合并（`BBDownConfigParser.MergeWithConfig`）会跳过所有子命令调用，因此 `BBDown.config` 中的选项对 `serve` 不生效。
 

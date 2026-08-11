@@ -15,9 +15,24 @@
     <PackageOutputPath>./nupkg</PackageOutputPath>
     <Nullable>enable</Nullable>
     <ImplicitUsings>enable</ImplicitUsings>
-    <NoWarn>$(NoWarn);IL3050;IL3000;IL3001;IL3002;IL2067</NoWarn>
+    <NoWarn>$(NoWarn);IL3050;IL3000;IL3001;IL3002;IL2067;IL2104</NoWarn>
     <InternalsVisibleTo>BBDown.Tests</InternalsVisibleTo>
+
+    <!-- Release 发布/打包产物瘦身：
+         - DebugType none：AOT 发布不产出 89MB 的 PDB（主程序约 21MB），
+           Native AOT 的符号已由 Directory.Build.props 的 StripSymbols 处理。
+         - 仅对 Debug 保留可调试符号。 -->
+    <DebugType Condition="'$(Configuration)' == 'Release'">none</DebugType>
+    <DebugSymbols Condition="'$(Configuration)' == 'Release'">false</DebugSymbols>
+
+    <!-- Package README：NuGet 包应携带使用说明。 -->
+    <PackageReadmeFile>README.md</PackageReadmeFile>
   </PropertyGroup>
+
+  <ItemGroup>
+    <!-- 包内 README（从仓库根引用，pack 时自动包含） -->
+    <None Include="..\README.md" Pack="true" PackagePath="\" />
+  </ItemGroup>
 
   <ItemGroup>
     <PackageReference Include="QRCoder" Version="1.8.0" />

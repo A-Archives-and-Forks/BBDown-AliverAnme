@@ -99,6 +99,17 @@ public class ServeApiHttpTests
     }
 
     [Fact]
+    public async Task AddTask_OversizedBody_Returns400()
+    {
+        using var server = new RunningServer();
+        // 请求体超过 64KB 上限 → 绑定层返回 400，拒绝解析超大负载
+        var oversized = new { Url = "zz-not-a-real-url", Padding = new string('x', 128 * 1024) };
+        using var content = JsonContent.Create(oversized);
+        using var resp = await server.Client.PostAsync("/add-task", content);
+        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+    }
+
+    [Fact]
     public async Task AddTask_UnresolvableUrl_Returns202AndProducesFailedTask()
     {
         using var server = new RunningServer();

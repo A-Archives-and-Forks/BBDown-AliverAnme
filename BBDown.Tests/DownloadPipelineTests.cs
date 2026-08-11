@@ -137,6 +137,50 @@ public class DownloadPipelineTests
         }
     }
 
+    [Fact]
+    public async Task MultiThreadDownloadAndMerge_OversizedStaleClip_IsTruncatedNotMerged()
+    {
+        // 回归：旧分片若比目标分片更长（上次中断留下的超长尾部），必须在完成判定前
+        // SetLength 截断，否则合并带入多余尾部、长度校验失败、重试仍见同一超长分片
+        // → 永久失败循环。这里预置一个超长 .vclip，验证最终产物长度仍等于服务器总长。
+        using var server = new LocalByteServer(256 * 1024);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            // 预置超长分片：stem=video、扩展名 .mp4 → 分片名 00000_video.vclip
+            var clipPath = Path.Combine(dir, "00000_video.vclip");
+            var oversized = new byte[512 * 1024]; // 目标 256KB，旧分片 512KB
+            new Random(1).NextBytes(oversized);
+            await File.WriteAllBytesAsync(clipPath, oversized);
+
+            var config = new BBDownDownloadUtil.DownloadConfig { MultiThread = true };
+            var original = Config.Current.ThreadSegmentSizeMb;
+            try
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = 1 }); // 1MB 分片 → 1 个分片
+                await BBDownDownloadUtil.MultiThreadDownloadAndMergeAsync(
+                    $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
+            }
+            finally
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = original });
+            }
+
+            // 产物长度等于服务器总长：超长旧分片尾部未被带入
+            Assert.True(File.Exists(target), "目标文件应已合并生成");
+            Assert.Equal(256 * 1024, new FileInfo(target).Length);
+            // 分片已清理
+            Assert.Empty(Directory.GetFiles(dir, "*.vclip"));
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
     /// <summary>本地 HTTP 服务，返回固定长度的字节流（用于多线程下载测试）。</summary>
     private sealed class LocalByteServer : IDisposable
     {

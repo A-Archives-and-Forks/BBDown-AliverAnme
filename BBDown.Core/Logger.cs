@@ -8,6 +8,11 @@ public static class Logger
     // 会互相插入颜色区间，导致日志颜色错乱、行内容交错。单条日志的写入需整体加锁。
     private static readonly object _consoleLock = new();
 
+    // 文件追加独立串行化：File.AppendAllText 对同进程多线程并发调用虽不抛错，
+    // 但行间可能交错/截断，且与 Console 写入的先后顺序不保证。serve 并发下载时
+    // 统一经本锁写文件，保证"一行日志 = 一次完整写盘"。
+    private static readonly object _fileLock = new();
+
     private static void WriteLine(string line)
     {
         Console.WriteLine(line);
@@ -20,7 +25,10 @@ public static class Logger
         if (string.IsNullOrEmpty(path)) return;
         try
         {
-            File.AppendAllText(path, line + Environment.NewLine);
+            lock (_fileLock)
+            {
+                File.AppendAllText(path, line + Environment.NewLine);
+            }
         }
         catch { /* silently ignore file write failures */ }
     }

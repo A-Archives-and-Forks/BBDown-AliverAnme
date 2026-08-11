@@ -182,3 +182,51 @@ jobs:
         with:
           name: BBDown_osx-arm64
           path: BBDown_${{ needs.set-date.outputs.date }}_osx-arm64.zip
+
+  # Docker 镜像构建 + serve 启动冒烟：验证 Dockerfile 能产出可运行的 AOT 镜像，
+  # 且 serve 在非回环监听下正确要求 token（默认 CMD 拒绝启动是预期行为）。
+  docker-build-smoke:
+    runs-on: ubuntu-latest
+    needs: [test]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t bbdown:test .
+
+      - name: Smoke test — 默认 CMD（0.0.0.0 无 token）应拒绝启动
+        run: |
+          set +e
+          output=$(docker run --rm bbdown:test 2>&1)
+          exit_code=$?
+          set -e
+          echo "exit=$exit_code"
+          echo "$output"
+          if [ $exit_code -eq 0 ]; then
+            echo "错误：非回环监听未配置 token 应拒绝启动（非零退出），实际却成功了" >&2
+            exit 1
+          fi
+          echo "$output" | grep -q "serve-token" || {
+            echo "错误：拒绝信息应提示 --serve-token，实际输出: $output" >&2
+            exit 1
+          }
+
+      - name: Smoke test — 显式 token 应正常启动并可调用 API
+        run: |
+          # 后台启动容器（serve 监听 0.0.0.0:23333 + token）
+          docker run -d --name bbdown-smoke -p 23333:23333 bbdown:test \
+            serve -l http://0.0.0.0:23333 --serve-token smoketest
+          # 等待启动（AOT 二进制直接启动，通常 1-2s）
+          for i in $(seq 1 20); do
+            if curl -sf -H "X-Serve-Token: smoketest" http://127.0.0.1:23333/get-tasks/ >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          # 无 token 应 401，带 token 应 200
+          code_no_token=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:23333/get-tasks/)
+          code_with_token=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Serve-Token: smoketest" http://127.0.0.1:23333/get-tasks/)
+          echo "no-token=$code_no_token with-token=$code_with_token"
+          [ "$code_no_token" = "401" ] || { echo "无 token 应返回 401，实际 $code_no_token" >&2; exit 1; }
+          [ "$code_with_token" = "200" ] || { echo "带 token 应返回 200，实际 $code_with_token" >&2; exit 1; }
+          docker rm -f bbdown-smoke >/dev/null

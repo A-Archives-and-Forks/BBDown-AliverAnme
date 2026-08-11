@@ -57,7 +57,9 @@ internal partial class Program
             };
             result = result.Replace(m.Value, v);
         }
-        if (!result.EndsWith(".mp4")) { result += ".mp4"; }
+        // 大小写不敏感判断：用户模板可能产出 ".MP4"/".Mp4"（例如占位符替换自大写扩展名），
+        // 大小写敏感会让 ".MP4" 再被追加一次 ".mp4" 变成 ".MP4.mp4"。
+        if (!result.EndsWith(".mp4", StringComparison.OrdinalIgnoreCase)) { result += ".mp4"; }
         return result;
     }
 

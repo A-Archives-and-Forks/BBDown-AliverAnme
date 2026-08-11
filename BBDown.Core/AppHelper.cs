@@ -51,7 +51,7 @@ static class AppHelper
     /// <param name="qn"></param>
     /// <param name="appkey"></param>
     /// <returns></returns>
-    public static async Task<string> DoReqAsync(string aid, string cid, string epId, string qn, bool bangumi, string encoding, string appkey = "")
+    public static async Task<string> DoReqAsync(string aid, string cid, string epId, string qn, bool bangumi, string encoding, string appkey = "", CancellationToken token = default)
     {
         static long ParseId(string value, string name) =>
             long.TryParse(value, out var result)
@@ -69,12 +69,12 @@ static class AppHelper
             if (!(string.IsNullOrEmpty(encoding) || encoding == "HEVC"))
                 Logger.LogWarn("APP的番剧不支持 HEVC 以外的编码");
             var body = GetPayload(ParseId(epId, nameof(epId)), ParseId(cid, nameof(cid)), ParseId(qn, nameof(qn)), PlayViewReq.Types.CodeType.Code265);
-            data = await HTTPUtil.GetPostResponseAsync(API2, body, headers);
+            data = await HTTPUtil.GetPostResponseAsync(API2, body, headers, token);
         }
         else
         {
             var body = GetPayload(ParseId(aid, nameof(aid)), ParseId(cid, nameof(cid)), ParseId(qn, nameof(qn)), GetVideoCodeType(encoding));
-            data = await HTTPUtil.GetPostResponseAsync(API, body, headers);
+            data = await HTTPUtil.GetPostResponseAsync(API, body, headers, token);
         }
         var resp = new MessageParser<PlayViewReply>(() => new PlayViewReply()).ParseFrom(ReadMessage(data));
 

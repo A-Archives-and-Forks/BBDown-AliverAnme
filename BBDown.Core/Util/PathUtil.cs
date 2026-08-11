@@ -26,7 +26,11 @@ public static class PathUtil
             title = title.Replace("/", re);
             title = title.Replace("\\", re);
         }
-        if (ReservedNames.Contains(title))
+        // Windows 保留名规则：CON/PRN/AUX/NUL/COM1..9/LPT1..9 后跟任意扩展名仍然保留
+        // （CON.txt、CON.foo 在 Windows 上同样无法创建）。因此按基名匹配，
+        // 而不是只匹配完整名称——否则 "CON.txt" 会漏过校验而在 Windows 上报错。
+        var nameWithoutExt = Path.GetFileNameWithoutExtension(title);
+        if (ReservedNames.Contains(title) || ReservedNames.Contains(nameWithoutExt))
             title = "_" + title;
         return title;
     }

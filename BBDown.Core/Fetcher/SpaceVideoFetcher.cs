@@ -29,8 +29,12 @@ public class SpaceVideoFetcher : IFetcher
     public async Task<VInfo> FetchAsync(string id, CancellationToken cancellationToken = default)
     {
         id = id[4..];
-        // 该接口按 B 站惯例需要设备标识，未登录时 Cookie 为空
-        await BuvidProvider.EnsureAsync();
+        // 该接口按 B 站惯例需要设备标识，未登录时 Cookie 为空。
+        // EnsureAsync 返回注入后的新 Cookie，由本方法在其流程内显式应用
+        // （AsyncLocal 写入不会自动回流，见 BuvidProvider 说明）——本方法后续请求
+        // 读取 Config.Current.Cookie 时才能带上 buvid3。
+        var updatedCookie = await BuvidProvider.EnsureAsync();
+        if (updatedCookie is not null) Core.Config.COOKIE_FLOW = updatedCookie;
         // using the live API can bypass w_rid
         string userInfoApi = $"https://api.live.bilibili.com/live_user/v1/Master/info?uid={id}";
         using var userDoc = JsonDocument.Parse(await HTTPUtil.GetWebSourceAsync(userInfoApi, token: cancellationToken));
@@ -89,6 +93,12 @@ public class SpaceVideoFetcher : IFetcher
                         desc = entry.Description,
                     });
                 }
+            }
+            // 真正的用户取消必须向上传播中止整个流程——否则取消被吞成"某个稿件失败"，
+            // 批量解析会在取消信号下继续空转（还可能触发连续失败/风控）。
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             // 过滤范围要覆盖所有"单个稿件"级别的故障：稿件失效（InvalidOperationException）、
             // 网络瞬断（HttpRequestException/IOException）、请求超时（TaskCanceledException，
