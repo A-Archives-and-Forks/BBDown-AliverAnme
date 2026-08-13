@@ -2,6 +2,16 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.11] - 2026-08-13
+
+### 修复
+
+- **适配 B 站新版扫码登录协议**：B 站已将扫码登录凭证（`SESSDATA`/`bili_jct`/`DedeUserID` 等）从 poll 响应的 `data.url` 参数迁移到 **Set-Cookie 响应头**（HttpOnly）下发，`data.url` 仅剩 crossDomain 跳转参数。旧实现只读响应 body，导致登录“成功”却写入不含 `SESSDATA` 的无效 cookie，表现为始终提示“Cookie 已过期/账号未登录”。
+  - `HTTPUtil` 新增 `GetWebSourceWithSetCookiesAsync`，透出 Set-Cookie 响应头；
+  - 登录成功时合并 url query（旧协议）与 Set-Cookie（新协议）凭证，自动去重、过滤 cookie 属性（Path/Domain/Expires 等）、转义逗号；
+  - 写入前防御性校验 `SESSDATA` 存在，缺失（中间层剥离/风控拦截）时拒绝落盘并报错；
+  - 新增 13 个凭证合并/提取专项单元测试，全量 394 个测试通过。
+
 ## [1.6.10] - 2026-08-04
 
 ### 安全
