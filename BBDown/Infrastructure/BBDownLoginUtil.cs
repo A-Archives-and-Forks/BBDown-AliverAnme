@@ -13,10 +13,57 @@ namespace BBDown;
 
 internal static class BBDownLoginUtil
 {
-    public static async Task<string> GetLoginStatusAsync(string qrcodeKey, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// 轮询扫码登录状态，并透出 poll 响应的 Set-Cookie 头。
+    /// B 站新版登录（2026）将 SESSDATA 等凭证经 Set-Cookie 下发，必须保留响应头。
+    /// </summary>
+    public static async Task<(string Body, List<string> SetCookies)> GetLoginStatusAsync(string qrcodeKey, CancellationToken cancellationToken = default)
     {
         string queryUrl = $"https://passport.bilibili.com/x/passport-login/web/qrcode/poll?qrcode_key={qrcodeKey}&source=main-fe-header";
-        return await HTTPUtil.GetWebSourceAsync(queryUrl, token: cancellationToken);
+        return await HTTPUtil.GetWebSourceWithSetCookiesAsync(queryUrl, token: cancellationToken);
+    }
+
+    /// <summary>Set-Cookie 头中应丢弃的 cookie 属性名（不是实际 cookie 字段）。</summary>
+    private static readonly HashSet<string> CookieAttributeNames = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "Path", "Domain", "Expires", "Max-Age", "Secure", "HttpOnly", "SameSite", "Priority", "Partitioned", "Size",
+    };
+
+    /// <summary>
+    /// 合并扫码登录凭证：url query（旧协议，SESSDATA 等直接放参数）+
+    /// Set-Cookie 字段（新协议，HttpOnly 下发）。返回以 ; 连接的 cookie 串。
+    /// Set-Cookie 条目取 name=value 部分，丢弃 Path/Domain/Expires 等属性。
+    /// </summary>
+    internal static string MergeLoginCookies(string urlQuery, IEnumerable<string> setCookies)
+    {
+        var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in urlQuery.Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var eq = pair.IndexOf('=');
+            if (eq > 0) fields[pair[..eq]] = pair[(eq + 1)..];
+        }
+        foreach (var setCookie in setCookies)
+        {
+            var kv = setCookie.Split(';')[0].Trim();
+            var eq = kv.IndexOf('=');
+            if (eq <= 0) continue;
+            var name = kv[..eq].Trim();
+            // Path=/、Expires=... 等是 cookie 属性而非凭证字段，混入会污染凭据文件
+            if (CookieAttributeNames.Contains(name)) continue;
+            fields[name] = kv[(eq + 1)..].Trim();
+        }
+        return string.Join(";", fields.Select(kv => $"{kv.Key}={kv.Value.Replace(",", "%2C")}"));
+    }
+
+    /// <summary>
+    /// 从 ; 连接的 cookie 串中按名取第一个值（大小写不敏感），无则返回空串。
+    /// </summary>
+    internal static string GetCookieValue(string cookieString, string name)
+    {
+        var prefix = name + "=";
+        return cookieString.Split(';')
+            .FirstOrDefault(p => p.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            ?.Substring(prefix.Length) ?? "";
     }
 
     public static async Task<bool> LoginWEB(CancellationToken cancellationToken = default)
@@ -45,7 +92,7 @@ internal static class BBDownLoginUtil
             {
                 await Task.Delay(1000, cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
-                string w = await GetLoginStatusAsync(qrcodeKey, cancellationToken);
+                var (w, setCookies) = await GetLoginStatusAsync(qrcodeKey, cancellationToken);
                 using var pollDoc = JsonDocument.Parse(w);
                 int code = pollDoc.RootElement.GetPropertySafe("data").GetInt32Safe("code");
                 if (code == 86038)
@@ -69,14 +116,22 @@ internal static class BBDownLoginUtil
                 {
                     using var successDoc = JsonDocument.Parse(w);
                     string cc = successDoc.RootElement.GetPropertySafe("data").GetStringSafe("url")!;
-                    Logger.Log("登录成功: SESSDATA=" + SensitiveDataMasker.MaskValue(BBDownUtil.GetQueryString("SESSDATA", cc)));
-                    //导出cookie, 转义英文逗号 否则部分场景会出问题
+                    // 导出cookie, 转义英文逗号 否则部分场景会出问题
                     // URL 不含 ? 时 IndexOf 返回 -1，会误把整条 URL 当 cookie 写入凭据文件
                     var queryIdx = cc.IndexOf('?');
                     var cookieQuery = queryIdx >= 0 ? cc[(queryIdx + 1)..] : "";
-                    if (cookieQuery == "")
+                    // B 站新版扫码登录：SESSDATA/bili_jct/DedeUserID 等凭证经 poll 响应头
+                    // Set-Cookie（HttpOnly）下发，data.url 仅剩 crossDomain 跳转参数。
+                    // 合并两类来源，保证新老协议都能写入完整登录态。
+                    var merged = MergeLoginCookies(cookieQuery, setCookies);
+                    var sessdata = GetCookieValue(merged, "SESSDATA");
+                    Logger.Log("登录成功: SESSDATA=" + SensitiveDataMasker.MaskValue(sessdata));
+                    if (merged == "" || sessdata == "")
                     {
-                        Logger.LogError("登录成功但回调 URL 未包含 query（无 cookie 参数），登录结果未保存");
+                        // 防御性检查：url query 总是含 ticket/gourl 等跳转参数，merged 非空
+                        // 不代表拿到了有效凭证。B 站新版登录的 SESSDATA 经 Set-Cookie 下发，
+                        // 若被中间层剥离/风控拦截，此处应拒绝写入而不是落盘无效 cookie。
+                        Logger.LogError("登录成功但未取得有效凭证（SESSDATA 缺失），登录结果未保存；请重试或检查网络环境");
                         return false;
                     }
                     var cookiePath = Path.Combine(Program.APP_DIR, "BBDown.data");
@@ -90,7 +145,7 @@ internal static class BBDownLoginUtil
                         opts.UnixCreateMode = UnixFileMode.UserRead | UnixFileMode.UserWrite;
                     await using (var fs = new FileStream(cookiePath, opts))
                     using (var writer = new StreamWriter(fs))
-                        await writer.WriteAsync(cookieQuery.Replace("&", ";").Replace(",", "%2C"));
+                        await writer.WriteAsync(merged);
                     SetOwnerOnlyPermission(cookiePath);
                     return true;
                 }

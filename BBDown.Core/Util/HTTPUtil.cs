@@ -82,6 +82,32 @@ public static class HTTPUtil
         => await GetWebSourceCoreAsync(url, sendCookie: true, userAgent: userAgent, token: token);
 
     /// <summary>
+    /// 获取网页内容并透出 Set-Cookie 响应头。仅用于需要登录凭据的接口：
+    /// B 站新版扫码登录（2026）将 SESSDATA/bili_jct/DedeUserID 等凭证经
+    /// poll 响应的 Set-Cookie（HttpOnly）下发，data.url 仅剩 crossDomain 跳转参数，
+    /// 只返回 body 会永久丢失登录凭证。
+    /// </summary>
+    public static async Task<(string Body, List<string> SetCookies)> GetWebSourceWithSetCookiesAsync(
+        string url, string? userAgent = null, CancellationToken token = default)
+    {
+        using var webRequest = new HttpRequestMessage(HttpMethod.Get, url);
+        webRequest.Headers.TryAddWithoutValidation("User-Agent", userAgent ?? UserAgent);
+        webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
+        if (!string.IsNullOrEmpty(Config.Current.Cookie))
+            webRequest.Headers.TryAddWithoutValidation("Cookie", Config.Current.Cookie);
+        webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
+        webRequest.Headers.Connection.Clear();
+
+        Logger.LogDebug("获取网页内容: Url: {0}", SensitiveDataMasker.MaskUrl(url));
+        using var webResponse = (await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
+
+        string htmlCode = await webResponse.Content.ReadAsStringAsync(token);
+        Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
+        List<string> setCookies = webResponse.Headers.TryGetValues("Set-Cookie", out var vals) ? vals.ToList() : [];
+        return (htmlCode, setCookies);
+    }
+
+    /// <summary>
     /// 匿名抓取网页内容：不携带登录 Cookie。仅用于解析阶段抓取尚未确认可信的
     /// 用户输入 URL（如 ResolveAsync 的泛抓取分支）——此时目标域名可能由攻击者控制，
     /// 附带操作者的 B 站凭据会把它外发到攻击者服务器（SSRF + 凭据泄露）。
