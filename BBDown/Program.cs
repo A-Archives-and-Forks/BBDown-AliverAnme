@@ -59,8 +59,11 @@ partial class Program
         // 首次 Ctrl+C：恢复终端状态后只取消根 CTS 并允许进程走正常退出路径。
         // 此前这里直接 Environment.Exit(0)：下载/ffmpeg/DRM 的 finally 不保证执行、
         // 直播 .part 不会改名保存、serve 任务状态来不及持久化，且即使下载未完成
-        // 也以成功码 0 退出。现在把取消交给命令执行流（Spectre 收到 OperationCanceledException
-        // 返回 CancellationExitCode=130），所有清理逻辑得以执行。
+        // 也以成功码 0 退出。现在把取消交给命令执行流：
+        //  - 各子命令（live/article/watchlater/serve/login）自行 catch OperationCanceledException 返回 0；
+        //  - 默认下载命令不接 OCE，由 SetExceptionHandler 识别取消并返回 130（见 Main），
+        //    所有清理逻辑得以执行。
+
         // 必须设置 e.Cancel = true：否则 Ctrl+C 处理结束后 OS 会立即终止进程，
         // 优雅退出路径同样被绕过。
         try
@@ -142,9 +145,27 @@ partial class Program
             config.SetApplicationVersion($"{ver.Major}.{ver.Minor}.{ver.Build}");
             config.SetExceptionHandler((ex, resolver) =>
             {
+                // 用户主动取消（首次 Ctrl+C 触发 _rootCts.Cancel()）：Spectre 只有在
+                // 未注册 ExceptionHandler 时才会把 OperationCanceledException 转成
+                // CancellationExitCode=130；注册 handler 后所有异常（含取消）都会先
+                // 落到这里，取消会被误报成"请尝试升级到最新版本后重试!"并以 1 退出。
+                // 这里显式识别取消：清理路径的 finally 已执行完才轮到 handler 被调用，
+                // 直接返回与 Spectre 一致的 130（128+SIGINT），不打印误导性错误。
+                if (_rootCts.IsCancellationRequested ||
+                    ex is OperationCanceledException oce && oce.CancellationToken.IsCancellationRequested)
+                {
+                    try { Console.ResetColor(); Console.CursorVisible = true; } catch { }
+                    Logger.LogWarn("已取消");
+                    return 130;
+                }
                 Console.BackgroundColor = ConsoleColor.Red;
                 Console.ForegroundColor = ConsoleColor.White;
-                var msg = Config.Current.DebugLog ? ex.ToString() : ex.Message;
+                // 非取消的 TaskCanceledException 是 HttpClient 超时（token 未取消）：
+                // 默认 Message 在裁剪/AOT 发布下只显示资源键"TaskCanceledException_ctor_DefaultMessage"，
+                // 对用户无意义且"升级后重试"解决不了超时，给出可读提示。
+                var msg = Config.Current.DebugLog ? ex.ToString()
+                    : ex is TaskCanceledException ? "请求超时或网络连接中断，请检查网络后重试"
+                    : ex.Message;
                 Console.Error.WriteLine(msg);
                 Console.Error.WriteLine("请尝试升级到最新版本后重试!");
                 Console.ResetColor();
