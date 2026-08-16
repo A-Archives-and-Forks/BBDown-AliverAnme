@@ -464,17 +464,53 @@ public static partial class Parser
             }
             else if (root.TryGetProperty("durl", out _)) //flv
             {
-                //默认以最高清晰度解析
+                // 默认以最高清晰度解析。重发响应与首次一样须经业务校验
+                //（ThrowIfPlayLimited/ThrowIfBizError）：风控/错误页未经校验会静默
+                // 产出零轨道，到下载阶段才失败——正是校验函数注释里自述要避免的场景。
+                // 重发失败（业务错误或无 durl）时沿用首次已校验的响应降级，不丢可用轨道。
+                string firstWebJson = parsedResult.WebJsonString;
+                var firstRoot = root;
                 parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn(), token);
-                respJson.Dispose();
-                respJson = JsonDocument.Parse(parsedResult.WebJsonString);
-                var newData = respJson.RootElement;
-                if (newData.TryGetProperty("result", out var r) && r.ValueKind == JsonValueKind.Object)
-                    root = r.TryGetProperty("video_info", out var vi) ? vi : r;
-                else if (newData.TryGetProperty("data", out var d))
-                    root = d;
+                var newResp = JsonDocument.Parse(parsedResult.WebJsonString);
+                var pickedRoot = newResp.RootElement;
+                bool usable = true;
+                try
+                {
+                    ThrowIfPlayLimited(newResp.RootElement);
+                    ThrowIfBizError(newResp.RootElement);
+                }
+                catch (InvalidOperationException ex)
+                {
+                    // 校验失败：沿用首次响应（fallback 分支负责 Dispose newResp）。
+                    // 只捕业务校验异常（两者仅抛 InvalidOperationException），不吞编程错误。
+                    usable = false;
+                    Logger.LogWarn($"最高清晰度重发被接口拒绝，沿用首次解析结果: {ex.Message}");
+                }
+                if (usable)
+                {
+                    if (pickedRoot.TryGetProperty("result", out var r) && r.ValueKind == JsonValueKind.Object)
+                        pickedRoot = r.TryGetProperty("video_info", out var vi) ? vi : r;
+                    else if (pickedRoot.TryGetProperty("data", out var d))
+                        pickedRoot = d;
+                    // 只查键存在会放行 "durl": null/空数组 的退化响应（code=0 但零轨道）；
+                    // 要求非空数组才接管，否则沿用首次响应，封死静默零轨道路径。
+                    usable = pickedRoot.TryGetProperty("durl", out var durlElem)
+                        && durlElem.ValueKind == JsonValueKind.Array
+                        && durlElem.GetArrayLength() > 0;
+                }
+                if (usable)
+                {
+                    respJson.Dispose(); // 旧文档退役，新文档接管生命周期
+                    respJson = newResp;
+                    root = pickedRoot;
+                }
                 else
-                    root = newData;
+                {
+                    // 最高清晰度重发无可用 durl：沿用首次（已校验）响应
+                    newResp.Dispose();
+                    parsedResult.WebJsonString = firstWebJson;
+                    root = firstRoot;
+                }
                 string quality = "";
                 string videoCodecid = "";
                 string url = "";

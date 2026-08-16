@@ -283,9 +283,20 @@ internal static class BBDownDownloadUtil
         if (!string.IsNullOrEmpty(desDir) && !Directory.Exists(desDir)) Directory.CreateDirectory(desDir);
         if (config.UseAria2c)
         {
+            // --continue=true 断点续传前先校验既有 partial/.aria2 的资源身份：残留的旧资源
+            //（如中断的 1080P 下载 + 控制文件）会被 aria2c 无身份校验地续传，新资源字节
+            // 追加到旧前缀上可能拼出损坏文件。用与非 aria2 路径相同的 ResumeManifest
+            // 身份校验，身份不可信则删除 partial + 控制文件完整重下。已完整下载则跳过。
+            if (await PrepareAria2cTargetAsync(url, path, token))
+            {
+                Logger.LogDebug("文件已下载过, 跳过下载");
+                return;
+            }
             await BBDownAria2c.DownloadFileByAria2cAsync(url, path, config.Aria2cArgs, token);
             if (File.Exists(path + ".aria2") || !File.Exists(path))
                 throw new InvalidOperationException("aria2下载可能存在错误");
+            // 不清除身份清单：它作为"完成证书"保留，下次重跑时 PrepareAria2cTarget 可经
+            // CanResumeFrom 确认身份后跳过，而不是把完整文件误判为"身份不可信"删除重下。
             Console.WriteLine();
             return;
         }
@@ -388,6 +399,79 @@ internal static class BBDownDownloadUtil
     }
 
     /// <summary>
+    /// aria2c 断点续传目标校验（纯文件决策，探测结果由调用方注入）。返回 true 表示
+    /// 文件已完整下载，调用方应跳过 aria2c。对存在的 partial/.aria2 控制文件先做
+    /// ResumeManifest 身份校验——身份不可信（跨资源/缺清单/等长异内容）时删除 partial
+    /// + 控制文件完整重下，杜绝跨资源续传把新资源字节追加到旧前缀上拼出损坏文件；
+    /// 身份可信且长度与远端一致才算"已完整下载"可跳过。校验后写入本次资源身份清单，
+    /// 供同一资源的中断续传（页面级重试）复用。
+    /// internal 供测试注入探测结果验证决策。
+    /// </summary>
+    internal static bool PrepareAria2cTarget(string url, string path, long fileSize, HttpResponseHeaders? headers, HttpContentHeaders? contentHeaders)
+    {
+        string controlFile = path + ".aria2";
+        bool partialExists = File.Exists(path) || File.Exists(controlFile);
+        if (partialExists)
+        {
+            long partialLength = File.Exists(path) ? new FileInfo(path).Length : 0;
+            // 既有 partial/.aria2：先做身份校验。身份可信（同资源中断，清单存在且匹配）
+            // 才允许保留续传或判定完整跳过；身份不可信（跨资源/缺清单/等长异内容）→
+            // 删除完整重下。等长也必须过身份校验：长度恰好相同的跨资源残留若被当作
+            // "已完整"跳过，残缺文件会直接作为成品进入混流。
+            if (!CanResumeFrom(path, url, fileSize, out var reason, headers?.ETag?.Tag, contentHeaders?.LastModified?.ToString("R")))
+            {
+                Logger.LogDebug("aria2c: 既有文件资源身份不可信（{0}），删除后完整重下", reason ?? "未知原因");
+                bool purged = TryDeleteStale(path) & TryDeleteStale(controlFile);
+                DeleteResumeManifest(path);
+                if (!purged)
+                    throw new InvalidOperationException(
+                        $"aria2c 无法清理身份不可信的残留文件: {path}，已中止下载（请手动删除后重试）");
+            }
+            else if (fileSize > 0 && partialLength == fileSize)
+            {
+                // 身份可信且长度与远端一致：已完整下载，清理控制文件后跳过 aria2c
+                TryDeleteStale(controlFile);
+                return true;
+            }
+            else if (fileSize > 0 && partialLength > fileSize)
+            {
+                // 身份可信但超长（长度超过远端总长）：内容不可信（越界尾部/资源变化），
+                // 删除完整重下。否则 aria2c --continue 从超出 EOF 的偏移续传可能 416 死循环。
+                Logger.LogDebug("aria2c: 既有文件({0}字节)大于远端({1}字节)，内容不可信，删除后完整重下", partialLength, fileSize);
+                bool purged = TryDeleteStale(path) & TryDeleteStale(controlFile);
+                DeleteResumeManifest(path);
+                if (!purged)
+                    throw new InvalidOperationException(
+                        $"aria2c 无法清理超长残留文件: {path}，已中止下载（请手动删除后重试）");
+            }
+            // 身份可信且长度 < fileSize：保留续传（--continue=true 从中断处继续）
+        }
+        WriteResumeManifest(path, url, fileSize, headers, contentHeaders);
+        return false;
+    }
+
+    private static async Task<bool> PrepareAria2cTargetAsync(string url, string path, CancellationToken token)
+    {
+        var (fileSize, probeHeaders, probeContentHeaders) = await GetFileSizeAndHeadersAsync(url, token);
+        return PrepareAria2cTarget(url, path, fileSize, probeHeaders, probeContentHeaders);
+    }
+
+    /// <summary>尽力删除残留文件；返回是否成功（占用/权限问题只降级为日志并返回 false）。</summary>
+    private static bool TryDeleteStale(string path)
+    {
+        try
+        {
+            if (File.Exists(path)) File.Delete(path);
+            return true;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Logger.LogDebug("清理残留文件失败: {0}: {1}", path, ex.Message);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 多线程下载。返回本次实际产生的分片文件列表（按 index 升序，与
     /// <see cref="GetAllClips"/> 的切片一一对应）。调用方应只合并/清理该列表：
     /// 扫描目录里全部 *.?clip 会把上一次取消、其它分P、其它轨道留下的分片混进来，
@@ -413,9 +497,11 @@ internal static class BBDownDownloadUtil
         if (string.IsNullOrEmpty(url)) return;
         await WithPathLockAsync(path, async () =>
         {
-            // 已完整下载过：直接跳过（不再产生分片，也不做任何合并/清理）
+            // 已完整下载过：直接跳过（不再产生分片，也不做任何合并/清理）。
+            // aria2 路径不走此纯长度跳过：等长跨资源残留会被误当"完整"跳过，身份校验
+            // 交给 MultiThreadDownloadCoreAsync 内的 PrepareAria2cTargetAsync。
             long fileSize = (await GetFileSizeAndHeadersAsync(url, token)).size;
-            if (fileSize > 0 && File.Exists(path) && new FileInfo(path).Length == fileSize)
+            if (!config.UseAria2c && fileSize > 0 && File.Exists(path) && new FileInfo(path).Length == fileSize)
             {
                 Logger.LogDebug("文件已下载过, 跳过下载");
                 return;
@@ -462,9 +548,14 @@ internal static class BBDownDownloadUtil
         Logger.LogDebug("Start downloading: {0}", url);
         if (config.UseAria2c)
         {
+            // 与单线程 aria2 分支一致：先校验续传目标身份（防跨资源续传拼损坏文件），
+            // 已完整则跳过（MultiThreadDownloadAndMergeAsync 已做过一次长度跳过，此处兜底）
+            if (await PrepareAria2cTargetAsync(url, path, token))
+                return [];
             await BBDownAria2c.DownloadFileByAria2cAsync(url, path, config.Aria2cArgs, token);
             if (File.Exists(path + ".aria2") || !File.Exists(path))
                 throw new InvalidOperationException("aria2下载可能存在错误");
+            // 同单线程：保留身份清单作为完成证书，供重跑跳过完整文件
             Console.WriteLine();
             return [];
         }
@@ -783,7 +874,7 @@ internal static class BBDownDownloadUtil
     private static void DeleteResumeManifest(string tmpName)
     {
         try { if (File.Exists(ResumeManifestPath(tmpName))) File.Delete(ResumeManifestPath(tmpName)); }
-        catch (IOException) { /* 清理失败不影响主流程 */ }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* 清理失败不影响主流程 */ }
     }
 
     /// <summary>读取续传清单里的 If-Range 值（ETag 优先，其次 Last-Modified）；清单缺失返回 null。</summary>

@@ -41,6 +41,14 @@ static partial class BBDownMuxer
 
     private static async Task<int> MuxByMp4box(string url, string videoPath, string audioPath, string outPath, string desc, string title, string author, string episodeId, string pic, string lang, List<Subtitle>? subs, bool audioOnly, bool videoOnly, List<ViewPoint>? points, CancellationToken cancellationToken)
     {
+        // mp4box 的 -itags/-add 值要求双引号包裹、值内 " 和 \ 需转义（mp4box 自身语法）。
+        // 转义只在 mp4box 分支做：ffmpeg 分支走 argv 逐项直传，提前转义会把字面
+        // \"、\\ 写进 mp4 元数据。
+        desc = EscapeString(desc);
+        title = EscapeString(title);
+        episodeId = EscapeString(episodeId);
+        author = EscapeString(author);
+        lang = EscapeString(lang);
         // 与 ffmpeg 分支的 MuxAV 一致：多P/嵌套路径模板下输出目录可能尚不存在，
         // mp4box 打不开不存在的父目录下的输出文件，返回非零导致"合并失败"。
         // 杜比视界 + ffmpeg<5.0 会自动切到 mp4box，无弹幕的多P下载稳定踩中此缺陷。
@@ -60,7 +68,7 @@ static partial class BBDownMuxer
         }
         if (!string.IsNullOrEmpty(audioPath))
         {
-            // lang 已由 MuxAV 入口 EscapeString，值直接作为参数值
+            // lang 已在 MuxByMp4box 顶部 EscapeString（mp4box 的 -add 值语法要求），值直接拼入
             args.Add("-add");
             args.Add($"{audioPath}:lang={(lang == "" ? "und" : lang)}");
             nowId++;
@@ -144,11 +152,9 @@ static partial class BBDownMuxer
             videoPath = "";
         if (videoOnly)
             audioPath = "";
-        desc = EscapeString(desc);
-        title = EscapeString(title);
-        episodeId = EscapeString(episodeId);
-        author = EscapeString(author);
-        lang = EscapeString(lang);
+        // 此处不再转义 title/desc 等：ffmpeg 分支走 argv 逐项直传，值按字面写入元数据，
+        // 转义会把源数据里的 " 和 \ 以字面 \"、\\ 写进 mp4 元数据（双重转义）。
+        // 只有 mp4box 分支（值嵌进其 -itags/-add 自身语法）需要转义，在 MuxByMp4box 内做。
         var url = $"https://www.bilibili.com/video/{bvid}/";
 
         if (useMp4box)
@@ -189,12 +195,13 @@ static partial class BBDownMuxer
                 if (!string.IsNullOrWhiteSpace(audio.title))
                 {
                     args.Add($"-metadata:s:a:{audioCount}");
-                    args.Add($"title={EscapeString(audio.title)}");
+                    // argv 逐项直传，值按字面写入，不再 EscapeString
+                    args.Add($"title={audio.title}");
                 }
                 if (!string.IsNullOrWhiteSpace(audio.personName))
                 {
                     args.Add($"-metadata:s:a:{audioCount}");
-                    args.Add($"artist={EscapeString(audio.personName)}");
+                    args.Add($"artist={audio.personName}");
                 }
             }
         }
@@ -221,9 +228,9 @@ static partial class BBDownMuxer
                     args.Add(subs[i].path);
                     var (subLangCode, subLangName) = SubUtil.GetSubtitleCode(subs[i].lan);
                     args.Add($"-metadata:s:s:{subtitleStreamIndex}");
-                    args.Add($"title={EscapeString(subLangName)}");
+                    args.Add($"title={subLangName}");
                     args.Add($"-metadata:s:s:{subtitleStreamIndex}");
-                    args.Add($"language={EscapeString(subLangCode)}");
+                    args.Add($"language={subLangCode}");
                     subtitleStreamIndex++;
                 }
             }

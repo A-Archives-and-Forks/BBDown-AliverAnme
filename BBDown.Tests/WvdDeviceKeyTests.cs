@@ -83,4 +83,68 @@ public class WvdDeviceKeyTests
             File.Delete(path);
         }
     }
+
+    /// <summary>
+    /// 无 WVD magic 的标准 v2 .wvd（首字节 = version = 2）必须能加载。格式探测此前
+    /// 只认首字节 == 1，而 ParseWvd 明明支持 v2，无 magic 的 v2 文件会被误抛
+    /// "无法识别的 WVD 文件格式 (首字节: 2)"。
+    /// </summary>
+    [Fact]
+    public void Load_NoMagicV2Wvd_Loads()
+    {
+        using var key = RSA.Create(2048);
+        var privateKey = key.ExportRSAPrivateKey(); // PKCS#1 DER
+        // 合法 protobuf（field 1 = type = DrmDeviceCertificate），Create 也能兼容原始字节
+        var clientId = new byte[] { 0x08, 0x01 };
+        var wvd = new List<byte> { 2, 1, 3, 0 }; // version=2, type, security_level, flags=0(未加密)
+        wvd.Add((byte)(privateKey.Length >> 8));
+        wvd.Add((byte)(privateKey.Length & 0xFF));
+        wvd.AddRange(privateKey);
+        wvd.Add((byte)(clientId.Length >> 8));
+        wvd.Add((byte)(clientId.Length & 0xFF));
+        wvd.AddRange(clientId);
+
+        var path = Path.Combine(Path.GetTempPath(), $"bbdown-v2-{Guid.NewGuid():N}.wvd");
+        File.WriteAllBytes(path, wvd.ToArray());
+        try
+        {
+            using var device = WvdDevice.Load(path);
+            Assert.NotNull(device.ClientIdentification);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// 加密 v2（flags 第 0 位 = 1，私钥被 AES 加密）必须被 ParseWvd 显式拒绝，
+    /// 探测放宽到首字节 2 后不得把加密 v2 误放行。
+    /// </summary>
+    [Fact]
+    public void Load_EncryptedV2Wvd_ThrowsNotSupported()
+    {
+        using var key = RSA.Create(2048);
+        var privateKey = key.ExportRSAPrivateKey();
+        var clientId = new byte[] { 0x08, 0x01 };
+        var wvd = new List<byte> { 2, 1, 3, 0x01 }; // flags bit0=1 → 私钥加密
+        wvd.Add((byte)(privateKey.Length >> 8));
+        wvd.Add((byte)(privateKey.Length & 0xFF));
+        wvd.AddRange(privateKey);
+        wvd.Add((byte)(clientId.Length >> 8));
+        wvd.Add((byte)(clientId.Length & 0xFF));
+        wvd.AddRange(clientId);
+
+        var path = Path.Combine(Path.GetTempPath(), $"bbdown-v2-enc-{Guid.NewGuid():N}.wvd");
+        File.WriteAllBytes(path, wvd.ToArray());
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() => WvdDevice.Load(path));
+            Assert.Contains("Encrypted", ex.Message);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

@@ -230,6 +230,49 @@ public class MuxerArgsTests
     }
 
     /// <summary>
+    /// 元数据双重转义回归：ffmpeg 分支走 argv 逐项直传，源数据里的 " 和 \ 必须按字面
+    /// 写入，不得先经 shell 风格 EscapeString 转义成 \"、\\（否则写进 mp4 元数据）。
+    /// 覆盖顶层 title/author/desc 与字幕语言名两条路径。
+    /// </summary>
+    [Fact]
+    public async Task MuxAV_FfmpegMetadata_PassesValuesVerbatim()
+    {
+        var fake = new FakeProcessRunner(exitCode: 0);
+        var original = BBDownMuxer.ProcessRunner;
+        var tempDir = NewTempDir();
+        try
+        {
+            BBDownMuxer.ProcessRunner = fake;
+
+            var videoPath = Path.Combine(tempDir, "video.mp4");
+            File.WriteAllText(videoPath, "v");
+            var sub1 = Path.Combine(tempDir, "sub1.srt");
+            File.WriteAllText(sub1, "1\n00:00:00,000 --> 00:00:01,000\nhello");
+            var outPath = Path.Combine(tempDir, "out.mp4");
+
+            var title = "He said \"hi\" \\ test";
+            // "aa" → ("aar", "Qafár af")：语言名含空格，应作为单一 argv 字面透传
+            var subs = new List<Subtitle> { new() { lan = "aa", url = "x", path = sub1 } };
+            await BBDownMuxer.MuxAV(false, "BVtest", videoPath, "", [], outPath,
+                title: title, author: "author", desc: "desc", subs: subs);
+
+            var args = fake.Specs.Single(s => s.FileName == "ffmpeg").Arguments;
+            // 顶层元数据字面值原样出现，不再出现转义后的形式（title=He said \"hi\" \\ test）
+            Assert.Contains(args, a => a == $"title={title}");
+            Assert.Contains(args, a => a == "artist=author");
+            Assert.DoesNotContain(args, a => a == "title=He said \\\"hi\\\" \\\\ test");
+            // 字幕语言名/代码字面透传（含空格的语言名保持单 token）
+            Assert.Contains(args, a => a == "title=Qafár af");
+            Assert.Contains(args, a => a == "language=aar");
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            CleanupDir(tempDir);
+        }
+    }
+
+    /// <summary>
     /// 真实 ffmpeg 集成冒烟测试：本机 ffmpeg 可用时，用假源生成 1 秒 H.264 + AAC，
     /// 走 MuxAV 的 ffmpeg 分支做 -c copy 混流，断言产物存在且非空。
     /// 不可用时直接返回（本测试本地可重复、无外部网络依赖，CI 作为硬性门禁运行）。

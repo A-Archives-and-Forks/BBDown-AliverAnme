@@ -91,7 +91,7 @@ internal partial class Program
                 // 真正的用户取消/服务关停（token 已取消）必须正常中止整批，不能进失败分支续跑；
                 // HTTP 超时抛的 TaskCanceledException 其 token 未取消，会进入下方"记录失败后继续"分支。
                 if (cancellationToken.IsCancellationRequested) throw;
-                // DownloadPageAsync 内部重试 3 次耗尽后抛出：若不在此接住，异常会直接跳出
+                // DownloadPageAsync 内部重试（--retry-count 次，默认 3）耗尽后抛出：若不在此接住，异常会直接跳出
                 // foreach，剩余分P全部放弃下载，且完成通知（NotifyWebhook）与 failedPages
                 // 汇总都不再执行——与 return false 的失败路径（记录后继续）行为不一致。
                 Logger.LogError($"P{p.index} 下载失败: [{ex.GetType().Name}] {ex.Message}");
@@ -278,7 +278,10 @@ internal partial class Program
         long pubTime = vInfo.PubTime;
         bool selected = false; //用户是否已经手动选择过了轨道
         int retryCount = 0;
-        while (retryCount < 3)
+        // 页面级重试次数与间隔尊重 --retry-count / --retry-delay（Options.cs 已校验
+        // 1~100 / 0~600000）：此前硬编码 3 与 3000ms，用户配置完全被无视。
+        int maxRetry = myOption.RetryCount;
+        while (retryCount < maxRetry)
         {
             try
             {
@@ -696,7 +699,10 @@ internal partial class Program
                     }
                     Logger.Log($"开始合并音视频{(subtitleInfo.Any() ? "和字幕" : "")}...");
                     if (myOption.AudioOnly)
-                        savePath = savePath[..^4] + ".m4a";
+                        // 用 Path.ChangeExtension 而非 savePath[..^4] 魔法切片：虽然后者在
+                        // FormatSavePath 保证 .mp4 后缀下不会截错，但魔法 4 字符切片脆弱且
+                        // 难读；ChangeExtension 按真实扩展名替换，语义清晰更稳健。
+                        savePath = Path.ChangeExtension(savePath, ".m4a");
 
                     var isHevc = selectedVideo?.codecs == "HEVC";
                     // 最终路径独占锁：serve 下两个不同 Aid、相同标题的任务会解析出同一个
@@ -793,7 +799,8 @@ internal partial class Program
                     }
                     Logger.Log($"开始混流视频{(subtitleInfo.Any() ? "和字幕" : "")}...");
                     if (myOption.AudioOnly)
-                        savePath = savePath[..^4] + ".m4a";
+                        // 与 dash 分支一致：用 Path.ChangeExtension 替换真实扩展名
+                        savePath = Path.ChangeExtension(savePath, ".m4a");
                     // 与 dash 分支一致：对最终 savePath 加独占锁，锁内完成"存在性判定 → 混流 →
                     // 校验 → 清理"，防止 serve 同标题任务并发覆盖
                     var muxOutcome = await BBDownDownloadUtil.RunWithPathLockAsync(savePath,
@@ -843,14 +850,17 @@ internal partial class Program
             catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException)
             {
                 retryCount++;
-                if (retryCount >= 3)
+                if (retryCount >= maxRetry)
                 {
-                    Logger.LogError($"下载重试 {retryCount} 次后仍失败，最后错误: [{ex.GetType().Name}] {ex.Message}");
+                    Logger.LogError($"下载尝试 {retryCount} 次后仍失败，最后错误: [{ex.GetType().Name}] {ex.Message}");
                     throw;
                 }
+                // 与轨道级重试一致：退避基数 retryCount * RetryDelayMs 线性放大
+                //（默认 3000ms → 首次失败 3s、二次 6s...），符合 --retry-delay 的"基础毫秒数"语义
+                int backoffMs = retryCount * myOption.RetryDelay;
                 Logger.LogError($"[{ex.GetType().Name}] {ex.Message}");
-                Logger.LogWarn("下载出现异常, 3秒后将进行自动重试...");
-                await Task.Delay(3000, cancellationToken);
+                Logger.LogWarn($"下载出现异常, {backoffMs / 1000.0:0.#} 秒后将进行自动重试...");
+                await Task.Delay(backoffMs, cancellationToken);
             }
         }
         return false;

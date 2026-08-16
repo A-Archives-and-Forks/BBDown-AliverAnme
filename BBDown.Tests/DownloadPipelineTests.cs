@@ -447,6 +447,194 @@ public class DownloadPipelineTests
         }
     }
 
+    /// <summary>
+    /// 回归（aria2c --continue=true）：跨资源且长度恰相等的残留 partial 必须被删除重下，
+    /// 不得被"已完整下载"跳过——否则残缺文件会直接作为成品进入混流。此前纯 length-only
+    /// 跳过先于身份校验执行，等长跨资源残留被误跳过。
+    /// </summary>
+    [Fact]
+    public void PrepareAria2cTarget_CrossResourceEqualLengthPartial_DeletesAndRedownloads()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "video.mp4");
+            // 残留 partial 恰好 10 字节，与"新资源"的 fileSize 相等（等长跨资源）
+            File.WriteAllText(path, "1234567890");
+            var control = path + ".aria2";
+            File.WriteAllText(control, "ctrl");
+            // 清单记录旧资源（1080P）身份；当前请求是另一资源（720P）
+            var manifest = new BBDownDownloadUtil.ResumeManifest(
+                BBDownDownloadUtil.StableResourceIdentity("https://cdn.example.com/1080p.mp4?qn=80"),
+                100, null, null);
+            File.WriteAllText(path + ".manifest.json",
+                System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
+
+            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+                "https://cdn.example.com/720p.mp4?qn=64", path, fileSize: 10, headers: null, contentHeaders: null);
+
+            Assert.False(skip, "等长跨资源残留不得跳过 aria2c");
+            Assert.False(File.Exists(path), "跨资源残留 partial 应被删除");
+            Assert.False(File.Exists(control), "残留 .aria2 控制文件应被删除");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>同资源中断（清单身份匹配）：partial 保留供 --continue=true 续传，返回 false。</summary>
+    [Fact]
+    public void PrepareAria2cTarget_SameResourceInterruptedPartial_KeptForResume()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "video.mp4");
+            File.WriteAllText(path, "partial-prefix");
+            var control = path + ".aria2";
+            File.WriteAllText(control, "ctrl");
+            var manifest = new BBDownDownloadUtil.ResumeManifest(
+                BBDownDownloadUtil.StableResourceIdentity("https://cdn.example.com/1080p.mp4?deadline=1&sign=old&qn=80"),
+                1000, null, null);
+            File.WriteAllText(path + ".manifest.json",
+                System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
+
+            // 签名刷新后的同一资源（稳定身份一致）→ 保留续传
+            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+                "https://cdn.example.com/1080p.mp4?deadline=999&sign=new&qn=80", path, fileSize: 1000, headers: null, contentHeaders: null);
+
+            Assert.False(skip);
+            Assert.True(File.Exists(path), "同资源中断的 partial 应保留续传");
+            Assert.True(File.Exists(control), "同资源 .aria2 控制文件应保留");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>全新下载（无既有文件）：写入本次身份清单并返回 false（需调 aria2c）。</summary>
+    [Fact]
+    public void PrepareAria2cTarget_NoPartial_WritesManifestAndReturnsFalse()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "video.mp4");
+            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+                "https://cdn.example.com/1080p.mp4?qn=80", path, fileSize: 1000, headers: null, contentHeaders: null);
+            Assert.False(skip);
+            Assert.True(File.Exists(path + ".manifest.json"), "首次下载前应写入身份清单");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>同资源完整文件：返回 true（跳过 aria2c），残留控制文件被清理、身份清单保留。</summary>
+    [Fact]
+    public void PrepareAria2cTarget_CompleteSameResource_SkipsAria2c()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "video.mp4");
+            File.WriteAllText(path, "complete-10-byte"); // 16 字节
+            var control = path + ".aria2";
+            File.WriteAllText(control, "ctrl");
+            var manifest = new BBDownDownloadUtil.ResumeManifest(
+                BBDownDownloadUtil.StableResourceIdentity("https://cdn.example.com/1080p.mp4?qn=80"),
+                16, null, null);
+            File.WriteAllText(path + ".manifest.json",
+                System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
+
+            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+                "https://cdn.example.com/1080p.mp4?qn=80", path, fileSize: 16, headers: null, contentHeaders: null);
+
+            Assert.True(skip, "同资源完整文件应跳过 aria2c");
+            Assert.True(File.Exists(path));
+            Assert.False(File.Exists(control), "残留 .aria2 控制文件应被清理");
+            // 身份清单保留为"完成证书"，供下次重跑经 CanResumeFrom 确认身份后跳过
+            Assert.True(File.Exists(path + ".manifest.json"), "完成下载后身份清单应保留");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// 回归：已完整下载但缺身份清单（旧版残留/清单丢失）的文件，不得被纯长度跳过——否则
+    /// 无法确认其内容属于当前资源。保守删除重下（安全但浪费，与 CanResumeFrom 缺清单一致）。
+    /// </summary>
+    [Fact]
+    public void PrepareAria2cTarget_CompleteButNoManifest_PurgesAndRedownloads()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "video.mp4");
+            File.WriteAllText(path, "complete-16-bytes"); // 长度与 fileSize 相等
+            var control = path + ".aria2";
+            File.WriteAllText(control, "ctrl");
+            // 不写清单：模拟旧版下载完成/清单丢失
+
+            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+                "https://cdn.example.com/1080p.mp4?qn=80", path, fileSize: 17, headers: null, contentHeaders: null);
+
+            Assert.False(skip, "缺清单的完整文件不得跳过（无法确认身份）");
+            Assert.False(File.Exists(path), "缺清单的既有文件应被删除重下");
+            Assert.False(File.Exists(control), "残留控制文件应被删除");
+            Assert.True(File.Exists(path + ".manifest.json"), "删除后应写入当前资源的新清单");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// 身份可信但超长的残留（长度超过远端总长）：内容不可信（越界尾部/资源变化），
+    /// 必须删除重下——否则 aria2c --continue 从超出 EOF 的偏移续传可能 416 死循环。
+    /// </summary>
+    [Fact]
+    public void PrepareAria2cTarget_OversizedTrustedPartial_PurgesAndRedownloads()
+    {
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            var path = Path.Combine(dir, "video.mp4");
+            File.WriteAllText(path, "oversized-content-longer-than-remote");
+            var control = path + ".aria2";
+            File.WriteAllText(control, "ctrl");
+            // 身份可信（同资源稳定身份 + 总长匹配），但本地文件长度 > fileSize
+            var manifest = new BBDownDownloadUtil.ResumeManifest(
+                BBDownDownloadUtil.StableResourceIdentity("https://cdn.example.com/1080p.mp4?qn=80"),
+                10, null, null);
+            File.WriteAllText(path + ".manifest.json",
+                System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
+
+            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+                "https://cdn.example.com/1080p.mp4?qn=80", path, fileSize: 10, headers: null, contentHeaders: null);
+
+            Assert.False(skip);
+            Assert.False(File.Exists(path), "超长残留应被删除重下");
+            Assert.False(File.Exists(control), "残留控制文件应被删除");
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
     /// <summary>返回错误 Content-Range 起始偏移的本地服务：验证下载必须拒绝而非接受错位区间。</summary>
     private sealed class MisleadingRangeServer : IDisposable
     {

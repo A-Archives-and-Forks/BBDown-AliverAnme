@@ -26,6 +26,27 @@ public static class HTTPUtil
     public static HttpClient AppHttpClient => _appHttpClient.Value;
 
     /// <summary>
+    /// 直播录制专用客户端：无限流持续读取，不套用全局 2 分钟超时。
+    /// 实测 .NET 的 HttpClient.Timeout 对 ResponseHeadersRead 之后的流式读取并不生效，
+    /// 但无限连接在语义上不应携带任何客户端超时——一旦未来改动（如换 handler 或
+    /// ResponseContentRead）触达该超时，会直接掐断整场录制。独立客户端也避免长期
+    /// 占用共享连接池里的一条连接。
+    /// </summary>
+    private static readonly Lazy<HttpClient> _streamingHttpClient = new(() =>
+    {
+        var handler = new SocketsHttpHandler
+        {
+            AllowAutoRedirect = true,
+            AutomaticDecompression = DecompressionMethods.All,
+            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
+            SslOptions = CreateSslOptions(),
+        };
+        return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
+    }, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    public static HttpClient StreamingHttpClient => _streamingHttpClient.Value;
+
+    /// <summary>
     /// 禁自动跳转的共享客户端：供逐跳校验重定向（GetWebLocationCheckedAsync /
     /// GetWebSourceAnonymousCheckedAsync）复用。手动逐跳跟随需要 AllowAutoRedirect=false，
     /// 每次跳转新建 HttpClient 会重复建连接池；共享实例避免 socket 泄漏与握手开销。

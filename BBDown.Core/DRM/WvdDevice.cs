@@ -32,8 +32,10 @@ public class WvdDevice : IDisposable
         if (allBytes.Length >= 4 && allBytes[0] == 0x57 && allBytes[1] == 0x56 && allBytes[2] == 0x44)
             return ParseWvd(allBytes.AsSpan(3));
 
-        // 格式2: pywidevine v1 标准格式 (首字节 = version = 1)
-        if (allBytes.Length >= 1 && allBytes[0] == 1)
+        // 格式2: pywidevine 标准格式（无 WVD magic，首字节 = version = 1/2）。
+        // ParseWvd 同时支持 v1/v2，探测必须同样放行 v2，否则无 magic 的 v2 文件
+        // 会被误判为"无法识别的 WVD 文件格式 (首字节: 2)"。
+        if (allBytes.Length >= 1 && allBytes[0] is 1 or 2)
             return ParseWvd(allBytes.AsSpan());
 
         // 格式3: 纯 PEM 私钥 + 伴生 client_id blob

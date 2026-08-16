@@ -115,8 +115,10 @@ public static class LiveStreamUtil
                     var segPath = Path.Combine(segDir, $"seg-{segIndex++:000}.flv");
                     // progressBase = 已录完分段的累计字节（total），进度回调上报累计值，
                     // 重连后新分段从 total 起报而不是从 0 倒退。
-                    long segBytes = await StreamToFileAsync(url, segPath, total, onProgress, token);
-                    // 本段收到任何字节都算有效传输，重置重连预算
+                    // 本段收到任何字节都算有效传输：重置重连预算（读中断返回的已写字节同样计入，
+                    // 使 URL 到期/瞬断这类"有数据"的连接中断不消耗预算，不会误终止长录制）
+                    var (segBytes, readInterrupted) = await StreamToFileAsync(url, segPath, total, onProgress, token);
+                    if (readInterrupted) Logger.LogDebug("直播流连接在读取时中断，已写入 {0} 字节", segBytes);
                     if (segBytes > 0)
                     {
                         segmentFiles.Add(segPath);
@@ -167,7 +169,10 @@ public static class LiveStreamUtil
                 }
                 catch (OperationCanceledException ex)
                 {
-                    // HttpClient 2 分钟超时抛出的 TaskCanceledException（token 未取消）：按瞬态故障重连
+                    // 非用户取消的取消异常：直播流读取已改用无超时的 StreamingHttpClient，
+                    // 不会再因 HttpClient.Timeout 抛 TaskCanceledException；此处是
+                    // ResolveAsync（仍走全局 2 分钟超时客户端）或其它内部调用超时/取消，
+                    // 按瞬态故障重连。
                     await ReconnectOrThrow(ex);
                 }
                 catch (Exception ex) when (ex is HttpRequestException or IOException or InvalidOperationException or JsonException)
@@ -175,7 +180,46 @@ public static class LiveStreamUtil
                     // 直播间下播（"当前未在直播"）是终结态而非可恢复故障：正常结束，走合成保存
                     if (ex is InvalidOperationException && ex.Message.Contains("当前未在直播"))
                         break;
-                    await ReconnectOrThrow(ex);
+                    // 连接中断：B 站直播流地址带时效参数，到期断开是常态而非故障。先确认
+                    // 直播间仍在直播——在播则立即续录（不等退避，避免每次 URL 到期丢失
+                    // 3 秒内容）。立即续录同样计入重试预算（预算在"收到数据"的分段后被
+                    // 重置，正常到期续录不受限）；持续失败（API 可达但流连不上、磁盘满等）
+                    // 会在 ReconnectLimit 次后放弃，不构成无界热循环。重新解析失败
+                    //（网络/JSON/无法取到流地址）才按常规退避重连。
+                    try
+                    {
+                        _ = await ResolveAsync(roomId, token);
+                    }
+                    catch (InvalidOperationException ex2) when (ex2.Message.Contains("当前未在直播"))
+                    {
+                        break; // 确认下播：结束录制
+                    }
+                    catch (Exception ex2) when (ex2 is HttpRequestException or IOException or JsonException or InvalidOperationException)
+                    {
+                        await ReconnectOrThrow(ex2);
+                        continue;
+                    }
+                    catch (OperationCanceledException) when (token.IsCancellationRequested)
+                    {
+                        break; // 用户取消：保留已录分段，退出后合成保存
+                    }
+                    catch (OperationCanceledException ex2)
+                    {
+                        // 重解析超时（AppHttpClient 2 分钟超时）：按瞬态故障退避重连
+                        await ReconnectOrThrow(ex2);
+                        continue;
+                    }
+                    // 走到这里说明 ResolveAsync 成功（直播间在播）：立即续录，不等退避。
+                    // 计入重试预算——预算在"收到数据"的分段后被重置，正常到期续录不受限；
+                    // 持续失败（API 可达但流不可达、磁盘满等）ReconnectLimit 次后放弃。
+                    reconnect++;
+                    if (reconnect > ReconnectLimit)
+                    {
+                        Logger.LogWarn($"直播流中断且 {ReconnectLimit} 次重连失败，已录制内容保留在 {segDir}");
+                        ExceptionDispatchInfo.Capture(ex).Throw();
+                    }
+                    Logger.LogWarn("直播流连接中断但直播间仍在直播，正在立即重新解析流地址续录...");
+                    continue;
                 }
             }
         }
@@ -280,17 +324,26 @@ public static class LiveStreamUtil
     }
 
     /// <summary>
-    /// 把一条直播流写到独立分段文件，返回本段写入的字节数。
+    /// 把一条直播流写到独立分段文件，返回 (本段写入的字节数, 是否以读中断结束)。
     /// <paramref name="progressBase"/> 为已录完分段的累计字节数：进度回调上报
     /// progressBase + 当前分段写入量，避免重连后进度从零跳回（此前每段从 0 起报，
     /// 用户看到的进度会在重连时倒退）。
     /// </summary>
-    private static async Task<long> StreamToFileAsync(string url, string segPath, long progressBase, Action<long>? onProgress, CancellationToken token = default)
+    private static async Task<(long Written, bool ReadInterrupted)> StreamToFileAsync(string url, string segPath, long progressBase, Action<long>? onProgress, CancellationToken token = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.UserAgent);
         req.Headers.TryAddWithoutValidation("Referer", "https://live.bilibili.com/");
-        using var response = (await HTTPUtil.AppHttpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
+        // 直播流是无限连接：用专用的无超时客户端（StreamingHttpClient），而非全局
+        // AppHttpClient（Timeout=2min）。实测 HttpClient.Timeout 对 ResponseHeadersRead
+        // 之后的流读取不生效，但无限流主体不应携带任何客户端超时，见 HTTPUtil.StreamingHttpClient。
+        // 响应头阶段单独给有限超时：TCP+TLS 已建立但服务器永不返回响应头（黑洞）时
+        // SendAsync 会永久挂起。headerCts 只覆盖"发请求→收响应头"，取到响应头后立即释放
+        // （Dispose 幂等），不影响下方主体流读取（读循环用 token）。
+        using var headerCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+        headerCts.CancelAfter(TimeSpan.FromMinutes(2));
+        using var response = (await HTTPUtil.StreamingHttpClient.SendAsync(req, HttpCompletionOption.ResponseHeadersRead, headerCts.Token)).EnsureSuccessStatusCode();
+        headerCts.Dispose(); // 响应头已到达：释放仅覆盖头部阶段的超时
         await using var stream = await response.Content.ReadAsStreamAsync(token);
         await using var fs = new FileStream(segPath, FileMode.Create, FileAccess.Write, FileShare.None, 1 << 20, useAsync: true);
         var buffer = ArrayPool<byte>.Shared.Rent(1 << 20);
@@ -299,13 +352,26 @@ public static class LiveStreamUtil
         {
             while (true)
             {
-                var read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), token);
-                if (read == 0) break; // 流结束（主播下播）
+                int read;
+                try
+                {
+                    read = await stream.ReadAsync(buffer.AsMemory(0, buffer.Length), token);
+                }
+                catch (Exception ex) when (ex is IOException or HttpRequestException)
+                {
+                    // 网络读中断（URL 到期 RST/瞬断）：已写字节照常返回。调用方据此把
+                    // 本段计入 total 并重置重连预算——否则连接以异常结束时已写字节丢失，
+                    // 预算持续累积，连续几次 URL 到期就会误终止整场录制（URL 到期是
+                    // 常态而非故障）。写盘失败（IOException 来自 fs.WriteAsync）不在此
+                    // 分支，会以零进展累计预算并最终有界终止。
+                    return (written, ReadInterrupted: true);
+                }
+                if (read == 0) break; // 流结束（主播下播/正常 EOF）
                 await fs.WriteAsync(buffer.AsMemory(0, read), token);
                 written += read;
                 onProgress?.Invoke(progressBase + written);
             }
-            return written;
+            return (written, ReadInterrupted: false);
         }
         finally
         {
