@@ -285,6 +285,8 @@ internal partial class Program
         // 页面级重试次数与间隔尊重 --retry-count / --retry-delay（Options.cs 已校验
         // 1~100 / 0~600000）：此前硬编码 3 与 3000ms，用户配置完全被无视。
         int maxRetry = myOption.RetryCount;
+        try
+        {
         while (retryCount < maxRetry)
         {
             try
@@ -891,6 +893,52 @@ internal partial class Program
             }
         }
         return false;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            // 用户取消/服务关停：清理当前分P工作目录中"确定非续传资产"的残留
+            //（空 aid 目录 + 无清单死 .tmp），保留 .vclip/.aclip 与带有效清单的
+            // .tmp——它们是跨进程断点续传资产，无脑删除会让中断的文件无法续传。
+            // 清理后原样向上传播取消。
+            CleanNonResumableWorkArtifacts(p.aid);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// 取消路径的定位清理：只删"确定不是续传资产"的残留。
+    /// - aid 目录为空 → 删目录（镜像成功路径的删空目录语义）；
+    /// - 无对应 *.manifest.json 的 *.tmp → 删（此类必被 CanResumeFrom 拒绝、下次运行
+    ///   也会删，是纯死重）；
+    /// 绝不删 .vclip/.aclip 与带有效清单的 .tmp。aid 目录跨分P共享，取消某 P 不能清
+    /// 其它 P 的续传资产，故按文件粒度而非整体删目录。
+    /// </summary>
+    private static void CleanNonResumableWorkArtifacts(string aid)
+    {
+        try
+        {
+            var dir = PathUtil.ResolveWorkPath(aid);
+            if (!Directory.Exists(dir)) return;
+            foreach (var tmp in Directory.GetFiles(dir, "*.tmp"))
+            {
+                // 清单伴生文件是 xxx.tmp.manifest.json；无清单的 .tmp 是 WriteResumeManifest
+                // 失败窗口或取消竞态留下的死文件，续传必被拒，清理掉避免累积。
+                if (!File.Exists(tmp + ".manifest.json"))
+                {
+                    try { File.Delete(tmp); }
+                    catch (IOException) { /* 占用时跳过，下次再清 */ }
+                }
+            }
+            if (Directory.GetFiles(dir).Length == 0)
+            {
+                try { Directory.Delete(dir, true); }
+                catch (IOException) { /* 目录被占用时跳过 */ }
+            }
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            Logger.LogDebug("取消清理工作目录失败: {0}", ex.Message);
+        }
     }
 
     /// <summary>

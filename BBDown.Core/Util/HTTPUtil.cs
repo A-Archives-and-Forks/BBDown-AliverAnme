@@ -67,6 +67,24 @@ public static partial class HTTPUtil
     public static HttpClient VerifiedAppHttpClient => _appHttpClient.Value;
 
     /// <summary>
+    /// 从响应头 Date 校准服务器时钟偏移（秒），写入 Config（流内 + 全局双写，
+    /// 见 <see cref="Config.SET_CLOCK_OFFSET"/>）。RFC 7231 要求所有 HTTP 响应携带
+    /// Date（GMT），读不到时直接跳过。仅当偏移在 ±24h 内才写入：畸形/恶意 Date 头
+    /// 不污染时钟。偏移为 0 时不写（无变化）。
+    /// 必须在 EnsureSuccessStatusCode 之前调用：4xx/5xx 错误响应同样带 Date——本地时钟
+    /// 偏差导致签名被拒的请求，其错误响应恰好能校准下一次重试的 wts/ts。
+    /// internal 供测试直接调用验证校准逻辑。
+    /// </summary>
+    internal static void CalibrateClock(HttpResponseMessage response)
+    {
+        if (response.Headers.Date is not { } serverDate) return;
+        long offset = serverDate.ToUnixTimeSeconds() - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
+        if (Math.Abs(offset) > 24 * 3600) return; // 畸形/不可信 Date 头
+        if (offset != Config.Current.ServerClockOffsetSeconds)
+            Config.SET_CLOCK_OFFSET(offset);
+    }
+
+    /// <summary>
     /// 直播录制专用客户端：无限流持续读取，不套用全局 2 分钟超时。
     /// 实测 .NET 的 HttpClient.Timeout 对 ResponseHeadersRead 之后的流式读取并不生效，
     /// 但无限连接在语义上不应携带任何客户端超时——一旦未来改动（如换 handler 或
@@ -263,6 +281,8 @@ public static partial class HTTPUtil
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
                 timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
                 using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                // 服务器时钟校准：在所有状态码分支前执行（错误响应也带 Date，见 CalibrateClock）
+                CalibrateClock(webResponse);
                 // 5xx：显式抛 HttpRequestException（带状态码）走下方退避；
                 // 4xx 交给 EnsureSuccessStatusCode 立即抛出（HttpRequestException.StatusCode < 500，
                 // 不满足重试过滤条件，不会被重试）。
@@ -496,6 +516,8 @@ public static partial class HTTPUtil
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
                 timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
                 using var response = await AppHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                // 服务器时钟校准：在所有状态码分支前执行（错误响应也带 Date，见 CalibrateClock）
+                CalibrateClock(response);
                 if (!response.IsSuccessStatusCode && (int)response.StatusCode >= 500)
                     throw new HttpRequestException($"服务器返回 {(int)response.StatusCode} {response.ReasonPhrase}", null, response.StatusCode);
                 response.EnsureSuccessStatusCode();

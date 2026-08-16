@@ -139,8 +139,8 @@ public static partial class BBDownUtil
         return res;
     }
 
-    public static string GetValidFileName(string input, string re = "_", bool filterSlash = false)
-        => BBDown.Core.Util.PathUtil.GetValidFileName(input, re, filterSlash);
+    public static string GetValidFileName(string input, string re = "_", bool filterSlash = false, int maxBaseNameLength = 100)
+        => BBDown.Core.Util.PathUtil.GetValidFileName(input, re, filterSlash, maxBaseNameLength);
 
 
     /// <summary>
@@ -171,7 +171,8 @@ public static partial class BBDownUtil
 
     public static string GetTimeStamp(bool bflag)
     {
-        DateTimeOffset ts = DateTimeOffset.Now;
+        // 经服务器时钟偏移校准（ServerClock）：本地时钟偏差会让签名时间戳超时效窗口被拒
+        DateTimeOffset ts = ServerClock.Now;
         return (bflag ? ts.ToUnixTimeSeconds() : ts.ToUnixTimeMilliseconds()).ToString();
     }
 
@@ -405,6 +406,38 @@ public static partial class BBDownUtil
         // 需由本调用方 Apply（AsyncLocal 写入不会自动回流）。
         if (newWbi is not null) Core.Config.WBI_FLOW = newWbi;
         return isLoggedIn;
+    }
+
+    /// <summary>
+    /// 估算 SESSDATA 的剩余有效期（天）。B 站 SESSDATA 是 URL 编码的 base64 JSON，
+    /// 第一个字段解码后含 expires（Unix 秒）。返回剩余天数；无法解析/未登录返回 null。
+    /// 解析必须 fail-open：SESSDATA 结构可能随协议变化，失败绝不抛错、绝不误报。
+    /// 供登录会话初始化时做"即将过期"提前警告（serve 长驻进程跨周/月运行会静默失效）。
+    /// </summary>
+    internal static int? EstimateSessdataExpiryDays(string cookie)
+    {
+        try
+        {
+            var sessdata = BBDownLoginUtil.GetCookieValue(cookie, "SESSDATA");
+            if (sessdata == "") return null;
+            // %2C 是逗号的 URL 转义：SESSDATA 用逗号连接三个字段，第一字段是 base64 JSON。
+            var first = Uri.UnescapeDataString(sessdata).Split(',')[0];
+            byte[] raw;
+            try { raw = Convert.FromBase64String(first); }
+            catch (FormatException) { return null; }
+            if (raw.Length == 0) return null;
+            using var doc = JsonDocument.Parse(raw);
+            if (!doc.RootElement.TryGetProperty("expires", out var expires)
+                || expires.ValueKind != JsonValueKind.Number || !expires.TryGetInt64(out var expiry) || expiry <= 0)
+                return null;
+            var days = (int)((expiry - DateTimeOffset.UtcNow.ToUnixTimeSeconds()) / 86400.0);
+            return days;
+        }
+        catch (Exception ex) when (ex is JsonException or FormatException or InvalidOperationException or DecoderFallbackException)
+        {
+            Logger.LogDebug("SESSDATA 过期估算失败: {0}", ex.Message);
+            return null;
+        }
     }
     [GeneratedRegex("(^|&)?(\\w+)=([^&]+)(&|$)?", RegexOptions.Compiled)]
     private static partial Regex QueryRegex();

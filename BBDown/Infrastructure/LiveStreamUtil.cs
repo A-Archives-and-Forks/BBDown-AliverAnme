@@ -34,13 +34,38 @@ public static class LiveStreamUtil
             $"?room_id={roomId}&protocol=0,1&format=0,1,2&codec=0,1&qn=10000&platform=web";
         string playJson = await HTTPUtil.GetWebSourceAsync(playApi, token: token);
         using var playDoc = JsonDocument.Parse(playJson);
-        var data = playDoc.RootElement.GetPropertySafe("data");
-        var streams = data.GetPropertySafe("playurl_info").GetPropertySafe("playurl").EnumerateArraySafe("stream");
-        foreach (var stream in streams)
+        var playData = playDoc.RootElement.GetPropertySafe("data").GetPropertySafe("playurl_info").GetPropertySafe("playurl");
+        var url = SelectFlvUrl(playData, out var availableFormats);
+        if (url is null)
+        {
+            // 不列出格式时用户无法区分"不支持"与"没有流"：把接口实际提供的
+            // format_name（flv/ts/fmp4）一并报出，明确说明当前仅支持 flv。
+            throw new InvalidOperationException(
+                $"无法获取直播间 {roomId} 的可录制流地址" +
+                (availableFormats.Length > 0
+                    ? $"（接口可用格式: {string.Join(", ", availableFormats)}；当前仅支持 flv，HLS/ts/fmp4 暂不支持）"
+                    : "（接口未返回任何流）"));
+        }
+        return (url, title, uname, roomId);
+    }
+
+    /// <summary>
+    /// 从 getRoomPlayInfo 的 <c>playurl_info.playurl</c> 数据中挑选一条 FLV 直播流地址。
+    /// 纯函数（不发起网络请求），供单测注入内联 JSON 覆盖选流逻辑。
+    /// 返回第一个可用的 FLV url；<paramref name="availableFormats"/> 收集接口实际提供的
+    /// format_name（含被跳过的 ts/fmp4），供调用方在无 FLV 时报出可操作的错误信息。
+    /// </summary>
+    internal static string? SelectFlvUrl(JsonElement playData, out string[] availableFormats)
+    {
+        var available = new HashSet<string>();
+        string? picked = null;
+        foreach (var stream in playData.EnumerateArraySafe("stream"))
         {
             foreach (var format in stream.EnumerateArraySafe("format"))
             {
-                if (format.GetValueAsStringSafe("format_name") != "flv") continue;
+                var formatName = format.GetValueAsStringSafe("format_name");
+                if (formatName != "") available.Add(formatName);
+                if (formatName != "flv") continue;
                 foreach (var codec in format.EnumerateArraySafe("codec"))
                 {
                     var baseUrl = codec.GetValueAsStringSafe("base_url");
@@ -50,12 +75,13 @@ public static class LiveStreamUtil
                         var host = urlInfo.GetValueAsStringSafe("host");
                         var extra = urlInfo.GetValueAsStringSafe("extra");
                         if (host == "") continue;
-                        return (host + baseUrl + extra, title, uname, roomId);
+                        picked ??= host + baseUrl + extra;
                     }
                 }
             }
         }
-        throw new InvalidOperationException($"无法获取直播间 {roomId} 的可录制流地址");
+        availableFormats = available.Count == 0 ? [] : available.ToArray();
+        return picked;
     }
 
     /// <summary>

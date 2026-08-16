@@ -2,6 +2,23 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 修复
+
+- **WBI 签名服务器时钟补偿**：本地时钟偏差超 ~60s 时效窗口即被 B 站拒绝签名（虚拟机时钟不同步/未启用 NTP 的容器等）。新增 `HTTPUtil.CalibrateClock` 从响应头 Date 计算偏移写入配置，`Parser`/`BBDownUtil`/`SpaceVideoFetcher` 的签名时间戳（wts/ts）统一经 `ServerClock` 校准；偏移按异步流 + 全局双写（UTC 偏移是服务器物理属性，serve 并发任务共享无害）。
+- **长路径溢出防护**：`PathUtil.GetValidFileName` 新增基名长度截断（默认 100 字符，保留扩展名），超长标题在 Windows 不再抛 `PathTooLongException`。
+- **下载取消碎片定位清理**：取消路径清理 aid 工作目录中"确定非续传资产"的残留（空目录 + 无清单死 `.tmp`），保留 `.vclip/.aclip` 与带有效清单的 `.tmp`（跨进程断点续传资产，不可误删）。
+- **Widevine 吊销诊断**：许可证请求非 2xx 时读取错误体、`Unexpected response type` 升为 Warn，解密失败消息加入"设备证书被吊销/更换 device.wvd/--wvd-path"引导。
+- **外部工具探测守卫**：`FindBinaries` 报错补充安装与 `--ffmpeg-path`/`--mp4box-path`/`--aria2c-path` 指引；`MergeFLV`（`--skip-mux` 下）与 `MuxByMp4box`（杜比视界自动切换）两条绕过前置探测的路径补运行时守卫，替代原生 `Win32Exception`。
+- **Cookie 即将过期警告**：本地解析 SESSDATA 估算剩余有效期，低于 30 天提前提示扫码刷新（2026 新版 Set-Cookie 登录不落盘 refresh_token，自动轮转协议层面不可行）。
+- **直播无 FLV 格式提示**：`LiveStreamUtil.ResolveAsync` 报错时列出接口实际可用的格式（flv/ts/fmp4），明确"当前仅支持 flv"；选流逻辑抽为可测试纯函数。
+- **UP 主空间解析进度**：逐稿展开节流进度日志 + 连续失败中止异常带"已成功展开 N/M + 最后一个成功 av"断点上下文，超大 UP 主解析不再数分钟静默。
+
+### 新增测试
+
+- 时钟校准 7 项、长路径截断 10 项、直播选流 3 项、SESSDATA 过期估算 6 项；全量单元测试 468 个通过。
+
 ## [1.6.11] - 2026-08-13
 
 ### 修复

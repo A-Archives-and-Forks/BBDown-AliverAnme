@@ -34,6 +34,28 @@ static partial class BBDownMuxer
         return await ProcessRunner.RunAsync(spec, cancellationToken);
     }
 
+    /// <summary>
+    /// 外部工具可用性守卫：仅对真实进程执行器生效（测试注入假 runner 时跳过，
+    /// 见 ExternalProcessRunnerTests 直接调 MergeFLV 的场景——假 runner 不启动进程，
+    /// 启动前校验无意义）。
+    /// 默认名（ffmpeg/mp4box）由 OS 从 PATH 解析，显式指定后为含路径的文件。
+    /// 用于堵住 FindBinaries 前置探测覆盖不到的路径：MergeFLV（--skip-mux 下
+    /// 探测被门控跳过但 FLV 合并仍执行）与 MuxByMp4box（杜比视界自动切换时
+    /// 探测分支只探了 ffmpeg、MP4BOX 从未探测）——这两条路径此前在进程启动时
+    /// 抛原生 Win32Exception，用户无法定位。
+    /// </summary>
+    private static void EnsureToolAvailable(string tool, string toolFlag, string purpose)
+    {
+        if (ProcessRunner is not SystemProcessRunner) return;
+        bool explicitPath = tool != "ffmpeg" && tool != "mp4box";
+        bool available = explicitPath
+            ? File.Exists(tool)
+            : ExternalToolHelper.FindExecutable(tool) is not null;
+        if (!available)
+            throw new FileNotFoundException(
+                $"找不到可执行的{tool}文件（{purpose}）。请安装并加入 PATH，或使用 {toolFlag} 指定路径。");
+    }
+
     private static string EscapeString(string str)
     {
         return string.IsNullOrEmpty(str) ? str : str.Replace("\\", "\\\\").Replace("\"", "\\\"");
@@ -41,6 +63,9 @@ static partial class BBDownMuxer
 
     private static async Task<int> MuxByMp4box(string url, string videoPath, string audioPath, string outPath, string desc, string title, string author, string episodeId, string pic, string lang, List<Subtitle>? subs, bool audioOnly, bool videoOnly, List<ViewPoint>? points, CancellationToken cancellationToken)
     {
+        // 杜比视界自动切 mp4box 时 FindBinaries 只探了 ffmpeg（初始 UseMP4box=false），
+        // MP4BOX 从未探测：这里运行时守卫给出清晰报错，替代原生 Win32Exception。
+        EnsureToolAvailable(MP4BOX, "--mp4box-path", "mp4box 混流");
         // mp4box 的 -itags/-add 值要求双引号包裹、值内 " 和 \ 需转义（mp4box 自身语法）。
         // 转义只在 mp4box 分支做：ffmpeg 分支走 argv 逐项直传，提前转义会把字面
         // \"、\\ 写进 mp4 元数据。
@@ -344,6 +369,9 @@ static partial class BBDownMuxer
     public static async Task MergeFLV(string[] files, string outPath, CancellationToken cancellationToken = default)
     {
         if (files.Length == 0) return;
+        // --skip-mux 下 FindBinaries 的 ffmpeg 探测被门控跳过，但多段 FLV 合并
+        //（每段转 .ts 后 concat）仍执行：运行时守卫给出清晰报错，替代原生 Win32Exception。
+        EnsureToolAvailable(FFMPEG, "--ffmpeg-path", "FLV 分段合并");
         if (files.Length == 1)
         {
             File.Move(files[0], outPath, true);

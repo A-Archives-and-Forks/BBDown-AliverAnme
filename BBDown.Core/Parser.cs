@@ -654,7 +654,10 @@ public static partial class Parser
 
     private static string GetTimeStamp(bool bflag)
     {
-        DateTimeOffset ts = DateTimeOffset.Now;
+        // 经服务器时钟偏移校准（ServerClock）：本地时钟偏差超 ~60s 时效窗口会让 wts/ts
+        // 被 B 站拒绝签名（虚拟机时钟不同步/未启用 NTP 的容器等）。offset=0 时与 UTC
+        // 当前时间等价，行为零回归。
+        DateTimeOffset ts = ServerClock.Now;
         return bflag ? ts.ToUnixTimeSeconds().ToString() : ts.ToUnixTimeMilliseconds().ToString();
     }
 

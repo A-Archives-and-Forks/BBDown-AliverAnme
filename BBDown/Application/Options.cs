@@ -171,7 +171,9 @@ internal partial class Program
                 {
                     var binPath = ExternalToolHelper.FindExecutable("mp4box") ?? ExternalToolHelper.FindExecutable("MP4box");
                     if (string.IsNullOrEmpty(binPath))
-                        throw new FileNotFoundException("找不到可执行的mp4box文件");
+                        throw new FileNotFoundException(
+                            "找不到可执行的mp4box文件。请安装 MP4Box（GPAC）并确保其已加入 PATH，" +
+                            "或使用 --mp4box-path 指定路径（如 --mp4box-path C:/ffmpeg/bin/MP4Box.exe）。");
                     BBDownMuxer.MP4BOX = binPath;
                 }
             }
@@ -179,7 +181,9 @@ internal partial class Program
             {
                 var binPath = ExternalToolHelper.FindExecutable("ffmpeg");
                 if (string.IsNullOrEmpty(binPath))
-                    throw new FileNotFoundException("找不到可执行的ffmpeg文件");
+                    throw new FileNotFoundException(
+                        "找不到可执行的ffmpeg文件。请安装 ffmpeg 并确保其已加入 PATH，" +
+                        "或使用 --ffmpeg-path 指定路径（如 --ffmpeg-path C:/ffmpeg/bin/ffmpeg.exe）。");
                 BBDownMuxer.FFMPEG = binPath;
             }
         }
@@ -191,7 +195,9 @@ internal partial class Program
             {
                 var binPath = ExternalToolHelper.FindExecutable("aria2c");
                 if (string.IsNullOrEmpty(binPath))
-                    throw new FileNotFoundException("找不到可执行的aria2c文件");
+                    throw new FileNotFoundException(
+                        "找不到可执行的aria2c文件。请安装 aria2 并确保其已加入 PATH，" +
+                        "或使用 --aria2c-path 指定路径（如 --aria2c-path C:/aria2/aria2c.exe）。");
                 BBDownAria2c.ARIA2C = binPath;
             }
 

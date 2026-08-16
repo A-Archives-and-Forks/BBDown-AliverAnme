@@ -42,6 +42,20 @@ public static class Config
     public static void ApplyToCurrentAsyncFlow(AppSettings settings)
         => _contextSettings.Value = settings;
 
+    /// <summary>
+    /// 写入服务器时钟偏移（秒），同时作用于当前异步流与全局。
+    /// 双写理由与 Apply 相同（serve 任务流的 WbiSign 需要读校准值），但偏移是服务器
+    /// UTC 时钟的物理属性而非账号凭据：与 Cookie/Wbi 不同，serve 并发任务间共享不会
+    /// 造成串号等安全后果（偏移语义上应全任务一致）。流内未设时 Config.Current 回落
+    /// 全局（见 <see cref="Current"/>），任何签名流都能读到最近校准值。
+    /// 由 HTTPUtil.CalibrateClock 在每次响应头 Date 校准后调用。
+    /// </summary>
+    public static void SET_CLOCK_OFFSET(long offsetSeconds)
+    {
+        _contextSettings.Value = Current with { ServerClockOffsetSeconds = offsetSeconds };
+        lock (_lock) { _settings = _settings with { ServerClockOffsetSeconds = offsetSeconds }; }
+    }
+
     public static string COOKIE { get => Current.Cookie; set => Apply(Current with { Cookie = value }); }
     public static string TOKEN { get => Current.Token; set => Apply(Current with { Token = value }); }
     public static bool DEBUG_LOG { get => Current.DebugLog; set => Apply(Current with { DebugLog = value }); }

@@ -70,17 +70,27 @@ public class SpaceVideoFetcher : IFetcher
         var failures = new List<(string Aid, string Title, string Reason)>();
         var consecutiveFailures = 0;
         var steinGate = false;
+        string? lastSuccessAid = null;
+        // 节流进度：逐稿展开可能持续数十分钟（千稿 × 120ms 间隔），期间完全静默会让
+        // 用户误以为卡死。每处理 20 个或每 5 秒报一次进度，不逐条刷屏。
+        var lastProgressLog = DateTimeOffset.MinValue;
 
         for (var i = 0; i < entries.Count; i++)
         {
             var entry = entries[i];
             if (i > 0) await Task.Delay(DetailRequestInterval, cancellationToken);
+            if (i > 0 && (i % 20 == 0 || (DateTimeOffset.UtcNow - lastProgressLog).TotalSeconds >= 5))
+            {
+                Logger.Log($"已展开 {i}/{entries.Count} 个投稿");
+                lastProgressLog = DateTimeOffset.UtcNow;
+            }
 
             try
             {
                 var detail = await new NormalInfoFetcher().FetchAsync(entry.Aid, cancellationToken);
                 consecutiveFailures = 0;
                 steinGate |= detail.IsSteinGate;
+                lastSuccessAid = entry.Aid;
 
                 var multiPage = detail.PagesInfo.Count > 1;
                 foreach (var page in detail.PagesInfo)
@@ -110,12 +120,16 @@ public class SpaceVideoFetcher : IFetcher
                 failures.Add((entry.Aid, entry.Title, ex.Message));
                 consecutiveFailures++;
 
-                // 连续失败说明问题不在个别稿件上，继续跑既拿不到结果又会加重风控
+                // 连续失败说明问题不在个别稿件上，继续跑既拿不到结果又会加重风控。
+                // 异常带上"已成功展开数量 + 最后一个成功 av"上下文：批量解析中途中止后，
+                // 用户可据此定位断点（从该 av 附近手动续跑），不必从头重试数千次。
                 if (consecutiveFailures >= ConsecutiveFailureLimit)
                 {
                     throw new InvalidOperationException(
                         $"连续 {consecutiveFailures} 个投稿解析失败，判定为风控或登录状态失效，已中止。" +
-                        $"最后一次失败：av{entry.Aid} - {ex.Message}", ex);
+                        $"\n已成功展开 {pagesInfo.Count}/{entries.Count} 个投稿" +
+                        (lastSuccessAid is null ? "" : $"，最后一个成功 av{lastSuccessAid}") +
+                        $"。\n最后一次失败：av{entry.Aid} - {ex.Message}", ex);
                 }
             }
         }
@@ -177,6 +191,8 @@ public class SpaceVideoFetcher : IFetcher
         while (pageNumber < totalPage)
         {
             pageNumber++;
+            // 超大 UP 主可能数十页：逐页提示推进，避免翻页阶段看似卡死
+            Logger.Log($"正在获取第 {pageNumber}/{totalPage} 页投稿列表...");
             var (more, _) = await FetchPageAsync(pageNumber, mid, cancellationToken);
             // 空页意味着接口提前结束（翻页上限、风控降级、条目在翻页间被删减）。
             // 继续把剩余页请求完既拿不到数据，又会平白加重风控。
@@ -207,7 +223,7 @@ public class SpaceVideoFetcher : IFetcher
 
     private static async Task<(List<SpaceEntry> entries, int totalCount)> FetchPageAsync(int pageNumber, string mid, CancellationToken cancellationToken)
     {
-        var api = Parser.WbiSign($"mid={mid}&order=pubdate&pn={pageNumber}&ps={PageSize}&tid=0&wts={DateTimeOffset.Now.ToUnixTimeSeconds()}");
+        var api = Parser.WbiSign($"mid={mid}&order=pubdate&pn={pageNumber}&ps={PageSize}&tid=0&wts={ServerClock.NowUnixSeconds()}");
         api = $"https://api.bilibili.com/x/space/wbi/arc/search?{api}";
         var json = await FetchSpaceListAsync(api, cancellationToken);
 

@@ -36,7 +36,8 @@ public class LiveCommand : Command<LiveSettings>
                 {
                     var binPath = ExternalToolHelper.FindExecutable("ffmpeg");
                     if (string.IsNullOrEmpty(binPath))
-                        throw new FileNotFoundException("找不到可执行的ffmpeg文件，直播分段合成需要 ffmpeg");
+                        throw new FileNotFoundException(
+                            "找不到可执行的ffmpeg文件，直播分段合成需要 ffmpeg。请安装 ffmpeg 并确保其已加入 PATH 后重试。");
                     BBDownMuxer.FFMPEG = binPath;
                 }
 

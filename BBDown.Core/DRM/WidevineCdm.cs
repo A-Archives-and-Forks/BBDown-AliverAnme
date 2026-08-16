@@ -193,7 +193,19 @@ public sealed class WidevineCdm : IDisposable
         // 许可证响应携带内容解密密钥：强制走始终校验证书的客户端（VerifiedAppHttpClient），
         // 不受用户 --insecure 影响——跳过 TLS 校验会让中间人直接窃取内容密钥。
         using var resp = await HTTPUtil.VerifiedAppHttpClient.SendAsync(req);
-        resp.EnsureSuccessStatusCode();
+        if (!resp.IsSuccessStatusCode)
+        {
+            // 非 2xx：许可证服务器常回错误状态文本（设备证书被拒/吊销等）。读错误体
+            // 给出可操作诊断，替代 EnsureSuccessStatusCode 的裸状态码消息（状态码消息
+            // 不含吊销/证书这类可定位信息）。错误体通常很短且不含密钥材料。
+            string errorBody;
+            try { errorBody = await resp.Content.ReadAsStringAsync(); }
+            catch (Exception) { errorBody = ""; }
+            throw new HttpRequestException(
+                $"许可证请求失败 (HTTP {(int)resp.StatusCode})" +
+                (string.IsNullOrEmpty(errorBody) ? "" : $": {errorBody}"),
+                null, resp.StatusCode);
+        }
         return await resp.Content.ReadAsByteArrayAsync();
     }
 
@@ -224,7 +236,9 @@ public sealed class WidevineCdm : IDisposable
 
         if (sm.Type != SignedMessage.Types.MessageType.License)
         {
-            Logger.LogDebug("Unexpected response type: {0}", sm.Type);
+            // 升为 Warn：异常响应类型通常是设备证书被服务器拒绝/吊销的征兆。
+            // 仅 Debug 记录会让用户在 DRM 解密失败时拿不到任何定位信息。
+            Logger.LogWarn($"许可证返回异常响应类型: {sm.Type}（可能为设备证书被服务器拒绝或已吊销）");
             return null;
         }
 

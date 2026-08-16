@@ -1,4 +1,6 @@
+using System.Text.Json;
 using BBDown;
+using BBDown.Core.Util;
 
 namespace BBDown.Tests;
 
@@ -128,6 +130,83 @@ public class LiveStreamUtilTests
         {
             try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
         }
+    }
+
+    /// <summary>
+    /// SelectFlvUrl 的选流纯函数测试（内联 JSON，无网络）：FLV 被优先选中，
+    /// availableFormats 收集接口实际提供的全部格式（含被跳过的 ts/fmp4）。
+    /// </summary>
+    [Fact]
+    public void SelectFlvUrl_PicksFlv_AndReportsAllFormats()
+    {
+        const string playUrl = """
+        {
+          "stream": [
+            {
+              "protocol_name": "http_stream",
+              "format": [
+                { "format_name": "flv", "codec": [
+                  { "codec_name": "avc", "base_url": "/live/room/1.flv", "url_info": [
+                    { "host": "https://example.com", "extra": "?token=1" } ] }
+                ] }
+              ]
+            },
+            {
+              "protocol_name": "http_hls",
+              "format": [
+                { "format_name": "ts", "codec": [
+                  { "codec_name": "avc", "base_url": "/live/room/1.m3u8", "url_info": [
+                    { "host": "https://hls.example.com", "extra": "?token=2" } ] }
+                ] }
+              ]
+            }
+          ]
+        }
+        """;
+        using var doc = JsonDocument.Parse(playUrl);
+
+        var url = LiveStreamUtil.SelectFlvUrl(doc.RootElement, out var formats);
+
+        Assert.Equal("https://example.com/live/room/1.flv?token=1", url);
+        Assert.Contains("flv", formats);
+        Assert.Contains("ts", formats);
+    }
+
+    [Fact]
+    public void SelectFlvUrl_OnlyHls_ReturnsNull_AndReportsTs()
+    {
+        const string playUrl = """
+        {
+          "stream": [
+            {
+              "protocol_name": "http_hls",
+              "format": [
+                { "format_name": "ts", "codec": [
+                  { "codec_name": "avc", "base_url": "/live/room/2.m3u8", "url_info": [
+                    { "host": "https://hls.example.com", "extra": "?token=2" } ] }
+                ] }
+              ]
+            }
+          ]
+        }
+        """;
+        using var doc = JsonDocument.Parse(playUrl);
+
+        var url = LiveStreamUtil.SelectFlvUrl(doc.RootElement, out var formats);
+
+        Assert.Null(url); // HLS 暂不支持：无 FLV 时返回 null，由调用方报可操作错误
+        Assert.Equal(new[] { "ts" }, formats);
+    }
+
+    [Fact]
+    public void SelectFlvUrl_EmptyPlayUrl_ReturnsNull_AndNoFormats()
+    {
+        using var doc = JsonDocument.Parse("""{"stream": []}""");
+
+        var url = LiveStreamUtil.SelectFlvUrl(doc.RootElement, out var formats);
+
+        Assert.Null(url);
+        Assert.Empty(formats);
     }
 
     /// <summary>记录收到的调用与取消令牌的假执行器。能捕获外部进程的 stdin 输入。

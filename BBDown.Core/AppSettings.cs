@@ -26,7 +26,12 @@ public record AppSettings(
     // 当前任务流的工作目录（--work-dir）。serve 模式下每个 /add-task 经 SetUpWork
     // 把各自目录写入本配置快照（AsyncLocal 隔离），下载管线的相对路径经
     // PathUtil.ResolveWorkPath 基于它解析——不写进程 CWD，避免并发任务互相污染。
-    string WorkDir = ""
+    string WorkDir = "",
+    // 服务器时钟偏移（秒）：WBI 签名 wts/ts 基于本地系统时钟，时钟偏差超过 ~60s
+    // 时效窗口即被 B 站拒绝签名。首次请求从响应头 Date 校准后写入，后续签名时间戳
+    // 经 ServerClock.Now 补偿。UTC 偏移是服务器物理属性而非账号凭据，serve 并发任务
+    // 间共享无害。
+    long ServerClockOffsetSeconds = 0
 )
 {
     /// <summary>

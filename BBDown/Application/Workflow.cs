@@ -195,6 +195,17 @@ internal partial class Program
         // 由调用方拿返回值在自身流内应用，避免子方法内的 AsyncLocal 写入丢失。
         var (cookie, token) = LoadCredentials(myOption);
 
+        // Cookie 即将过期的提前警告：B 站 SESSDATA 有效期约数月，serve 长驻进程跨周/月
+        // 运行会静默失效，任务在运行中突然大面积鉴权失败。这里纯本地解析 SESSDATA
+        // 估算剩余天数（无网络请求），低于阈值时提前提示扫码刷新。解析失败/未登录
+        // 不警告（fail-open，见 EstimateSessdataExpiryDays）。
+        if (!string.IsNullOrEmpty(cookie))
+        {
+            int? expiryDays = BBDownUtil.EstimateSessdataExpiryDays(cookie);
+            if (expiryDays is not null && expiryDays < 30)
+                Logger.LogWarn($"Cookie（SESSDATA）预计 {expiryDays} 天后过期，请提前运行 BBDown login 扫码刷新，以免任务鉴权失败");
+        }
+
         string? newWbi = null;
         // 检测是否登录了账号并提取 wbi。WBI 是元数据 fetcher（SpaceVideoFetcher 的
         // mid: 列表）的签名依赖，不能只根据最终播放 API 模式决定：FetcherFactory 无论

@@ -76,7 +76,10 @@ internal partial class Program
                 // 用户拿到加密文件却被告知下载成功。这里抛异常让调用方把任务标记为失败，
                 // 而不是静默交付加密产物。
                 throw new InvalidOperationException(
-                    "DRM 解密密钥获取失败（Key 或 Kid 缺失），无法解密。请确保 device.wvd 位于程序目录，或使用 --key --kid 同时提供密钥。");
+                    "DRM 解密密钥获取失败（Key 或 Kid 缺失），无法解密。" +
+                    "请确保 device.wvd 位于程序目录（--wvd-path 可指定外部 WVD 文件）；" +
+                    "若此前可解密而当前突然失败，常见原因是 device.wvd 的设备证书已被 B 站吊销/封禁，" +
+                    "请更换新版 device.wvd 后重试，或使用 --key --kid 同时提供密钥。");
             }
         }
 
@@ -132,12 +135,15 @@ internal partial class Program
             var psi = new ProcessStartInfo
             {
                 FileName = mp4decrypt,
-                Arguments = $"--key-file \"{keyFile}\" \"{input}\" \"{output}\"",
                 RedirectStandardOutput = false,
                 RedirectStandardError = true,
                 UseShellExecute = false,
                 CreateNoWindow = true,
             };
+            psi.ArgumentList.Add("--key-file");
+            psi.ArgumentList.Add(keyFile);
+            psi.ArgumentList.Add(input);
+            psi.ArgumentList.Add(output);
 
             using var proc = Process.Start(psi);
             if (proc is null)
