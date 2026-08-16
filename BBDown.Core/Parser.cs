@@ -234,20 +234,17 @@ public static partial class Parser
                 List<JsonElement>? roleAudio = null;
                 int pDur = 0;
 
-                if (root.TryGetProperty("dash", out var dashElem) && dashElem.TryGetProperty("duration", out var durElem))
-                    pDur = durElem.GetInt32();
-                else if (root.TryGetProperty("timelength", out var tlElem))
-                    pDur = tlElem.GetInt32() / 1000;
+                if (root.TryGetProperty("dash", out var dashElem))
+                    pDur = dashElem.GetInt32Safe("duration");
+                if (pDur == 0)
+                    pDur = root.GetInt32Safe("timelength") / 1000;
 
                 parsedResult.ActualDurationSec = pDur;
 
                 // DRM metadata
-                if (root.TryGetProperty("is_drm", out var isDrmElem))
-                    parsedResult.IsDrm = isDrmElem.GetBoolean();
-                if (root.TryGetProperty("drm_tech_type", out var techElem))
-                    parsedResult.DrmTechType = techElem.GetInt32();
-                if (root.TryGetProperty("drm_type", out var typeElem))
-                    parsedResult.DrmType = typeElem.GetString() ?? "";
+                parsedResult.IsDrm = root.GetBooleanSafe("is_drm");
+                parsedResult.DrmTechType = root.GetInt32Safe("drm_tech_type");
+                parsedResult.DrmType = root.GetValueAsStringSafe("drm_type");
                 if (parsedResult.IsDrm) Logger.LogDebug("DRM detected: type={0}, tech={1}", parsedResult.DrmType, parsedResult.DrmTechType);
 
                 //免二压视频需要重新请求

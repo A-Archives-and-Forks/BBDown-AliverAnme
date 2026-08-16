@@ -82,6 +82,9 @@ public static class SubscriptionStore
     /// 临时文件名带唯一后缀：固定 .tmp 名会让并发写者互相踩踏（FileShare.None 抛 IOException）。</summary>
     private static void AtomicWrite(string path, string content)
     {
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            Directory.CreateDirectory(dir);
         string tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
         File.WriteAllText(tmp, content);
         File.Move(tmp, path, true);

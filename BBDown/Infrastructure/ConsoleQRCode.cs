@@ -15,18 +15,24 @@ public class ConsoleQRCode : AbstractQRCode
     {
         var previousBackColor = Console.BackgroundColor;
         var previousForeColor = Console.ForegroundColor;
-        Console.ForegroundColor = ConsoleColor.White;
-        for (int y = 0; y < QrCodeData.ModuleMatrix.Count; y++)
+        try
         {
-            for (int x = 0; x < QrCodeData.ModuleMatrix[y].Count; x++)
+            Console.ForegroundColor = ConsoleColor.White;
+            for (int y = 0; y < QrCodeData.ModuleMatrix.Count; y++)
             {
-                Console.ForegroundColor = QrCodeData.ModuleMatrix[y][x] ? darkColor : lightColor;
-                Console.Write("██");
+                for (int x = 0; x < QrCodeData.ModuleMatrix[y].Count; x++)
+                {
+                    Console.ForegroundColor = QrCodeData.ModuleMatrix[y][x] ? darkColor : lightColor;
+                    Console.Write("██");
+                }
+                Console.BackgroundColor = darkColor;
+                Console.WriteLine("");
             }
-            Console.BackgroundColor = darkColor;
-            Console.WriteLine("");
         }
-        Console.BackgroundColor = previousBackColor;
-        Console.ForegroundColor = previousForeColor;
+        finally
+        {
+            Console.BackgroundColor = previousBackColor;
+            Console.ForegroundColor = previousForeColor;
+        }
     }
 }
