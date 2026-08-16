@@ -24,7 +24,7 @@ internal static class BBDownDownloadUtil
         public DownloadTask? RelatedTask { get; set; } = null;
     }
 
-    private static async Task<long> RangeDownloadToTmpAsync(int id, string url, string tmpName, long fromPosition, long? toPosition, Action<int, long, long> onProgress, bool failOnRangeNotSupported = false, string? ifRange = null, CancellationToken token = default)
+    private static async Task<long> RangeDownloadToTmpAsync(int id, string url, string tmpName, long fromPosition, long? toPosition, Action<int, long, long> onProgress, bool failOnRangeNotSupported = false, string? ifRange = null, long expectedTotalSize = -1, CancellationToken token = default)
     {
         using var fileStream = new FileStream(tmpName, FileMode.OpenOrCreate);
         long clipLength = toPosition is > 0 ? toPosition.Value - fromPosition + 1 : long.MaxValue;
@@ -100,6 +100,19 @@ internal static class BBDownDownloadUtil
                 throw new IOException(
                     $"Content-Range 起始偏移({contentRange?.From?.ToString() ?? "none"})与请求偏移({downloadedBytes})不符，" +
                     "远端内容已变化或服务器行为异常，已丢弃本地内容并重新下载");
+            }
+            // 206 的 Content-Range 尾段（/total）揭示资源真实总长。HEAD 探测返回的 size
+            // 若与真实总长不符（CDN 对 HEAD 返回缓存/占位长度、或探测后内容已变化），
+            // 分片划分会按错误大小切割，静默产出截断文件——合并长度校验用的是同一个
+            // HEAD 值，是自引用比较，拦不住。这里用每个分片的 206 响应交叉校验：
+            // total != 探测 size 即丢弃本地内容并抛可重试错误，让页面级重试重新探测
+            //（GET），而不是产出"长度正确但内容截断"的成品。
+            if (expectedTotalSize > 0 && contentRange.Length is { } total && total != expectedTotalSize)
+            {
+                fileStream.SetLength(0);
+                fileStream.Seek(0, SeekOrigin.Begin);
+                throw new IOException(
+                    $"Content-Range 声明总长({total})与探测大小({expectedTotalSize})不符，远端内容已变化，已丢弃本地内容并重新下载");
             }
         }
 
@@ -268,26 +281,30 @@ internal static class BBDownDownloadUtil
     public static async Task DownloadFileAsync(string url, string path, DownloadConfig config, CancellationToken token = default)
     {
         if (string.IsNullOrEmpty(url)) return;
-        await WithPathLockAsync(path, () => DownloadFileCoreAsync(url, path, config, token), token);
+        await WithPathLockAsync(path, () => DownloadFileCoreAsync(url, path, config, token: token), token);
     }
 
     /// <summary>
     /// 单线程下载的实际逻辑。不获取 <see cref="AcquireDownloadLock"/>，
     /// 以便多线程模式降级时可以在已持锁的状态下复用（SemaphoreSlim 不可重入）。
     /// </summary>
-    private static async Task DownloadFileCoreAsync(string url, string path, DownloadConfig config, CancellationToken token = default)
+    private static async Task DownloadFileCoreAsync(string url, string path, DownloadConfig config, (long size, HttpResponseHeaders? headers, HttpContentHeaders? contentHeaders)? probe = null, CancellationToken token = default)
     {
         if (config.ForceHttp) url = ReplaceUrl(url);
         Logger.LogDebug("Start downloading: {0}", url);
         string desDir = Path.GetDirectoryName(path)!;
         if (!string.IsNullOrEmpty(desDir) && !Directory.Exists(desDir)) Directory.CreateDirectory(desDir);
+        // 探测合并：多线程降级复用 MultiThreadDownloadAndMergeAsync 已探测的结果（probe 非空），
+        // 直接单线程调用（DownloadFileAsync）时在此探测一次。每个文件整个下载链路只探测一次，
+        // 不再"aria2 分支探测一次 + 下方再探测一次"。
+        var (fileSize, probeHeaders, probeContentHeaders) = probe ?? await GetFileSizeAndHeadersAsync(url, token);
         if (config.UseAria2c)
         {
             // --continue=true 断点续传前先校验既有 partial/.aria2 的资源身份：残留的旧资源
             //（如中断的 1080P 下载 + 控制文件）会被 aria2c 无身份校验地续传，新资源字节
             // 追加到旧前缀上可能拼出损坏文件。用与非 aria2 路径相同的 ResumeManifest
             // 身份校验，身份不可信则删除 partial + 控制文件完整重下。已完整下载则跳过。
-            if (await PrepareAria2cTargetAsync(url, path, token))
+            if (PrepareAria2cTarget(url, path, fileSize, probeHeaders, probeContentHeaders))
             {
                 Logger.LogDebug("文件已下载过, 跳过下载");
                 return;
@@ -306,7 +323,6 @@ internal static class BBDownDownloadUtil
         // 留下的 1MB 视频数据会被下次音频下载当成音频前缀续传（长度正确但内容损坏）。
         // 保留扩展名即隔离音视频的临时文件，且与多线程分片（.vclip/.aclip）的隔离一致。
         string tmpName = path + ".tmp";
-        var (fileSize, probeHeaders, probeContentHeaders) = await GetFileSizeAndHeadersAsync(url, token);
         // 必须要求 fileSize > 0：服务器未返回 Content-Length 时 fileSize 为 0，
         // 此时若 path 恰好是上次失败留下的空文件，会被误判成"已下载完成"
         if (fileSize > 0 && File.Exists(path) && new FileInfo(path).Length == fileSize)
@@ -372,7 +388,7 @@ internal static class BBDownDownloadUtil
             try
             {
                 using var progress = new ProgressBar(config.RelatedTask);
-                long written = await RangeDownloadToTmpAsync(0, url, tmpName, 0, null, (_, downloaded, total) => progress.Report((double)downloaded / total, downloaded), ifRange: resumeIfRange, token: token);
+                long written = await RangeDownloadToTmpAsync(0, url, tmpName, 0, null, (_, downloaded, total) => progress.Report((double)downloaded / total, downloaded), ifRange: resumeIfRange, expectedTotalSize: fileSize, token: token);
                 // 移动最终路径前验证总长度：探测到的远端大小 > 0 时，临时文件必须与之一致。
                 // 若响应 Content-Range 错位被上方拒绝重试后仍拿到错误内容，长度校验能拦住
                 // 假成功——此前直接 File.Move 把未校验内容当作成品。
@@ -450,12 +466,6 @@ internal static class BBDownDownloadUtil
         return false;
     }
 
-    private static async Task<bool> PrepareAria2cTargetAsync(string url, string path, CancellationToken token)
-    {
-        var (fileSize, probeHeaders, probeContentHeaders) = await GetFileSizeAndHeadersAsync(url, token);
-        return PrepareAria2cTarget(url, path, fileSize, probeHeaders, probeContentHeaders);
-    }
-
     /// <summary>尽力删除残留文件；返回是否成功（占用/权限问题只降级为日志并返回 false）。</summary>
     private static bool TryDeleteStale(string path)
     {
@@ -481,7 +491,15 @@ internal static class BBDownDownloadUtil
     {
         if (string.IsNullOrEmpty(url)) return [];
         List<string>? clips = null;
-        await WithPathLockAsync(path, async () => clips = await MultiThreadDownloadCoreAsync(url, path, config, token), token);
+        await WithPathLockAsync(path, async () =>
+        {
+            // 与 Core 一致：--force-http 先替换 URL 再探测，探测与下载用同一资源地址
+            //（否则探测 https、下载 http，两端的 Content-Length/校验器可能不一致）
+            if (config.ForceHttp) url = ReplaceUrl(url);
+            // 探测合并：链路顶层探测一次，结果下传 Core，不再在 Core 内重复探测
+            var probe = await GetFileSizeAndHeadersAsync(url, token);
+            clips = await MultiThreadDownloadCoreAsync(url, path, config, probe, token);
+        }, token);
         return clips ?? [];
     }
 
@@ -497,16 +515,22 @@ internal static class BBDownDownloadUtil
         if (string.IsNullOrEmpty(url)) return;
         await WithPathLockAsync(path, async () =>
         {
+            // 与 Core 一致：--force-http 先替换 URL 再探测，探测与下载用同一资源地址
+            //（否则探测 https、下载 http，两端的 Content-Length/校验器可能不一致）
+            if (config.ForceHttp) url = ReplaceUrl(url);
+            // 探测合并：整个"下载→合并"链路只在顶层探测一次（HEAD 优先，连接可直接回池），
+            // 结果沿 Core → 单线程降级 → aria2 判断下传。此前每层重复 GetFileSizeAndHeadersAsync
+            // 让每个文件多出 2-3 次往返，且 GET 探测不消费响应体使连接无法复用。
+            var (fileSize, probeHeaders, probeContentHeaders) = await GetFileSizeAndHeadersAsync(url, token);
             // 已完整下载过：直接跳过（不再产生分片，也不做任何合并/清理）。
             // aria2 路径不走此纯长度跳过：等长跨资源残留会被误当"完整"跳过，身份校验
-            // 交给 MultiThreadDownloadCoreAsync 内的 PrepareAria2cTargetAsync。
-            long fileSize = (await GetFileSizeAndHeadersAsync(url, token)).size;
+            // 交给 MultiThreadDownloadCoreAsync 内的 PrepareAria2cTarget。
             if (!config.UseAria2c && fileSize > 0 && File.Exists(path) && new FileInfo(path).Length == fileSize)
             {
                 Logger.LogDebug("文件已下载过, 跳过下载");
                 return;
             }
-            var clips = await MultiThreadDownloadCoreAsync(url, path, config, token);
+            var clips = await MultiThreadDownloadCoreAsync(url, path, config, (fileSize, probeHeaders, probeContentHeaders), token);
             if (clips.Count == 0) return; // 单线程降级或 aria2 路径：成品已直接写到目标路径
             // 在锁内合并：合并到临时文件后原子替换，避免锁内写目标路径时被读取方读到半截
             string tmpMerged = path + ".merging";
@@ -542,15 +566,17 @@ internal static class BBDownDownloadUtil
     }
 
     /// <summary>本次多线程下载实际产生的分片文件列表。无分片（单线程降级/已存在跳过）时返回空列表。</summary>
-    private static async Task<List<string>> MultiThreadDownloadCoreAsync(string url, string path, DownloadConfig config, CancellationToken token)
+    private static async Task<List<string>> MultiThreadDownloadCoreAsync(string url, string path, DownloadConfig config,
+        (long size, HttpResponseHeaders? headers, HttpContentHeaders? contentHeaders) probe, CancellationToken token)
     {
         if (config.ForceHttp) url = ReplaceUrl(url);
         Logger.LogDebug("Start downloading: {0}", url);
+        var (fileSize, probeHeaders, probeContentHeaders) = probe;
         if (config.UseAria2c)
         {
             // 与单线程 aria2 分支一致：先校验续传目标身份（防跨资源续传拼损坏文件），
             // 已完整则跳过（MultiThreadDownloadAndMergeAsync 已做过一次长度跳过，此处兜底）
-            if (await PrepareAria2cTargetAsync(url, path, token))
+            if (PrepareAria2cTarget(url, path, fileSize, probeHeaders, probeContentHeaders))
                 return [];
             await BBDownAria2c.DownloadFileByAria2cAsync(url, path, config.Aria2cArgs, token);
             if (File.Exists(path + ".aria2") || !File.Exists(path))
@@ -559,7 +585,6 @@ internal static class BBDownDownloadUtil
             Console.WriteLine();
             return [];
         }
-        var (fileSize, probeHeaders, probeContentHeaders) = await GetFileSizeAndHeadersAsync(url, token);
         Logger.LogDebug("文件大小：{0} bytes", fileSize);
         // 分片必须依赖已知的文件大小：拿不到 Content-Length 时 GetAllClips 会返回空列表，
         // 于是既不下载也不报错，最终在混流阶段才以"找不到文件"的形式暴露出来。
@@ -567,7 +592,8 @@ internal static class BBDownDownloadUtil
         if (fileSize <= 0)
         {
             Logger.LogWarn("服务器未返回文件大小, 已降级为单线程下载");
-            await DownloadFileCoreAsync(url, path, config, token);
+            // 复用本链路已探测的结果：不重新探测（探测合并）
+            await DownloadFileCoreAsync(url, path, config, probe, token);
             return [];
         }
         //已下载过, 跳过下载
@@ -637,7 +663,7 @@ internal static class BBDownDownloadUtil
                         var previous = Interlocked.Exchange(ref clipProgress[index], downloaded);
                         var current = Interlocked.Add(ref downloadedTotal, downloaded - previous);
                         progress.Report(fileSize > 0 ? (double)current / fileSize : 0, current);
-                    }, true, token: _);
+                    }, true, expectedTotalSize: fileSize, token: _);
                     break;
                 }
                 catch (NotSupportedException)
@@ -718,17 +744,34 @@ internal static class BBDownDownloadUtil
 
     private static async Task<(long size, HttpResponseHeaders? headers, HttpContentHeaders? contentHeaders)> GetFileSizeAndHeadersAsync(string url, CancellationToken token = default)
     {
-        using var httpRequestMessage = new HttpRequestMessage();
-        if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
-            httpRequestMessage.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
-        httpRequestMessage.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.GetUserAgent(null));
-        httpRequestMessage.Headers.TryAddWithoutValidation("Cookie", Core.Config.Current.Cookie);
-        httpRequestMessage.RequestUri = new(url);
-        using var response = (await HTTPUtil.AppHttpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead, token))
-            .EnsureSuccessStatusCode();
-        long totalSizeBytes = response.Content.Headers.ContentLength ?? 0;
-
-        return (totalSizeBytes, response.Headers, response.Content.Headers);
+        // HEAD 优先：媒体 CDN 普遍支持 HEAD，不传输响应体，连接可直接归还连接池。
+        // 此前用 GET + ResponseHeadersRead 又不消费响应体，连接会被关闭无法复用
+        //（"响应体未消费弃连接"）。HEAD 失败（405/403 等）或未返回 Content-Length 时
+        // 回退 GET，保证返回的 size 是权威值（不因 HEAD 行为差异误判为 0 而退化单线程）。
+        for (int attempt = 0; attempt < 2; attempt++)
+        {
+            var method = attempt == 0 ? HttpMethod.Head : HttpMethod.Get;
+            try
+            {
+                using var httpRequestMessage = new HttpRequestMessage(method, url);
+                if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
+                    httpRequestMessage.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
+                httpRequestMessage.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.GetUserAgent(null));
+                httpRequestMessage.Headers.TryAddWithoutValidation("Cookie", Core.Config.Current.Cookie);
+                httpRequestMessage.RequestUri = new(url);
+                using var response = (await HTTPUtil.AppHttpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
+                long totalSizeBytes = response.Content.Headers.ContentLength ?? 0;
+                if (method == HttpMethod.Head && totalSizeBytes <= 0)
+                    continue; // HEAD 未声明长度：部分 CDN 对 HEAD 不返回 Content-Length，回退 GET 再探测
+                return (totalSizeBytes, response.Headers, response.Content.Headers);
+            }
+            catch (HttpRequestException) when (method == HttpMethod.Head)
+            {
+                // HEAD 不被支持（405/403 等）：回退 GET（GET 仍失败时异常向上抛出）
+            }
+        }
+        // 仅当 GET 也失败时不可达（GET 异常会向上抛出）；此处为编译器兜底
+        return (0, null, null);
     }
 
     /// <summary>

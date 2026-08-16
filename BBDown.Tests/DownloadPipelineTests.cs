@@ -16,6 +16,20 @@ internal static class TestHash
     }
 }
 
+/// <summary>动态申请一个空闲回环端口：避免多个测试服务器共用同一端口时，
+/// HttpClient 连接池复用上一实例的陈旧连接，使请求计数/脚本响应错乱。</summary>
+internal static class TestPort
+{
+    public static int Allocate()
+    {
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        int port = ((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+        listener.Stop();
+        return port;
+    }
+}
+
 /// <summary>
 /// 本类通过 <see cref="BBDownDownloadUtil.ActivePathLockCount"/> 断言全局路径锁字典
 /// 会被清理（0 个空闲锁），而该字典是进程级静态状态——其它并行测试类若同时登记
@@ -650,7 +664,7 @@ public class DownloadPipelineTests
             _payload = new byte[payloadSize];
             new Random(7).NextBytes(_payload);
             _wrongOffset = wrongOffset;
-            Port = 24000 + (Environment.ProcessId % 2000);
+            Port = TestPort.Allocate();
             _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
             _listener.Start();
             _loop = Task.Run(async () =>
@@ -663,6 +677,15 @@ public class DownloadPipelineTests
                         try
                         {
                             var resp = ctx.Response;
+                            // HEAD：探测只取 Content-Length，不写响应体（HttpListener 对 HEAD
+                            // 会抑制 body，这里显式分支使行为确定，也避免 256KB body 写向不读的客户端）
+                            if (ctx.Request.HttpMethod == "HEAD")
+                            {
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _payload.Length;
+                                resp.Close();
+                                continue;
+                            }
                             var rangeHeader = ctx.Request.Headers["Range"];
                             if (string.IsNullOrEmpty(rangeHeader))
                             {
@@ -716,7 +739,7 @@ public class DownloadPipelineTests
             _payload = new byte[size];
             new Random(42).NextBytes(_payload);
             PayloadHash = TestHash.ComputeSha256Hex(_payload);
-            Port = 24000 + (Environment.ProcessId % 2000);
+            Port = TestPort.Allocate();
             _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
             _listener.Start();
             _loop = Task.Run(async () =>
@@ -729,6 +752,14 @@ public class DownloadPipelineTests
                         try
                         {
                             var resp = ctx.Response;
+                            // HEAD：探测只取 Content-Length，不写响应体（见 MisleadingRangeServer 同款分支）
+                            if (ctx.Request.HttpMethod == "HEAD")
+                            {
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _payload.Length;
+                                resp.Close();
+                                continue;
+                            }
                             // 支持 Range 请求：响应 206 分段
                             var rangeHeader = ctx.Request.Headers["Range"];
                             if (string.IsNullOrEmpty(rangeHeader))
@@ -843,6 +874,244 @@ public class DownloadPipelineTests
         finally
         {
             Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// C3：探测合并。整个"下载→合并"链路只在顶层探测一次（HEAD 优先，不传输响应体、
+    /// 连接可直接回池），结果下传各层，不再每层重复 GetFileSizeAndHeadersAsync。
+    /// 旧实现 MultiThreadDownloadAndMergeAsync 与 Core 各探测一次，每个文件多出 2-3 次往返。
+    /// 断言：一次 HEAD（探测），零 GET 探测，一次 Range 分片下载。
+    /// </summary>
+    [Fact]
+    public async Task MultiThreadDownloadAndMerge_ProbesOnce_NotPerLayer()
+    {
+        using var server = new ProbeCountingServer(256 * 1024);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            var config = new BBDownDownloadUtil.DownloadConfig { MultiThread = true };
+            var original = Config.Current.ThreadSegmentSizeMb;
+            try
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = 1 }); // 1MB 分片 → 1 个分片
+                await BBDownDownloadUtil.MultiThreadDownloadAndMergeAsync(
+                    $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
+            }
+            finally
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = original });
+            }
+
+            Assert.True(File.Exists(target), "目标文件应已合并生成");
+            Assert.Equal(server.PayloadHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
+            // 探测合并：整条链路只发 1 次 HEAD 探测、0 次 GET 探测（旧实现是 2+ 次 GET 探测）；
+            // 256KB 文件在 1MB 分片下只产生 1 个 Range 分片请求。
+            Assert.Equal(1, server.HeadCount);
+            Assert.Equal(0, server.GetCount);
+            Assert.Equal(1, server.RangeCount);
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// C3 回归：HEAD 探测返回的 size 若与真实资源总长不符（CDN 对 HEAD 返回缓存/占位长度），
+    /// 分片会按错误大小切割、静默产出截断文件——合并长度校验用的是同一个 HEAD 值，是
+    /// 自引用比较拦不住。修复：每个分片的 206 响应 Content-Range 尾段（/total）交叉校验，
+    /// total != 探测 size 即抛错。此测试断言 HEAD 声称 100 字节、真实 256KB 时下载失败，
+    /// 而非产出"长度 100 但内容截断"的成品。
+    /// </summary>
+    [Fact]
+    public async Task MultiThreadDownloadAndMerge_HeadSizeMismatch_DetectedByContentRangeTotal()
+    {
+        using var server = new MismatchedHeadSizeServer(payloadSize: 256 * 1024, headClaimedSize: 100);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            var config = new BBDownDownloadUtil.DownloadConfig { MultiThread = true };
+            var original = Config.Current.ThreadSegmentSizeMb;
+            var originalDelay = Config.Current.RetryDelayMs;
+            try
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = 1, RetryDelayMs = 10 });
+                await Assert.ThrowsAsync<IOException>(() =>
+                    BBDownDownloadUtil.MultiThreadDownloadAndMergeAsync(
+                        $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None));
+            }
+            finally
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = original, RetryDelayMs = originalDelay });
+            }
+
+            // 关键：不得产出被当作成品的截断文件（长度恰好等于错误的 HEAD size）
+            if (File.Exists(target))
+                Assert.True(new FileInfo(target).Length == 0, "HEAD 大小错位必须失败而非产出截断文件");
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>统计 HEAD/GET/Range 请求次数的本地服务：验证探测合并只探测一次。</summary>
+    private sealed class ProbeCountingServer : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private readonly CancellationTokenSource _cts = new();
+        private readonly byte[] _payload;
+        private readonly Task _loop;
+        public int Port { get; }
+        public int HeadCount;
+        public int GetCount;
+        public int RangeCount;
+        public string PayloadHash { get; }
+
+        public ProbeCountingServer(int size)
+        {
+            _payload = new byte[size];
+            new Random(42).NextBytes(_payload);
+            PayloadHash = TestHash.ComputeSha256Hex(_payload);
+            Port = TestPort.Allocate();
+            _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
+            _listener.Start();
+            _loop = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!_cts.IsCancellationRequested)
+                    {
+                        var ctx = await _listener.GetContextAsync();
+                        try
+                        {
+                            var resp = ctx.Response;
+                            if (ctx.Request.HttpMethod == "HEAD")
+                            {
+                                Interlocked.Increment(ref HeadCount);
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _payload.Length;
+                                resp.Close();
+                                continue;
+                            }
+                            var rangeHeader = ctx.Request.Headers["Range"];
+                            if (string.IsNullOrEmpty(rangeHeader))
+                            {
+                                Interlocked.Increment(ref GetCount);
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _payload.Length;
+                                await resp.OutputStream.WriteAsync(_payload, _cts.Token);
+                            }
+                            else
+                            {
+                                Interlocked.Increment(ref RangeCount);
+                                var range = rangeHeader.Replace("bytes=", "").Split('-');
+                                var from = int.Parse(range[0]);
+                                var to = range.Length > 1 && range[1] != "" ? int.Parse(range[1]) : _payload.Length - 1;
+                                var count = to - from + 1;
+                                resp.StatusCode = 206;
+                                resp.ContentLength64 = count;
+                                resp.AddHeader("Content-Range", $"bytes {from}-{to}/{_payload.Length}");
+                                await resp.OutputStream.WriteAsync(_payload.AsMemory(from, count), _cts.Token);
+                            }
+                            resp.Close();
+                        }
+                        catch { /* 客户端中止：忽略 */ }
+                    }
+                }
+                catch (HttpListenerException) { /* 服务停止 */ }
+            });
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            try { _listener.Stop(); } catch { }
+            _listener.Close();
+            try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { }
+            _cts.Dispose();
+        }
+    }
+
+    /// <summary>HEAD 声称错误（偏小）大小、GET/206 返回真实大小的本地服务：
+    /// 模拟 CDN 对 HEAD 返回缓存/占位长度，验证 Content-Range 尾段交叉校验能拦下截断。</summary>
+    private sealed class MismatchedHeadSizeServer : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private readonly CancellationTokenSource _cts = new();
+        private readonly byte[] _payload;
+        private readonly long _headClaimedSize;
+        private readonly Task _loop;
+        public int Port { get; }
+
+        public MismatchedHeadSizeServer(int payloadSize, long headClaimedSize)
+        {
+            _payload = new byte[payloadSize];
+            new Random(5).NextBytes(_payload);
+            _headClaimedSize = headClaimedSize;
+            Port = TestPort.Allocate();
+            _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
+            _listener.Start();
+            _loop = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!_cts.IsCancellationRequested)
+                    {
+                        var ctx = await _listener.GetContextAsync();
+                        try
+                        {
+                            var resp = ctx.Response;
+                            if (ctx.Request.HttpMethod == "HEAD")
+                            {
+                                // 错误的（偏小）Content-Length：探测据此切分，若未交叉校验会静默截断
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _headClaimedSize;
+                                resp.Close();
+                                continue;
+                            }
+                            var rangeHeader = ctx.Request.Headers["Range"];
+                            if (string.IsNullOrEmpty(rangeHeader))
+                            {
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _payload.Length;
+                                await resp.OutputStream.WriteAsync(_payload, _cts.Token);
+                            }
+                            else
+                            {
+                                var range = rangeHeader.Replace("bytes=", "").Split('-');
+                                var from = int.Parse(range[0]);
+                                var to = range.Length > 1 && range[1] != "" ? int.Parse(range[1]) : _payload.Length - 1;
+                                var count = to - from + 1;
+                                resp.StatusCode = 206;
+                                resp.ContentLength64 = count;
+                                // 关键：Content-Range 尾段用真实总长（≠ HEAD 声称的偏小值）
+                                resp.AddHeader("Content-Range", $"bytes {from}-{to}/{_payload.Length}");
+                                await resp.OutputStream.WriteAsync(_payload.AsMemory(from, count), _cts.Token);
+                            }
+                            resp.Close();
+                        }
+                        catch { /* 客户端中止：忽略 */ }
+                    }
+                }
+                catch (HttpListenerException) { /* 服务停止 */ }
+            });
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            try { _listener.Stop(); } catch { }
+            _listener.Close();
+            try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { }
+            _cts.Dispose();
         }
     }
 }

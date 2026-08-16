@@ -28,8 +28,10 @@ internal partial class Program
         //寻找并设置所需的二进制文件路径
         FindBinaries(myOption);
 
-        //切换工作目录
-        ChangeWorkingDir(myOption);
+        //切换工作目录（返回解析后的绝对目录，并入下方 AppSettings 的 WorkDir）。
+        // 不能在 ChangeWorkingDir 内部自行写配置：下方 Config.Apply(new AppSettings(...))
+        // 会整体替换配置快照，WorkDir 会被重置为空。
+        string workDir = ChangeWorkingDir(myOption);
 
         //解析优先级
         var encodingPriority = ParseEncodingPriority(myOption, out var firstEncoding);
@@ -60,7 +62,9 @@ internal partial class Program
             ThreadSegmentSizeMb: myOption.ThreadSegmentSize,
             // UA 按异步流隔离写入 Config.Current，HTTPUtil.GetUserAgent 读它：
             // 不再改进程级静态 HTTPUtil.UserAgent，serve 并发任务互不污染
-            UserAgent: myOption.UserAgent
+            UserAgent: myOption.UserAgent,
+            // 任务流工作目录：serve 下经 AsyncLocal 隔离，PathUtil.ResolveWorkPath 据此解析相对路径
+            WorkDir: workDir
         ));
 
         Logger.LogDebug("AppDirectory: {0}", APP_DIR);

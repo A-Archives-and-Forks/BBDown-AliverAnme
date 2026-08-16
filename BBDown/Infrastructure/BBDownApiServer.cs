@@ -446,8 +446,10 @@ public class BBDownApiServer
     /// Aria2cArgs 会拼入 aria2c 命令行、Aria2cPath 会覆盖静态进程路径、
     /// Aria2cProxy 会追加进 Aria2cArgs —— 三者都不允许客户端控制。
     /// FFmpegPath/Mp4boxPath/WvdPath/Mp4decryptPath 同属"让服务器执行指定程序"的字段，
-    /// 允许客户端控制等价于选择任意已存在的可执行文件；WorkDir 会改动进程级
-    /// 工作目录，使并发任务的输出互相错乱——一并忽略。
+    /// 允许客户端控制等价于选择任意已存在的可执行文件。
+    /// WorkDir 虽已不写进程 CWD（ChangeWorkingDir 在 serve 下改为 AsyncLocal 按任务隔离，
+    /// 见 AppSettings.WorkDir），但它与 FilePattern 同属"客户端控制服务端输出位置"的
+    /// 任意写面（可把下载写到服务器任意可写目录）——一并忽略，serve 任务固定输出到服务端 CWD。
     /// </summary>
     internal static void SanitizeUntrustedOptions(ServeRequestOptions req)
     {

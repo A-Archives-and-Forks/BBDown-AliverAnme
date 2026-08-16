@@ -28,7 +28,7 @@ public partial class IntlBangumiInfoFetcher : IFetcher
         if (cover == "")
         {
             string animeUrl = $"https://bangumi.bilibili.com/anime/{seasonId}";
-            var web = await HTTPUtil.GetWebSourceAsync(animeUrl, token: cancellationToken);
+            var web = await HTTPUtil.GetWebSourceAsync(animeUrl, token: cancellationToken, rejectHtml: false);
             if (web != "")
             {
                 Regex regex = StateRegex();

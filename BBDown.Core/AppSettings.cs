@@ -18,7 +18,11 @@ public record AppSettings(
     int MaxRetryCount = 3,
     int RetryDelayMs = 3000,
     int ThreadSegmentSizeMb = 20,
-    string UserAgent = ""
+    string UserAgent = "",
+    // 当前任务流的工作目录（--work-dir）。serve 模式下每个 /add-task 经 SetUpWork
+    // 把各自目录写入本配置快照（AsyncLocal 隔离），下载管线的相对路径经
+    // PathUtil.ResolveWorkPath 基于它解析——不写进程 CWD，避免并发任务互相污染。
+    string WorkDir = ""
 )
 {
     /// <summary>

@@ -68,7 +68,7 @@ public partial class NormalInfoFetcher : IFetcher
         if (isSteinGate == 1) // 互动视频获取分P信息
         {
             var playerSoApi = $"https://api.bilibili.com/x/player.so?bvid={bvid}&id=cid:{cid}";
-            var playerSoText = await HTTPUtil.GetWebSourceAsync(playerSoApi, token: cancellationToken);
+            var playerSoText = await HTTPUtil.GetWebSourceAsync(playerSoApi, token: cancellationToken, rejectHtml: false);
             var playerSoXml = new XmlDocument();
             playerSoXml.LoadXml($"<root>{playerSoText}</root>");
 

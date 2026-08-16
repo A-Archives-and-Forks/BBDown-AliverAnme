@@ -205,9 +205,9 @@ internal partial class Program
         {
             Logger.Log($"{savePath}已存在, 跳过下载...");
             relatedTask?.AddSavePath(savePath);
-            if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0)
+            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
             {
-                Directory.Delete(p.aid, true);
+                Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
             }
             return MuxOutcome.Skipped;
         }
@@ -259,7 +259,7 @@ internal partial class Program
         foreach (var a in audioMaterial) File.Delete(a.path);
         if (selectedPagesInfo.Count == 1 || p.index == selectedPagesInfo.Last().index || p.aid != selectedPagesInfo.Last().aid)
             File.Delete(coverPath);
-        if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0) Directory.Delete(p.aid, true);
+        if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0) Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
         return MuxOutcome.Succeeded;
     }
 
@@ -292,9 +292,12 @@ internal partial class Program
                 Logger.LogDebug("尝试获取章节信息...");
                 p.points = await BBDownUtil.FetchPointsAsync(p.cid, p.aid, cancellationToken);
 
-                string videoPath = $"{p.aid}/{p.aid}.P{p.index}.{p.cid}.mp4";
-                string audioPath = $"{p.aid}/{p.aid}.P{p.index}.{p.cid}.m4a";
-                var coverPath = $"{p.aid}/{p.aid}.jpg";
+                // 工作区路径（分P 的 aid 目录）统一基于任务流工作目录解析为绝对路径：
+                // serve 下不写进程 CWD，相对路径必须经 PathUtil.ResolveWorkPath 落到
+                // Config.Current.WorkDir，否则并发任务各自 --work-dir 的文件会互相错位。
+                string videoPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.mp4");
+                string audioPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.m4a");
+                var coverPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.jpg");
 
                 //处理文件夹以.结尾导致的异常情况
                 if (title.EndsWith('.')) title += "_fix";
@@ -304,9 +307,10 @@ internal partial class Program
                 //处理封面&&字幕
                 if (!myOption.OnlyShowInfo)
                 {
-                    if (!Directory.Exists(p.aid))
+                    var workAidDir = PathUtil.ResolveWorkPath(p.aid);
+                    if (!Directory.Exists(workAidDir))
                     {
-                        Directory.CreateDirectory(p.aid);
+                        Directory.CreateDirectory(workAidDir);
                     }
                     if (!myOption.SkipCover && !myOption.SubOnly && !File.Exists(coverPath) && !myOption.DanmakuOnly && !myOption.CoverOnly)
                     {
@@ -342,7 +346,7 @@ internal partial class Program
                             await SubUtil.SaveSubtitleAsync(s.url, s.path, cancellationToken);
                             if (myOption.SubOnly && File.Exists(s.path) && File.ReadAllText(s.path) != "")
                             {
-                                var _outSubPath = FormatSavePath(savePathFormat, title, null, null, p, pagesCount, apiType, pubTime);
+                                var _outSubPath = PathUtil.ResolveWorkPath(FormatSavePath(savePathFormat, title, null, null, p, pagesCount, apiType, pubTime));
                                 var dir = Path.GetDirectoryName(_outSubPath);
                                 if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
                                     Directory.CreateDirectory(dir);
@@ -358,7 +362,7 @@ internal partial class Program
 
                     if (myOption.SubOnly)
                     {
-                        if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0) Directory.Delete(p.aid, true);
+                        if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0) Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
                         // SubOnly 但没有任何字幕生成（视频无字幕/全部跳过）→ 零产物成功。
                         // 必须返回 false，避免 CLI 报成功、serve 标记 Succeeded、SavePaths 为空。
                         if (!anyProductProduced)
@@ -414,10 +418,11 @@ internal partial class Program
 
                 if (Config.Current.DebugLog)
                 {
-                    var debugFile = $"debug_{DateTime.Now:yyyyMMddHHmmssfff}.json";
+                    // debug 文件也落在任务工作目录：serve 下各任务的调试输出互不混杂
+                    var debugFile = PathUtil.ResolveWorkPath($"debug_{DateTime.Now:yyyyMMddHHmmssfff}.json");
                     File.WriteAllText(debugFile, parsedResult.WebJsonString);
                     // 限制 debug 文件数量，保留最近 20 个
-                    var debugFiles = Directory.GetFiles(".", "debug_*.json").Order().ToArray();
+                    var debugFiles = Directory.GetFiles(PathUtil.ResolveWorkPath("."), "debug_*.json").Order().ToArray();
                     for (int i = 0; i < debugFiles.Length - 20; i++)
                         File.Delete(debugFiles[i]);
                 }
@@ -496,7 +501,7 @@ internal partial class Program
                     Audio? selectedBackgroundAudio = parsedResult.BackgroundAudioTracks.ElementAtOrDefault(aIndex);
 
                     Logger.LogDebug("Format Before: " + savePathFormat);
-                    savePath = FormatSavePath(savePathFormat, title, selectedVideo, selectedAudio, p, pagesCount, apiType, pubTime);
+                    savePath = PathUtil.ResolveWorkPath(FormatSavePath(savePathFormat, title, selectedVideo, selectedAudio, p, pagesCount, apiType, pubTime));
                     Logger.LogDebug("Format After: " + savePath);
 
                     if (downloadDanmaku)
@@ -552,9 +557,9 @@ internal partial class Program
                                 relatedTask?.AddSavePath(danmakuAssPath);
                                 danmakuProduced = true;
                             }
-                            if (Directory.Exists(p.aid))
+                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
                             {
-                                Directory.Delete(p.aid);
+                                Directory.Delete(PathUtil.ResolveWorkPath(p.aid));
                             }
                             // DanmakuOnly 但没有任何有效弹幕文件（解析失败/为空/过滤后为空被删除）
                             // → 零产物：返回 false 而非假成功
@@ -582,7 +587,7 @@ internal partial class Program
                         }
                         var newCoverPath = Path.ChangeExtension(savePath, Path.GetExtension(coverUrl));
                         await BBDownDownloadUtil.DownloadFileAsync(coverUrl, newCoverPath, downloadConfig, cancellationToken);
-                        if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0) Directory.Delete(p.aid, true);
+                        if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0) Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
                         relatedTask?.AddSavePath(newCoverPath);
                         return true;
                     }
@@ -604,9 +609,9 @@ internal partial class Program
                         Logger.Log($"{savePath}已存在, 跳过下载...");
                         relatedTask?.AddSavePath(savePath);
                         File.Delete(coverPath);
-                        if (Directory.Exists(p.aid) && Directory.GetFiles(p.aid).Length == 0)
+                        if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
                         {
-                            Directory.Delete(p.aid, true);
+                            Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
                         }
                         return true;
                     }
@@ -631,7 +636,7 @@ internal partial class Program
 
                     if (selectedBackgroundAudio != null)
                     {
-                        var backgroundPath = $"{p.aid}/{p.aid}.{p.cid}.P{p.index}.back_ground.m4a";
+                        var backgroundPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.{p.cid}.P{p.index}.back_ground.m4a");
                         Logger.Log($"开始下载P{p.index}背景配音...");
                         await DownloadTrackAsync(selectedBackgroundAudio.baseUrl, backgroundPath, downloadConfig, video: false, cancellationToken);
                         audioMaterial.Add(new AudioMaterial("背景音频", "", backgroundPath));
@@ -767,14 +772,14 @@ internal partial class Program
                         }
                     }
                     if (myOption.OnlyShowInfo) return true;
-                    savePath = FormatSavePath(savePathFormat, title, parsedResult.VideoTracks.ElementAtOrDefault(vIndex), null, p, pagesCount, apiType, pubTime);
+                    savePath = PathUtil.ResolveWorkPath(FormatSavePath(savePathFormat, title, parsedResult.VideoTracks.ElementAtOrDefault(vIndex), null, p, pagesCount, apiType, pubTime));
                     if (File.Exists(savePath) && new FileInfo(savePath).Length != 0)
                     {
                         Logger.Log($"{savePath}已存在, 跳过下载...");
                         relatedTask?.AddSavePath(savePath);
-                        if (selectedPagesInfo.Count == 1 && Directory.Exists(p.aid))
+                        if (selectedPagesInfo.Count == 1 && Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
                         {
-                            Directory.Delete(p.aid, true);
+                            Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
                         }
                         return true;
                     }
@@ -783,7 +788,7 @@ internal partial class Program
                     for (int i = 0; i < clips.Count; i++)
                     {
                         var link = clips[i];
-                        videoPath = $"{p.aid}/{p.aid}.P{p.index}.{p.cid}.{i.ToString(pad)}.mp4";
+                        videoPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.{i.ToString(pad)}.mp4");
                         Logger.Log($"开始下载P{p.index}视频, 片段({(i + 1).ToString(pad)}/{clips.Count})...");
                         await DownloadTrackAsync(link, videoPath, downloadConfig, video: true, token: cancellationToken);
                         segFiles.Add(videoPath);
@@ -792,7 +797,7 @@ internal partial class Program
                     Logger.Log("开始合并分段...");
                     // 传入本次下载的精确分段列表，而非扫描整个目录（GetFiles(".mp4") 会连同
                     // 同 aid 其它分P 的成品一起捞进来，多P FLV 视频会被拼串味）
-                    videoPath = $"{p.aid}/{p.aid}.P{p.index}.{p.cid}.mp4";
+                    videoPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.mp4");
                     await BBDownMuxer.MergeFLV(segFiles.ToArray(), videoPath, cancellationToken);
                     if (myOption.SkipMux)
                     {
@@ -853,8 +858,12 @@ internal partial class Program
                 }
                 return true; // success, exit retry loop
             }
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException)
+            catch (Exception ex) when ((ex is HttpRequestException or JsonException or IOException or InvalidOperationException)
+                              && ex is not RiskControlResponseException)
             {
+                // RiskControlResponseException（200+HTML 风控页）不参与页面级重试：
+                // 重试只会反复冲击已被风控的端点、加重风控状态，且风控不是瞬时故障。
+                // 其余类型（HTTP/解析/IO）按 --retry-count 退避重试。
                 retryCount++;
                 if (retryCount >= maxRetry)
                 {

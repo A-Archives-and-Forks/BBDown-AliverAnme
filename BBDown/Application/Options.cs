@@ -267,10 +267,12 @@ internal partial class Program
     }
 
     /// <summary>
-    /// 设置用户输入的自定义工作目录
+    /// 设置用户输入的自定义工作目录。返回解析后的绝对目录（未设置返回空串），
+    /// 由调用方并入 <see cref="AppSettings.WorkDir"/> 写入任务流配置——
+    /// SetUpWork 后续会整体 Config.Apply 一个新 AppSettings，这里若自行写入配置会被覆盖。
     /// </summary>
     /// <param name="myOption"></param>
-    private static void ChangeWorkingDir(MyOption myOption)
+    internal static string ChangeWorkingDir(MyOption myOption)
     {
         if (!string.IsNullOrEmpty(myOption.WorkDir))
         {
@@ -281,10 +283,15 @@ internal partial class Program
             {
                 Directory.CreateDirectory(dir);
             }
-            //设置工作目录
-            Environment.CurrentDirectory = dir;
+            // CLI 单任务模式仍写进程 CWD：ffmpeg/aria2c 等子进程与外部工具按相对路径
+            // 解析时依赖进程 CWD，单任务场景无并发污染问题，保留既有行为。
+            // serve 模式绝不写进程 CWD——并发任务各自的 --work-dir 不能互相覆盖进程级状态，
+            // 相对路径由 PathUtil.ResolveWorkPath 基于各任务流配置里的 WorkDir 解析。
+            if (!IsServeMode) Environment.CurrentDirectory = dir;
             Logger.LogDebug("切换工作目录至：{0}", dir);
+            return dir;
         }
+        return "";
     }
 
     /// <summary>

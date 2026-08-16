@@ -131,8 +131,15 @@ public static partial class HTTPUtil
     [System.Text.RegularExpressions.GeneratedRegex(@"Chrome/(\d+)")]
     private static partial System.Text.RegularExpressions.Regex ChromeVersionRegex();
 
-    public static async Task<string> GetWebSourceAsync(string url, string? userAgent = null, CancellationToken token = default)
-        => await GetWebSourceCoreAsync(url, sendCookie: true, userAgent: userAgent, token: token);
+    /// <summary>
+    /// 抓取 B 站 JSON API 的网页内容（携带登录 Cookie）。默认拒绝 HTML 响应：
+    /// B 站风控/错误页常以 200 返回 HTML，此时抛 <see cref="RiskControlResponseException"/>
+    /// 给出可读诊断，替代下游 JsonDocument.Parse 的裸 JsonException。
+    /// 少数确实抓取 HTML/XML 的调用点（番剧页、player.so）传 <paramref name="rejectHtml"/> = false。
+    /// 5xx/传输层失败按 MaxRetryCount 指数退避重试（4xx 风控不重试）。
+    /// </summary>
+    public static async Task<string> GetWebSourceAsync(string url, string? userAgent = null, CancellationToken token = default, bool rejectHtml = true)
+        => await GetWebSourceCoreAsync(url, sendCookie: true, userAgent: userAgent, token: token, rejectHtml: rejectHtml);
 
     /// <summary>
     /// 获取网页内容并透出 Set-Cookie 响应头。仅用于需要登录凭据的接口：
@@ -168,9 +175,10 @@ public static partial class HTTPUtil
     /// 用户输入 URL（如 ResolveAsync 的泛抓取分支）——此时目标域名可能由攻击者控制，
     /// 附带操作者的 B 站凭据会把它外发到攻击者服务器（SSRF + 凭据泄露）。
     /// 已验证可信的 B 站 API 调用仍走 <see cref="GetWebSourceAsync"/>（携带 Cookie）。
+    /// 目标可能是任意网页，默认不拒绝 HTML。
     /// </summary>
-    public static async Task<string> GetWebSourceAnonymousAsync(string url, string? userAgent = null, CancellationToken token = default)
-        => await GetWebSourceCoreAsync(url, sendCookie: false, userAgent: userAgent, token: token);
+    public static async Task<string> GetWebSourceAnonymousAsync(string url, string? userAgent = null, CancellationToken token = default, bool rejectHtml = false)
+        => await GetWebSourceCoreAsync(url, sendCookie: false, userAgent: userAgent, token: token, rejectHtml: rejectHtml);
 
     /// <summary>
     /// 逐跳校验重定向的匿名抓取：不携带 Cookie，且每一跳的 Location 都在发起下一跳
@@ -213,40 +221,81 @@ public static partial class HTTPUtil
         return current;
     }
 
-    private static async Task<string> GetWebSourceCoreAsync(string url, bool sendCookie, string? userAgent, CancellationToken token)
+    private static async Task<string> GetWebSourceCoreAsync(string url, bool sendCookie, string? userAgent, CancellationToken token, bool rejectHtml = false)
     {
-        using var webRequest = new HttpRequestMessage(HttpMethod.Get, url);
-        var effectiveUa = GetUserAgent(userAgent);
-        webRequest.Headers.TryAddWithoutValidation("User-Agent", effectiveUa);
-        webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
-        if (sendCookie)
-            webRequest.Headers.TryAddWithoutValidation("Cookie", (url.Contains("/ep") || url.Contains("/ss")) ? Config.Current.Cookie + ";CURRENT_FNVAL=4048;" : Config.Current.Cookie);
-        if (url.Contains("api.bilibili.com"))
-            webRequest.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
-        if (url.Contains("api.bilibili.tv"))
+        // API 层统一重试：仅对 5xx 与传输层失败（HttpRequestException.StatusCode 为 null）
+        // 按有界次数（最多 3，min(MaxRetryCount,3)）指数退避重试。有界是刻意的：
+        // 页面级已有 while(retryCount<maxRetry) 重试，若 API 层也用全量 MaxRetryCount 会
+        // 乘积放大请求数与总等待；且总退避 ~9s 远小于 WBI 签名 wts 的时效窗口，重试不会
+        // 因签名过期被误判。4xx 是风控/参数/鉴权错误，重试只会加重风控状态，直接抛出。
+        // 风控页（200+HTML）由 rejectHtml 抛 RiskControlResponseException，不重试。
+        int maxRetry = Math.Max(1, Math.Min(Config.Current.MaxRetryCount, 3));
+        for (int attempt = 1; ; attempt++)
         {
-            // sec-ch-ua 与 UA 自洽：只有 Chrome UA 才发送（真实 Firefox 不发送 Chrome 品牌
-            // sec-ch-ua），版本取自已解析的 UA——避免"UA 145 + sec-ch-ua 131"这类可被识别
-            // 的指纹不一致（此前硬编码 131，与升级后的 UA 池同样不匹配）。
-            var chromeVersion = ChromeVersionRegex().Match(effectiveUa).Groups[1].Value;
-            if (chromeVersion.Length > 0)
-                webRequest.Headers.TryAddWithoutValidation("sec-ch-ua",
-                    $"\"Google Chrome\";v=\"{chromeVersion}\", \"Chromium\";v=\"{chromeVersion}\", \"Not_A Brand\";v=\"99\"");
+            try
+            {
+                using var webRequest = new HttpRequestMessage(HttpMethod.Get, url);
+                var effectiveUa = GetUserAgent(userAgent);
+                webRequest.Headers.TryAddWithoutValidation("User-Agent", effectiveUa);
+                webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
+                if (sendCookie)
+                    webRequest.Headers.TryAddWithoutValidation("Cookie", (url.Contains("/ep") || url.Contains("/ss")) ? Config.Current.Cookie + ";CURRENT_FNVAL=4048;" : Config.Current.Cookie);
+                if (url.Contains("api.bilibili.com"))
+                    webRequest.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
+                if (url.Contains("api.bilibili.tv"))
+                {
+                    // sec-ch-ua 与 UA 自洽：只有 Chrome UA 才发送（真实 Firefox 不发送 Chrome 品牌
+                    // sec-ch-ua），版本取自已解析的 UA——避免"UA 145 + sec-ch-ua 131"这类可被识别
+                    // 的指纹不一致（此前硬编码 131，与升级后的 UA 池同样不匹配）。
+                    var chromeVersion = ChromeVersionRegex().Match(effectiveUa).Groups[1].Value;
+                    if (chromeVersion.Length > 0)
+                        webRequest.Headers.TryAddWithoutValidation("sec-ch-ua",
+                            $"\"Google Chrome\";v=\"{chromeVersion}\", \"Chromium\";v=\"{chromeVersion}\", \"Not_A Brand\";v=\"99\"");
+                }
+                webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
+                webRequest.Headers.Connection.Clear();
+
+                Logger.LogDebug("获取网页内容: Url: {0}, Headers: {1}",
+                    SensitiveDataMasker.MaskUrl(url), SensitiveDataMasker.MaskHeaders(webRequest.Headers));
+                using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
+                // 5xx：显式抛 HttpRequestException（带状态码）走下方退避；
+                // 4xx 交给 EnsureSuccessStatusCode 立即抛出（HttpRequestException.StatusCode < 500，
+                // 不满足重试过滤条件，不会被重试）。
+                if (!webResponse.IsSuccessStatusCode && (int)webResponse.StatusCode >= 500)
+                    throw new HttpRequestException($"服务器返回 {(int)webResponse.StatusCode} {webResponse.ReasonPhrase}", null, webResponse.StatusCode);
+                webResponse.EnsureSuccessStatusCode();
+
+                string htmlCode = await webResponse.Content.ReadAsStringAsync(token);
+                // 200+HTML 风控页识别：JSON 响应不可能以 '<' 开头，因此这一定是 HTML 页面。
+                // 给出可读的"疑似风控页"异常，替代下游 JsonDocument.Parse 的裸 JsonException
+                //（难定位、看似偶发）。此为业务性拦截，不参与上面的 5xx 重试。
+                if (rejectHtml && htmlCode.StartsWith('<'))
+                    throw new RiskControlResponseException(url);
+                // 响应体可达数 MB（如 intl 回退抓取的整张 HTML 页面），翻页类 fetcher 会放大几十倍，
+                // 全部落盘会把日志文件灌满；截断到前 1KB 即可排查问题。
+                // 截断实参含子串分配，DebugLog 关闭时跳过求值（见 GetWebSourceWithSetCookiesAsync）。
+                if (Config.Current.DebugLog)
+                    Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
+                return htmlCode;
+            }
+            catch (HttpRequestException ex) when (attempt < maxRetry && (ex.StatusCode is null || (int)ex.StatusCode >= 500))
+            {
+                int backoffMs = ExponentialBackoffMs(attempt);
+                Logger.LogDebug("API 请求失败(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(url));
+                await Task.Delay(backoffMs, token);
+            }
         }
-        webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
-        webRequest.Headers.Connection.Clear();
+    }
 
-        Logger.LogDebug("获取网页内容: Url: {0}, Headers: {1}",
-            SensitiveDataMasker.MaskUrl(url), SensitiveDataMasker.MaskHeaders(webRequest.Headers));
-        using var webResponse = (await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
-
-        string htmlCode = await webResponse.Content.ReadAsStringAsync(token);
-        // 响应体可达数 MB（如 intl 回退抓取的整张 HTML 页面），翻页类 fetcher 会放大几十倍，
-        // 全部落盘会把日志文件灌满；截断到前 1KB 即可排查问题。
-        // 截断实参含子串分配，DebugLog 关闭时跳过求值（见 GetWebSourceWithSetCookiesAsync）。
-        if (Config.Current.DebugLog)
-            Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
-        return htmlCode;
+    /// <summary>指数退避毫秒数：RetryDelayMs(封顶 3s) × 2^(attempt-1)，单次封顶 12s。
+    /// API 层重试是有界的快速重试：总尝试数 clamp 到最多 3（见 GetWebSourceCoreAsync），
+    /// 总等待默认 ~9s，远小于 WBI 签名 wts 的时效窗口（~60s），也不会与页面级重试叠加成
+    /// 失控的总时长（--retry-count 可到 100，若每层都用全量配置会乘积放大）。</summary>
+    private static int ExponentialBackoffMs(int attempt)
+    {
+        long baseMs = Math.Min(Config.Current.RetryDelayMs, 3000);
+        long raw = baseMs * (1L << Math.Min(attempt - 1, 10));
+        return (int)Math.Min(raw, 12_000);
     }
 
     // 重写重定向处理, 自动跟随多次重定向
@@ -380,48 +429,69 @@ public static partial class HTTPUtil
 
     public static async Task<byte[]> GetPostResponseAsync(string Url, byte[] postData, Dictionary<string, string>? headers = null, CancellationToken token = default)
     {
-        // postData 是 grpc 请求体，可能携带 access_key，只记录长度而非内容
-        Logger.LogDebug("Post to: {0}, data: {1} bytes", SensitiveDataMasker.MaskUrl(Url), postData.Length);
-
-        using ByteArrayContent content = new(postData);
-        content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/grpc");
-
-        using HttpRequestMessage request = new()
+        // 与 GetWebSourceCoreAsync 相同的 API 层统一重试：仅对 5xx 与传输层失败
+        //（HttpRequestException.StatusCode 为 null）按有界次数（最多 3）指数退避重试。
+        // grpc 帧首字节是压缩标志（0/1），不可能为 '<'；若首字节是 '<'，说明拿到的是
+        // HTML 错误/风控页，抛 RiskControlResponseException 替代下游反序列化的乱码错误。
+        int maxRetry = Math.Max(1, Math.Min(Config.Current.MaxRetryCount, 3));
+        for (int attempt = 1; ; attempt++)
         {
-            RequestUri = new Uri(Url),
-            Method = HttpMethod.Post,
-            Content = content,
-            //Version = HttpVersion.Version20
-        };
+            try
+            {
+                // postData 是 grpc 请求体，可能携带 access_key，只记录长度而非内容
+                Logger.LogDebug("Post to: {0}, data: {1} bytes", SensitiveDataMasker.MaskUrl(Url), postData.Length);
 
-        if (headers != null)
-        {
-            foreach (KeyValuePair<string, string> header in headers)
-                request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                using ByteArrayContent content = new(postData);
+                content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/grpc");
+
+                using HttpRequestMessage request = new()
+                {
+                    RequestUri = new Uri(Url),
+                    Method = HttpMethod.Post,
+                    Content = content,
+                    //Version = HttpVersion.Version20
+                };
+
+                if (headers != null)
+                {
+                    foreach (KeyValuePair<string, string> header in headers)
+                        request.Headers.TryAddWithoutValidation(header.Key, header.Value);
+                }
+                else
+                {
+                    request.Headers.TryAddWithoutValidation("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 6.0.1; oneplus a5010 Build/V417IR) 6.10.0 os/android model/oneplus a5010 mobi_app/android build/6100500 channel/bili innerVer/6100500 osVer/6.0.1 network/2");
+                    request.Headers.TryAddWithoutValidation("grpc-encoding", "gzip");
+                }
+
+                // 不检查状态码会把 4xx/5xx 的错误页当成 grpc 响应体返回，
+                // 下游只能报出难以定位的反序列化错误。
+                // ResponseHeadersRead：先拿到状态码再单独 await 响应体，使 EnsureSuccessStatusCode
+                // 不必等整包缓冲完就能抛错，且响应体读取阶段仍受调用方 token 控制（可取消）。
+                // 注意：ResponseHeadersRead 会让 HttpClient.Timeout 不再约束响应体读取（实测见
+                // StreamingHttpClient 注释），服务端发完响应头后响应体停滞会无限挂起；因此这里
+                // 用 CancelAfter 重建与 HttpClient.Timeout 等价的整体 2 分钟上限。
+                // 先把 response 绑定到 using 再检查状态码：若在初始化表达式内抛错，response 未绑定、
+                // using 不会 Dispose，连接会被未消费的响应体占用无法归还连接池；绑定后再
+                // EnsureSuccessStatusCode，抛错时 using 会 Dispose → SocketsHttpHandler 自动排空
+                // 小响应体归还连接。
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeoutCts.CancelAfter(TimeSpan.FromMinutes(2));
+                using var response = await AppHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                if (!response.IsSuccessStatusCode && (int)response.StatusCode >= 500)
+                    throw new HttpRequestException($"服务器返回 {(int)response.StatusCode} {response.ReasonPhrase}", null, response.StatusCode);
+                response.EnsureSuccessStatusCode();
+                byte[] bytes = await response.Content.ReadAsByteArrayAsync(timeoutCts.Token);
+                // HTML 风控/错误页首字节是 '<'（0x3C），不可能是合法 grpc 帧头 → 明确报错
+                if (bytes.Length > 0 && bytes[0] == (byte)'<')
+                    throw new RiskControlResponseException(Url);
+                return bytes;
+            }
+            catch (HttpRequestException ex) when (attempt < maxRetry && (ex.StatusCode is null || (int)ex.StatusCode >= 500))
+            {
+                int backoffMs = ExponentialBackoffMs(attempt);
+                Logger.LogDebug("API POST 失败(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(Url));
+                await Task.Delay(backoffMs, token);
+            }
         }
-        else
-        {
-            request.Headers.TryAddWithoutValidation("User-Agent", "Dalvik/2.1.0 (Linux; U; Android 6.0.1; oneplus a5010 Build/V417IR) 6.10.0 os/android model/oneplus a5010 mobi_app/android build/6100500 channel/bili innerVer/6100500 osVer/6.0.1 network/2");
-            request.Headers.TryAddWithoutValidation("grpc-encoding", "gzip");
-        }
-
-        // 不检查状态码会把 4xx/5xx 的错误页当成 grpc 响应体返回，
-        // 下游只能报出难以定位的反序列化错误。
-        // ResponseHeadersRead：先拿到状态码再单独 await 响应体，使 EnsureSuccessStatusCode
-        // 不必等整包缓冲完就能抛错，且响应体读取阶段仍受调用方 token 控制（可取消）。
-        // 注意：ResponseHeadersRead 会让 HttpClient.Timeout 不再约束响应体读取（实测见
-        // StreamingHttpClient 注释），服务端发完响应头后响应体停滞会无限挂起；因此这里
-        // 用 CancelAfter 重建与 HttpClient.Timeout 等价的整体 2 分钟上限。
-        // 先把 response 绑定到 using 再检查状态码：若在初始化表达式内抛错，response 未绑定、
-        // using 不会 Dispose，连接会被未消费的响应体占用无法归还连接池；绑定后再
-        // EnsureSuccessStatusCode，抛错时 using 会 Dispose → SocketsHttpHandler 自动排空
-        // 小响应体归还连接。
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeoutCts.CancelAfter(TimeSpan.FromMinutes(2));
-        using var response = await AppHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
-        response.EnsureSuccessStatusCode();
-        byte[] bytes = await response.Content.ReadAsByteArrayAsync(timeoutCts.Token);
-
-        return bytes;
     }
 }

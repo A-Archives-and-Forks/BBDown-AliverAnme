@@ -237,7 +237,7 @@ public static partial class SubUtil
                 {
                     url = url,
                     lan = lan,
-                    path = $"{aid}/{aid}.{cid}.{lan}{(url.Contains(".json") ? ".srt" : ".ass")}"
+                    path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{lan}{(url.Contains(".json") ? ".srt" : ".ass")}")
                 };
 
                 subtitles.Add(subtitle);
@@ -276,7 +276,7 @@ public static partial class SubUtil
                 {
                     url = url,
                     lan = lan,
-                    path = $"{aid}/{aid}.{cid}.{lan}{(url.Contains(".json") ? ".srt" : ".ass")}"
+                    path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{lan}{(url.Contains(".json") ? ".srt" : ".ass")}")
                 };
 
                 subtitles.Add(subtitle);
@@ -309,7 +309,7 @@ public static partial class SubUtil
                 {
                     url = subtitleUrl,
                     lan = lan,
-                    path = $"{aid}/{aid}.{cid}.{lan}.srt"
+                    path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{lan}.srt")
                 };
                 subtitles.Add(subtitle);
             }
@@ -347,7 +347,7 @@ public static partial class SubUtil
                 {
                     url = subtitleUrl,
                     lan = lan,
-                    path = $"{aid}/{aid}.{cid}.{lan}.srt"
+                    path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{lan}.srt")
                 };
                 subtitles.Add(subtitle);
             }
@@ -395,14 +395,17 @@ public static partial class SubUtil
                     {
                         url = item.SubtitleUrl,
                         lan = item.Lan,
-                        path = $"{aid}/{aid}.{cid}.{item.Lan}.srt"
+                        path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{item.Lan}.srt")
                     }));
             }
 
             return subtitles;
         }
-        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or InvalidProtocolBufferException)
+        catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or InvalidProtocolBufferException
+                              or System.Text.Json.JsonException)
         {
+            // JsonException 覆盖 RiskControlResponseException（接口返回 HTML 而非 grpc 数据）：
+            // 字幕是装饰性资源，任何抓取失败都应降级为"无字幕"而非让页面下载失败
             Logger.LogDebug("GetSubtitlesFromApi3 failed: {0}", ex.Message);
             return null;
         }

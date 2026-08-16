@@ -18,6 +18,10 @@ public static class Logger
             {
                 if (_logFilePath == value) return;
                 _logFilePath = value;
+                // 换路径时重置失败闭锁：新路径可能可写，不能让旧路径的失败状态永久禁用文件日志
+                _fileWriteDisabled = false;
+                _fileWriteFailures = 0;
+                _fileWriteDisabledAt = 0;
                 CloseFileWriterLocked();
             }
         }
@@ -31,6 +35,17 @@ public static class Logger
     // _consoleLock、释放后再 AppendToFile 取 _fileLock，不构成嵌套锁，不会死锁）。
     private static readonly object _fileLock = new();
     private static StreamWriter? _fileWriter;
+
+    /// <summary>连续创建/写入日志文件失败达到该阈值后禁用文件日志：否则路径不可写时
+    /// 每一行日志都会重试打开文件并抛一次异常（CreateFileWriter 返回 null），
+    /// 高频日志下产生无意义的异常噪音与开销。</summary>
+    private const int MaxFileWriteFailures = 5;
+    /// <summary>闭锁后的恢复冷却：每这么久尝试一次重建 writer，使瞬时故障（磁盘满/临时占用）
+    /// 缓解后能自动恢复文件日志，而不是闭锁到进程结束（serve 的日志路径是固定的，不会重设）。</summary>
+    private const long RetryCooldownMs = 30_000;
+    private static int _fileWriteFailures;
+    private static bool _fileWriteDisabled;
+    private static long _fileWriteDisabledAt;
 
     private static void WriteLine(string line)
     {
@@ -63,6 +78,16 @@ public static class Logger
     private static void AppendToFile(string line)
     {
         if (string.IsNullOrEmpty(_logFilePath)) return;
+        // 闭锁期间周期性尝试恢复：瞬时故障（磁盘满/临时占用）缓解后能自动恢复文件日志，
+        // 而非闭锁到进程结束（serve 的日志路径固定，不会重设）。恢复前只按 RetryCooldownMs
+        // 频率重试一次，不产生每行重试的异常噪音。闭锁状态在锁内写、这里锁外读，是
+        // best-effort 短路：偶发读到过期值最多让一次调用进锁内多试一次，无害。
+        if (_fileWriteDisabled && Environment.TickCount64 - _fileWriteDisabledAt < RetryCooldownMs)
+            return;
+        // 一次性提示（禁用/恢复）在锁外打印：不经 _consoleLock 的纯文本，避免 _fileLock
+        // 内再取 _consoleLock 破坏"所有控制台写入经 _consoleLock 串行化"的既有锁序。
+        // 单行、频率极低，与颜色化日志的交错是外观级的，可接受。
+        string? notice = null;
         try
         {
             lock (_fileLock)
@@ -72,10 +97,55 @@ public static class Logger
                 if (_fileWriter is not null && LogFileReplacedLocked())
                     CloseFileWriterLocked();
                 _fileWriter ??= CreateFileWriter();
-                _fileWriter?.WriteLine(line);
+                if (_fileWriter is null)
+                {
+                    // 路径不可写（CreateFileWriter 返回 null）。连续失败达到阈值即闭锁，
+                    // 否则每行日志都会重试打开文件并抛一次异常。阈值内的偶发失败允许自愈。
+                    if (++_fileWriteFailures >= MaxFileWriteFailures)
+                    {
+                        bool firstLatch = !_fileWriteDisabled;
+                        _fileWriteDisabled = true;
+                        if (firstLatch)
+                            notice = $"[Logger] 日志文件写入连续失败 {MaxFileWriteFailures} 次，已禁用文件日志: {_logFilePath}";
+                    }
+                    // 失败的重试刷新冷却计时：恢复前保持低频（每 RetryCooldownMs 一次），
+                    // 避免冷却期过后每个调用都重试一次 CreateFileWriter
+                    _fileWriteDisabledAt = Environment.TickCount64;
+                    return;
+                }
+                // 写入成功才清零连续失败计数：不能放在 WriteLine 之前——若 WriteLine 持续
+                // 抛异常（磁盘满/句柄失效），提前清零会让计数在 0↔1 间振荡、永远到不了阈值，
+                // 写入期闭锁变成死代码（每行仍重试并吞一次异常）。
+                _fileWriter.WriteLine(line);
+                _fileWriteFailures = 0;
+                if (_fileWriteDisabled)
+                {
+                    // 恢复成功：解除闭锁（周期重试命中可写路径）
+                    _fileWriteDisabled = false;
+                    notice = $"[Logger] 日志文件已恢复写入: {_logFilePath}";
+                }
             }
         }
-        catch { /* silently ignore file write failures */ }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or ObjectDisposedException)
+        {
+            // 写入期异常（磁盘满/句柄失效等）同样计数：持续故障应闭锁而非每行重试。
+            // 计数与禁用都在 _fileLock 内：与 LogFilePath setter 的重置串行化。
+            lock (_fileLock)
+            {
+                if (++_fileWriteFailures >= MaxFileWriteFailures)
+                {
+                    if (!_fileWriteDisabled)
+                    {
+                        _fileWriteDisabled = true;
+                        notice = $"[Logger] 日志文件写入连续失败 {MaxFileWriteFailures} 次，已禁用文件日志: {_logFilePath}";
+                    }
+                    CloseFileWriterLocked();
+                }
+                _fileWriteDisabledAt = Environment.TickCount64;
+            }
+        }
+        if (notice is not null)
+            Console.WriteLine(notice);
     }
 
     /// <summary>检测日志文件是否已被外部替换/截断（轮转自愈用，仅在 <see cref="_fileLock"/> 内调用）。</summary>

@@ -71,7 +71,7 @@ public static partial class Parser
             if (!string.IsNullOrEmpty(epId))
             {
                 string webUrl = "https://www.bilibili.com/bangumi/play/ep" + epId;
-                string webSource = await HTTPUtil.GetWebSourceAsync(webUrl, token: token);
+                string webSource = await HTTPUtil.GetWebSourceAsync(webUrl, token: token, rejectHtml: false);
                 var match = PlayerJsonRegex().Match(webSource);
                 // 页面不含 window.__playinfo__（登录墙/错误页/风控页）时 Groups[1] 为空串，
                 // 下游 JsonDocument.Parse("") 会抛与真实原因无关的裸 JsonException
@@ -456,7 +456,7 @@ public static partial class Parser
                         {
                             title = role.GetValueAsStringSafe("title"),
                             personName = role.GetValueAsStringSafe("person_name"),
-                            path = $"{aid}/{aid}.{cid}.{role.GetValueAsStringSafe("audio_id")}.m4a",
+                            path = PathUtil.ResolveWorkPath($"{aid}/{aid}.{cid}.{role.GetValueAsStringSafe("audio_id")}.m4a"),
                             audio = roleAudioTracks
                         });
                     }

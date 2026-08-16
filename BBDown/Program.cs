@@ -29,6 +29,11 @@ partial class Program
     public static string SinglePageDefaultSavePath { get; set; } = "<videoTitle>";
     public static string MultiPageDefaultSavePath { get; set; } = "<videoTitle>/[P<pageNumberWithZero>]<pageTitle>";
 
+    /// <summary>当前进程是否运行在 serve 模式。serve 下 <see cref="Options.ChangeWorkingDir"/>
+    /// 不写进程 CWD（并发任务各自的 --work-dir 经 AsyncLocal 配置快照隔离），
+    /// 相对路径由 PathUtil.ResolveWorkPath 基于 Config.Current.WorkDir 解析。</summary>
+    internal static bool IsServeMode;
+
     // 用 AppContext.BaseDirectory 而非 Environment.ProcessPath：
     // 以 `dotnet BBDown.dll` / `dotnet run` 启动时，进程可执行文件是 dotnet 宿主本身，
     // ProcessPath 会把 APP_DIR 指到 .NET 安装目录，导致 BBDown.data 等凭据
@@ -212,6 +217,8 @@ partial class Program
     internal static void StartServer(string? listenUrl, int maxConcurrent = 3, string? serveToken = null, string? notifyWebhook = null, CancellationToken cancellationToken = default)
     {
         var defaultListenUrl = "http://127.0.0.1:23333";
+        // serve 为长驻进程：标记模式，此后各任务的 --work-dir 不再写进程 CWD
+        IsServeMode = true;
         Logger.LogFilePath = Path.Combine(Directory.GetCurrentDirectory(), "bbdown-api.log");
         var server = new BBDownApiServer(maxConcurrent, serveToken, notifyWebhook: notifyWebhook);
         server.SetUpServer();

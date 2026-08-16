@@ -34,4 +34,18 @@ public static class PathUtil
             title = "_" + title;
         return title;
     }
+
+    /// <summary>
+    /// 把下载管线的相对路径解析为绝对路径：优先基于当前任务流的工作目录
+    /// （<see cref="Config.Current"/> 的 WorkDir，serve 下每个任务经 SetUpWork 各自写入），
+    /// 否则基于进程 CWD。CLI 单任务与 serve 并发的统一入口。
+    /// 绝对路径原样透传（Path.Combine 对已根化的第二参数直接返回），因此自定义
+    /// --file-pattern 指向绝对目录时不受 WorkDir 影响。
+    /// </summary>
+    public static string ResolveWorkPath(string path)
+    {
+        if (string.IsNullOrEmpty(path)) return path;
+        var workDir = Config.Current.WorkDir;
+        return string.IsNullOrEmpty(workDir) ? Path.GetFullPath(path) : Path.Combine(workDir, path);
+    }
 }

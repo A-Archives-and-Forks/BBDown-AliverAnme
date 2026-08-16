@@ -78,6 +78,41 @@ public class LoggerFileTests
         }
     }
 
+    [Fact]
+    public void FileLogging_UnwritablePath_LatchesOffThenRecoversOnPathChange()
+    {
+        // 失败闭锁：路径不可写时 CreateFileWriter 返回 null，连续失败达到阈值后
+        // 禁用文件日志——否则每一行日志都会重试打开文件并抛一次异常。
+        // 换新路径（LogFilePath setter）会重置闭锁，日志恢复写入。
+        var badPath = Path.Combine(Path.GetTempPath(), $"bbdown-log-{Guid.NewGuid():N}");
+        File.WriteAllText(badPath, "I am a file, not a directory");
+        var goodPath = Path.Combine(Path.GetTempPath(), $"bbdown-log-{Guid.NewGuid():N}.txt");
+        var original = Logger.LogFilePath;
+        try
+        {
+            // 把日志路径指到"以文件当父目录"的非法位置：CreateFileWriter 抛 IOException → 返回 null
+            var invalidChildPath = Path.Combine(badPath, "sub.log");
+            Logger.LogFilePath = invalidChildPath;
+            // 连续写入超过阈值（MaxFileWriteFailures=5）：不抛异常，文件日志被闭锁
+            for (int i = 0; i < 8; i++) Logger.Log($"line-{i}");
+            // 闭锁后不再试图打开非法路径，继续写控制台也不抛
+            Logger.Log("after-latch");
+
+            // 换到可写路径：setter 重置闭锁，日志恢复落盘
+            Logger.LogFilePath = goodPath;
+            Logger.Log("recovered");
+            var content = ReadAllTextShared(goodPath);
+            Assert.Contains("recovered", content);
+        }
+        finally
+        {
+            Logger.LogFilePath = original;
+            Logger.CloseFile();
+            try { File.Delete(badPath); } catch (IOException) { }
+            try { if (File.Exists(goodPath)) File.Delete(goodPath); } catch (IOException) { }
+        }
+    }
+
     /// <summary>以 FileShare.ReadWrite 读取：兼容 Logger writer（FileAccess.Write + FileShare.ReadWrite|Delete）持有的文件。</summary>
     private static string ReadAllTextShared(string path)
     {
