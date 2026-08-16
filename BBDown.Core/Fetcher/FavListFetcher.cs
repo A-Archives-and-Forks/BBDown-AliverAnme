@@ -44,11 +44,11 @@ public class FavListFetcher : IFetcher
         using var infoJson = JsonDocument.Parse(json);
         var data = infoJson.RootElement.GetPropertySafe("data");
         var favInfo = data.GetPropertySafe("info");
-        int totalCount = favInfo.GetPropertySafe("media_count").GetInt32();
+        int totalCount = favInfo.GetInt32Safe("media_count");
         int totalPage = (int)Math.Ceiling((double)totalCount / pageSize);
-        var title = favInfo.GetPropertySafe("title").GetString()!;
-        var intro = favInfo.GetPropertySafe("intro").GetString()!;
-        long pubTime = favInfo.GetPropertySafe("ctime").GetInt64();
+        var title = favInfo.GetValueAsStringSafe("title");
+        var intro = favInfo.GetValueAsStringSafe("intro");
+        long pubTime = favInfo.GetInt64Safe("ctime");
 
         var failures = new List<string>();
 
@@ -103,9 +103,11 @@ public class FavListFetcher : IFetcher
                 }
                 else
                 {
+                    var upperElem = m.TryGetPropertySafe("upper");
+                    var ugcElem = m.TryGetPropertySafe("ugc");
                     Page p = new(index++,
                         m.GetValueAsStringSafe("id"),
-                        m.GetPropertySafe("ugc").GetValueAsStringSafe("first_cid"),
+                        ugcElem?.GetValueAsStringSafe("first_cid") ?? "",
                         "", //epid
                         m.GetValueAsStringSafe("title"),
                         m.GetInt32Safe("duration"),
@@ -113,8 +115,8 @@ public class FavListFetcher : IFetcher
                         m.GetInt64Safe("pubtime"),
                         m.GetValueAsStringSafe("cover"),
                         m.GetValueAsStringSafe("intro"),
-                        m.GetPropertySafe("upper").GetValueAsStringSafe("name"),
-                        m.GetPropertySafe("upper").GetValueAsStringSafe("mid"));
+                        upperElem?.GetValueAsStringSafe("name") ?? "",
+                        upperElem?.GetValueAsStringSafe("mid") ?? "");
                     if (!seenPages.Add(p)) { index--; continue; }
                     pagesInfo.Add(p);
                 }

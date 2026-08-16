@@ -19,8 +19,8 @@ public class BangumiInfoFetcher : IFetcher
         string cover = result.GetValueAsStringSafe("cover");
         string title = result.GetValueAsStringSafe("title");
         string desc = result.GetValueAsStringSafe("evaluate");
-        string pubTimeStr = result.GetPropertySafe("publish").GetValueAsStringSafe("pub_time");
-        long pubTime = string.IsNullOrEmpty(pubTimeStr) ? 0 : DateTimeOffset.ParseExact(pubTimeStr, "yyyy-MM-dd HH:mm:ss", null).ToUnixTimeSeconds();
+        string pubTimeStr = result.TryGetPropertySafe("publish")?.GetValueAsStringSafe("pub_time") ?? "";
+        long pubTime = !string.IsNullOrEmpty(pubTimeStr) && DateTimeOffset.TryParse(pubTimeStr, out var dto) ? dto.ToUnixTimeSeconds() : 0;
         var pages = result.EnumerateArraySafe("episodes");
         List<Page> pagesInfo = new();
         int i = 1;

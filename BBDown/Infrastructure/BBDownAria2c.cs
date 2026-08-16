@@ -43,7 +43,8 @@ static class BBDownAria2c
         input.Append($"  header=User-Agent: {HTTPUtil.GetUserAgent(null)}\n");
         if (!string.IsNullOrEmpty(Core.Config.Current.Cookie))
             input.Append("  header=Cookie: ").Append(Core.Config.Current.Cookie).Append('\n');
-        input.Append("  dir=").Append(Path.GetDirectoryName(path)).Append('\n');
+        var dir = Path.GetDirectoryName(path);
+        input.Append("  dir=").Append(string.IsNullOrEmpty(dir) ? "." : dir).Append('\n');
         input.Append("  out=").Append(Path.GetFileName(path)).Append('\n');
 
         // 退出码必须校验：非零退出（连接失败/限速中止/磁盘满等）即便产物文件恰好存在，

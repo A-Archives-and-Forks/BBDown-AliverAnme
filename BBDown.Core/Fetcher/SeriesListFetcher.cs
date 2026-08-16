@@ -29,8 +29,8 @@ public class SeriesListFetcher : IFetcher
             var message = infoRoot.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.String ? msg.GetString() : "未知错误";
             throw new InvalidOperationException($"获取系列信息失败(code={code}): {message}");
         }
-        var listTitle = data.GetStringSafe("title")!;
-        var intro = data.GetStringSafe("intro")!;
+        var listTitle = data.GetValueAsStringSafe("title");
+        var intro = data.GetValueAsStringSafe("intro");
         long pubTime = data.GetInt64Safe("ctime");
 
         List<Page> pagesInfo = new();
@@ -65,13 +65,14 @@ public class SeriesListFetcher : IFetcher
                 oid = m.GetValueAsStringSafe("id");
 
                 // 只处理未失效的视频条目（与收藏夹解析逻辑保持一致）
-                if (m.TryGetProperty("attr", out var attrElem) && attrElem.GetInt32() != 0)
+                if (m.GetInt32Safe("attr") != 0)
                     continue;
 
                 var pageCount = m.GetInt32Safe("page");
-                var desc = m.GetStringSafe("intro")!;
-                var ownerName = m.GetPropertySafe("upper").GetValueAsStringSafe("name");
-                var ownerMid = m.GetPropertySafe("upper").GetValueAsStringSafe("mid");
+                var desc = m.GetValueAsStringSafe("intro");
+                var upperElem = m.TryGetPropertySafe("upper");
+                var ownerName = upperElem?.GetValueAsStringSafe("name") ?? "";
+                var ownerMid = upperElem?.GetValueAsStringSafe("mid") ?? "";
                 foreach (var page in m.EnumerateArraySafe("pages"))
                 {
                     Page p = new(index++,
@@ -79,7 +80,7 @@ public class SeriesListFetcher : IFetcher
                         page.GetValueAsStringSafe("id"),
                         "", //epid
                         pageCount == 1 ? m.GetValueAsStringSafe("title") : $"{m.GetValueAsStringSafe("title")}_P{page.GetValueAsStringSafe("page")}_{page.GetValueAsStringSafe("title")}", //单P使用外层标题 多P则拼接内层子标题
-                        page.TryGetProperty("duration", out var dur) ? dur.GetInt32() : 0,
+                        page.GetInt32Safe("duration"),
                         page.TryGetProperty("dimension", out var dim) && dim.TryGetProperty("width", out var w) && dim.TryGetProperty("height", out var h) ? $"{w}x{h}" : "",
                         m.GetInt64Safe("pubtime"),
                         m.GetValueAsStringSafe("cover"),

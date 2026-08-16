@@ -126,16 +126,20 @@ public class WatchLaterCommand : Command<WatchLaterSettings>
         string json = await HTTPUtil.GetWebSourceAsync(api, token: token);
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
-        int code = root.GetPropertySafe("code").GetInt32();
+        int code = root.GetInt32Safe("code");
         if (code != 0)
             throw new InvalidOperationException($"获取稍后再看失败(code={code}): {root.GetValueAsStringSafe("message")}。该接口需要登录，请先运行 BBDown login 或传入 --cookie。");
 
         var list = new List<(string, string)>();
-        foreach (var item in root.GetPropertySafe("data").EnumerateArraySafe("list"))
+        var dataElem = root.TryGetPropertySafe("data");
+        if (dataElem is not null)
         {
-            var aid = item.GetValueAsStringSafe("aid");
-            if (aid == "") continue;
-            list.Add((aid, item.GetValueAsStringSafe("title")));
+            foreach (var item in dataElem.Value.EnumerateArraySafe("list"))
+            {
+                var aid = item.GetValueAsStringSafe("aid");
+                if (aid == "") continue;
+                list.Add((aid, item.GetValueAsStringSafe("title")));
+            }
         }
         return list;
     }

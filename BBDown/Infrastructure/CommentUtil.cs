@@ -39,18 +39,19 @@ public static class CommentUtil
             string json = await HTTPUtil.GetWebSourceAsync(api, token: token);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
-            int code = root.GetPropertySafe("code").GetInt32();
+            int code = root.GetInt32Safe("code");
             if (code != 0)
                 throw new InvalidOperationException($"获取评论失败(code={code}): {root.GetValueAsStringSafe("message")}");
-            var data = root.GetPropertySafe("data");
-            var replies = data.EnumerateArraySafe("replies");
+            var dataElem = root.TryGetPropertySafe("data");
+            if (dataElem is null) break;
+            var replies = dataElem.Value.EnumerateArraySafe("replies");
             if (!replies.Any()) break;
             foreach (var r in replies)
             {
-                var member = r.GetPropertySafe("member");
-                var content = r.GetPropertySafe("content").GetValueAsStringSafe("message");
+                var member = r.TryGetPropertySafe("member");
+                var content = r.TryGetPropertySafe("content")?.GetValueAsStringSafe("message") ?? "";
                 result.Add(new CommentItem(
-                    member.GetValueAsStringSafe("uname"),
+                    member?.GetValueAsStringSafe("uname") ?? "",
                     r.GetInt64Safe("ctime"),
                     r.GetInt64Safe("like"),
                     content.Trim()));

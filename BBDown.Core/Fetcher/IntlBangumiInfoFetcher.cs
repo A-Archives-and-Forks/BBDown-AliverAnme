@@ -40,8 +40,8 @@ public partial class IntlBangumiInfoFetcher : IFetcher
             }
         }
 
-        string pubTimeStr = result.GetPropertySafe("publish").GetValueAsStringSafe("pub_time");
-        long pubTime = string.IsNullOrEmpty(pubTimeStr) ? 0 : DateTimeOffset.ParseExact(pubTimeStr, "yyyy-MM-dd HH:mm:ss", null).ToUnixTimeSeconds();
+        string pubTimeStr = result.TryGetPropertySafe("publish")?.GetValueAsStringSafe("pub_time") ?? "";
+        long pubTime = !string.IsNullOrEmpty(pubTimeStr) && DateTimeOffset.TryParse(pubTimeStr, out var dto) ? dto.ToUnixTimeSeconds() : 0;
         var pages = new List<JsonElement>();
         if (result.TryGetProperty("episodes", out JsonElement episodes))
         {
@@ -117,7 +117,7 @@ public partial class IntlBangumiInfoFetcher : IFetcher
                 page.GetValueAsStringSafe("id"),
                 _title,
                 0, res,
-                page.TryGetProperty("pub_time", out JsonElement pub_time) ? pub_time.GetInt64() : 0);
+                page.GetInt64Safe("pub_time"));
             if (p.epid == id) index = p.index.ToString();
             pagesInfo.Add(p);
         }

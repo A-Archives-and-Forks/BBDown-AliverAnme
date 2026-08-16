@@ -172,12 +172,27 @@ public class SubCheckCommand : Command<SubCheckSettings>
                     }
 
                     Logger.Log($"  发现 {newAids.Count} 个新内容: av{string.Join(", av", newAids)}");
+                    bool anyAidFailed = false;
                     foreach (var aid in newAids)
                     {
-                        var opt = BuildOption($"av{aid}", settings);
-                        await Program.DoWorkAsync(opt, cancellationToken);
-                        SubscriptionStore.RecordDownloaded(sub.Target, aid);
+                        try
+                        {
+                            var opt = BuildOption($"av{aid}", settings);
+                            await Program.DoWorkAsync(opt, cancellationToken);
+                            SubscriptionStore.RecordDownloaded(sub.Target, aid);
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
+                                                    or InvalidOperationException or IOException or ArgumentException)
+                        {
+                            anyAidFailed = true;
+                            Logger.LogWarn($"  av{aid} 下载失败（继续下一个）: {ex.Message}");
+                        }
                     }
+                    if (anyAidFailed) failedSubs++;
                 }
                 catch (SubscriptionDataCorruptException)
                 {

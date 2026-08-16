@@ -27,7 +27,7 @@ public static partial class ArticleUtil
         string json = await HTTPUtil.GetWebSourceAsync(api, token: token);
         using var doc = JsonDocument.Parse(json);
         var root = doc.RootElement;
-        var code = root.GetPropertySafe("code").GetInt32();
+        int code = root.GetInt32Safe("code");
         if (code != 0)
             throw new InvalidOperationException($"专栏获取失败(code={code}): {root.GetValueAsStringSafe("message")}");
 
