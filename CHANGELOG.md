@@ -2,22 +2,22 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.6.12] - 2026-08-17
 
-### 修复
+### 修复与安全性加固
 
-- **WBI 签名服务器时钟补偿**：本地时钟偏差超 ~60s 时效窗口即被 B 站拒绝签名（虚拟机时钟不同步/未启用 NTP 的容器等）。新增 `HTTPUtil.CalibrateClock` 从响应头 Date 计算偏移写入配置，`Parser`/`BBDownUtil`/`SpaceVideoFetcher` 的签名时间戳（wts/ts）统一经 `ServerClock` 校准；偏移按异步流 + 全局双写（UTC 偏移是服务器物理属性，serve 并发任务共享无害）。
-- **长路径溢出防护**：`PathUtil.GetValidFileName` 新增基名长度截断（默认 100 字符，保留扩展名），超长标题在 Windows 不再抛 `PathTooLongException`。
-- **下载取消碎片定位清理**：取消路径清理 aid 工作目录中"确定非续传资产"的残留（空目录 + 无清单死 `.tmp`），保留 `.vclip/.aclip` 与带有效清单的 `.tmp`（跨进程断点续传资产，不可误删）。
-- **Widevine 吊销诊断**：许可证请求非 2xx 时读取错误体、`Unexpected response type` 升为 Warn，解密失败消息加入"设备证书被吊销/更换 device.wvd/--wvd-path"引导。
-- **外部工具探测守卫**：`FindBinaries` 报错补充安装与 `--ffmpeg-path`/`--mp4box-path`/`--aria2c-path` 指引；`MergeFLV`（`--skip-mux` 下）与 `MuxByMp4box`（杜比视界自动切换）两条绕过前置探测的路径补运行时守卫，替代原生 `Win32Exception`。
-- **Cookie 即将过期警告**：本地解析 SESSDATA 估算剩余有效期，低于 30 天提前提示扫码刷新（2026 新版 Set-Cookie 登录不落盘 refresh_token，自动轮转协议层面不可行）。
-- **直播无 FLV 格式提示**：`LiveStreamUtil.ResolveAsync` 报错时列出接口实际可用的格式（flv/ts/fmp4），明确"当前仅支持 flv"；选流逻辑抽为可测试纯函数。
-- **UP 主空间解析进度**：逐稿展开节流进度日志 + 连续失败中止异常带"已成功展开 N/M + 最后一个成功 av"断点上下文，超大 UP 主解析不再数分钟静默。
+- **直播录制完整性校验**：`LiveStreamUtil` 合并直播分段改用临时 staging 文件并在合并后校验产物大小（`outLen >= totalInputBytes * 0.8`），杜绝因 ffmpeg 遇坏段截断退出而静默删除原始分段丢失数据；引入 `LiveRecordResult` 明确区分完全成功、合并失败保留分段及无数据状态。
+- **HTTP 超时与取消语义规范化**：`HTTPUtil` 内部超时 CTS 耗尽后转为 `TimeoutException` 抛出，避免被 CLI 顶层误判为主观取消（退出码 130）；为 `GetWebSourceWithSetCookiesAsync` / `GetWebSourceAnonymousCheckedAsync` 补齐 `ApiTimeoutMs` 整体超时；修复 `using` 声明在 `EnsureSuccessStatusCode()` 之前导致的 4xx/5xx 连接未 Dispose 泄露。
+- **下载编排与并发控制**：`Download` 路径独占锁命中跳过时清理败者任务已下载的临时音视频/字幕文件；为 FLV 分支补齐弹幕下载、`--danmaku-only` 与 `--cover-only` 支持；多线程分片下载遇确定性不支持 Range 时立即抛错，不再做无意义退避重试。
+- **Core 模块与各 Fetcher 健壮性**：`BangumiInfoFetcher` / `IntlBangumiInfoFetcher` 修正指定 epid 试看分P被意外过滤的问题，未匹配 ep 时抛出明确的 `KeyNotFoundException`；`FavListFetcher` 收藏夹翻页遇到风控或非零 code 时显式中断并报错；免二压第二轮请求增加异常捕获平滑降级与播放受限校验；所有 `backup_url` 改用 `EnumerateArraySafe` 杜绝畸形非数组崩溃。
+- **混流与分段合并**：`BBDownMuxer.MergeFLV` 单分片路径免除 ffmpeg 依赖直接移动；多段 FLV 合并中间 `.ts` 文件使用 `try-finally` 保证在异常或取消时必被清理；`CheckFFmpegDOVI` 增加 5 秒异步超时保护。
+- **DRM、字幕与弹幕安全**：`WidevineCdm` 全链路传递 `CancellationToken` 并在密钥解析完毕后通过 `CryptographicOperations.ZeroMemory` 清理内存中的密钥材料；`WvdDevice.ParseWvd` 补充 Span 边界检查防越界；SRT 字幕正文 `-->` 转义防时间轴错位；ASS 弹幕正文反斜杠 `\` 转义防恶意排版标签注入；弹幕时间解析失败时跳过生成该条 Dialogue。
+- **Serve API 与 CLI 命令安全**：`BBDownApiServer` 净化客户端传入的 `RetryCount` / `RetryDelay`、清除 `Debug` 堆栈暴露标志并规范化 Host 剔除协议前缀；`SubCommand` / `WatchLaterCommand` 订阅与稍后再看单视频捕获 `TimeoutException` / `TaskCanceledException`，防止单项网络抖动中断整批任务；扫码登录严格校验接口返回码 `code == 0` 以及 `access_token` 有效性。
+- **UI 与并发线程安全**：`ProgressBar` 控制台刷新加入 `Logger.ConsoleLock`，消除多任务并发下进度条与日志字符交织乱码。
 
 ### 新增测试
 
-- 时钟校准 7 项、长路径截断 10 项、直播选流 3 项、SESSDATA 过期估算 6 项；全量单元测试 468 个通过。
+- 全量单元测试扩充至 487 个并通过，覆盖直播截断拦截、HTTP 超时转换、Host 规范化、截断 WVD 格式校验、弹幕字符转义等用例。
 
 ## [1.6.11] - 2026-08-13
 
