@@ -34,6 +34,9 @@ public class SeriesListFetcher : IFetcher
         long pubTime = data.GetInt64Safe("ctime");
 
         List<Page> pagesInfo = new();
+        // 翻页去重集合：Contains 是 O(n)，翻页几十页时 O(n²) 拖慢解析；Page 已实现
+        // Equals/GetHashCode（按 aid+cid+epid），HashSet 去重与 Contains 语义一致。
+        HashSet<Page> seenPages = new();
         bool hasMore = true;
         var oid = "";
         int index = 1;
@@ -83,7 +86,7 @@ public class SeriesListFetcher : IFetcher
                         desc,
                         ownerName,
                         ownerMid);
-                    if (!pagesInfo.Contains(p)) pagesInfo.Add(p);
+                    if (seenPages.Add(p)) pagesInfo.Add(p);
                     else index--;
                 }
             }

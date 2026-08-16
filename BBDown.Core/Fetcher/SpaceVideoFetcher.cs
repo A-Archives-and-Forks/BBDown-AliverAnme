@@ -161,7 +161,7 @@ public class SpaceVideoFetcher : IFetcher
     {
         var entries = new List<SpaceEntry>();
         // 分页是按偏移量取的，翻页期间 UP 主新增投稿会让边界条目在相邻两页各出现一次。
-        // FavListFetcher 用 pagesInfo.Contains 做同样的防护。
+        // FavListFetcher/MediaListFetcher/SeriesListFetcher 用 HashSet 对翻页去重做同样的防护。
         var seen = new HashSet<string>();
         var pageNumber = 1;
 

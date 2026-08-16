@@ -6,73 +6,38 @@ namespace BBDown.Core.Util;
 public static class HTTPUtil
 {
 
-    private static HttpClient CreateAppHttpClient()
+    /// <summary>
+    /// 构造按策略固化的共享客户端。SSL 校验策略在**构造时**根据 <paramref name="skipSslCheck"/>
+    /// 定死进 RemoteCertificateValidationCallback 闭包，之后不再读取 Config.Current。
+    /// 校验池与不安全池各自持有独立的 SocketsHttpHandler 连接池：此前回调在每次握手时
+    /// 读 Config.Current.SkipSslCheck（AsyncLocal + 全局双写），并发/长驻场景下
+    /// --insecure 任务建立的未验证连接会被共享池复用给其它未开 --insecure 的任务
+    /// （连接 5 分钟寿命内），安全边界被污染。现在不安全请求只从独立池取连接，
+    /// 校验请求与不安全请求互不复用连接。
+    /// </summary>
+    private static HttpClient CreateClient(bool allowRedirect, TimeSpan timeout, bool skipSslCheck)
     {
         var handler = new SocketsHttpHandler
         {
-            AllowAutoRedirect = true,
+            AllowAutoRedirect = allowRedirect,
             AutomaticDecompression = DecompressionMethods.All,
             PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            SslOptions = CreateSslOptions(),
+            SslOptions = CreateSslOptions(skipSslCheck),
         };
-        return new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(2) };
+        return new HttpClient(handler) { Timeout = timeout };
     }
 
-    // 并发下载与 serve 模式会从多个线程首次访问，Lazy 保证只创建一个 HttpClient，
-    // 否则多余实例各自持有一份 SocketsHttpHandler 连接池，造成 socket 泄漏。
-    private static readonly Lazy<HttpClient> _appHttpClient =
-        new(CreateAppHttpClient, LazyThreadSafetyMode.ExecutionAndPublication);
-
-    public static HttpClient AppHttpClient => _appHttpClient.Value;
-
-    /// <summary>
-    /// 直播录制专用客户端：无限流持续读取，不套用全局 2 分钟超时。
-    /// 实测 .NET 的 HttpClient.Timeout 对 ResponseHeadersRead 之后的流式读取并不生效，
-    /// 但无限连接在语义上不应携带任何客户端超时——一旦未来改动（如换 handler 或
-    /// ResponseContentRead）触达该超时，会直接掐断整场录制。独立客户端也避免长期
-    /// 占用共享连接池里的一条连接。
-    /// </summary>
-    private static readonly Lazy<HttpClient> _streamingHttpClient = new(() =>
+    private static System.Net.Security.SslClientAuthenticationOptions CreateSslOptions(bool skipSslCheck)
     {
-        var handler = new SocketsHttpHandler
-        {
-            AllowAutoRedirect = true,
-            AutomaticDecompression = DecompressionMethods.All,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            SslOptions = CreateSslOptions(),
-        };
-        return new HttpClient(handler) { Timeout = Timeout.InfiniteTimeSpan };
-    }, LazyThreadSafetyMode.ExecutionAndPublication);
-
-    public static HttpClient StreamingHttpClient => _streamingHttpClient.Value;
-
-    /// <summary>
-    /// 禁自动跳转的共享客户端：供逐跳校验重定向（GetWebLocationCheckedAsync /
-    /// GetWebSourceAnonymousCheckedAsync）复用。手动逐跳跟随需要 AllowAutoRedirect=false，
-    /// 每次跳转新建 HttpClient 会重复建连接池；共享实例避免 socket 泄漏与握手开销。
-    /// 与 AppHttpClient 相同的 SSL 校验策略（读取当前流配置的 SkipSslCheck）。
-    /// </summary>
-    private static readonly Lazy<HttpClient> _noRedirectClient = new(() =>
-    {
-        var handler = new SocketsHttpHandler
-        {
-            AllowAutoRedirect = false,
-            AutomaticDecompression = DecompressionMethods.All,
-            PooledConnectionLifetime = TimeSpan.FromMinutes(5),
-            SslOptions = CreateSslOptions(),
-        };
-        return new HttpClient(handler) { Timeout = TimeSpan.FromMinutes(1) };
-    }, LazyThreadSafetyMode.ExecutionAndPublication);
-
-    private static System.Net.Security.SslClientAuthenticationOptions CreateSslOptions()
-    {
-        if (Config.Current.SkipSslCheck)
+        if (skipSslCheck)
             Logger.LogDebug("SSL 证书验证已禁用");
         return new System.Net.Security.SslClientAuthenticationOptions
         {
+            // skipSslCheck 在构造时捕获并固化：同一池内所有连接共用同一策略，
+            // 与请求所属任务的 Config.Current 无关（连接池已按策略隔离）。
             RemoteCertificateValidationCallback = (sender, cert, chain, errors) =>
             {
-                if (Config.Current.SkipSslCheck)
+                if (skipSslCheck)
                 {
                     if (errors != System.Net.Security.SslPolicyErrors.None)
                         Logger.LogDebug("SSL 证书验证被跳过，证书错误: {0}", errors);
@@ -82,6 +47,53 @@ public static class HTTPUtil
             },
         };
     }
+
+    // 并发下载与 serve 模式会从多个线程首次访问，Lazy 保证每个策略池只创建一个 HttpClient，
+    // 否则多余实例各自持有一份 SocketsHttpHandler 连接池，造成 socket 泄漏。
+    // AppHttpClient 按当前异步流配置路由到校验池/不安全池；不安全池仅在 --insecure
+    // 流程首次访问时才被创建，不会为从未使用的策略白白建连接池。
+    private static readonly Lazy<HttpClient> _appHttpClient =
+        new(() => CreateClient(allowRedirect: true, TimeSpan.FromMinutes(2), skipSslCheck: false), LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<HttpClient> _insecureAppHttpClient =
+        new(() => CreateClient(allowRedirect: true, TimeSpan.FromMinutes(2), skipSslCheck: true), LazyThreadSafetyMode.ExecutionAndPublication);
+
+    public static HttpClient AppHttpClient =>
+        Config.Current.SkipSslCheck ? _insecureAppHttpClient.Value : _appHttpClient.Value;
+
+    /// <summary>
+    /// 始终校验证书的共享客户端：WidevineCdm 许可证请求（响应携带内容密钥）必须走此池，
+    /// 不受 --insecure 影响——跳过校验会让中间人直接窃取解密密钥，不能由用户选项降级。
+    /// </summary>
+    public static HttpClient VerifiedAppHttpClient => _appHttpClient.Value;
+
+    /// <summary>
+    /// 直播录制专用客户端：无限流持续读取，不套用全局 2 分钟超时。
+    /// 实测 .NET 的 HttpClient.Timeout 对 ResponseHeadersRead 之后的流式读取并不生效，
+    /// 但无限连接在语义上不应携带任何客户端超时——一旦未来改动（如换 handler 或
+    /// ResponseContentRead）触达该超时，会直接掐断整场录制。独立客户端也避免长期
+    /// 占用共享连接池里的一条连接。与 AppHttpClient 相同的策略隔离。
+    /// </summary>
+    private static readonly Lazy<HttpClient> _streamingHttpClient =
+        new(() => CreateClient(allowRedirect: true, Timeout.InfiniteTimeSpan, skipSslCheck: false), LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<HttpClient> _insecureStreamingHttpClient =
+        new(() => CreateClient(allowRedirect: true, Timeout.InfiniteTimeSpan, skipSslCheck: true), LazyThreadSafetyMode.ExecutionAndPublication);
+
+    public static HttpClient StreamingHttpClient =>
+        Config.Current.SkipSslCheck ? _insecureStreamingHttpClient.Value : _streamingHttpClient.Value;
+
+    /// <summary>
+    /// 禁自动跳转的共享客户端：供逐跳校验重定向（GetWebLocationCheckedAsync /
+    /// GetWebSourceAnonymousCheckedAsync）复用。手动逐跳跟随需要 AllowAutoRedirect=false，
+    /// 每次跳转新建 HttpClient 会重复建连接池；共享实例避免 socket 泄漏与握手开销。
+    /// 与 AppHttpClient 相同的策略隔离（校验/不安全两个池）。
+    /// </summary>
+    private static readonly Lazy<HttpClient> _noRedirectClient =
+        new(() => CreateClient(allowRedirect: false, TimeSpan.FromMinutes(1), skipSslCheck: false), LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<HttpClient> _insecureNoRedirectClient =
+        new(() => CreateClient(allowRedirect: false, TimeSpan.FromMinutes(1), skipSslCheck: true), LazyThreadSafetyMode.ExecutionAndPublication);
+
+    private static HttpClient NoRedirectClient =>
+        Config.Current.SkipSslCheck ? _insecureNoRedirectClient.Value : _noRedirectClient.Value;
 
     private static readonly string[] platforms = { "Windows NT 10.0; Win64", "Macintosh; Intel Mac OS X 10_15", "X11; Linux x86_64" };
 
@@ -123,7 +135,10 @@ public static class HTTPUtil
         using var webResponse = (await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
 
         string htmlCode = await webResponse.Content.ReadAsStringAsync(token);
-        Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
+        // 截断实参含 `htmlCode[..1024]` 的子串分配：DebugLog 关闭时跳过求值，
+        // 避免为每次元数据响应（可达数 MB）白白分配 1KB 截断串
+        if (Config.Current.DebugLog)
+            Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
         List<string> setCookies = webResponse.Headers.TryGetValues("Set-Cookie", out var vals) ? vals.ToList() : [];
         return (htmlCode, setCookies);
     }
@@ -155,7 +170,7 @@ public static class HTTPUtil
             webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
             webRequest.Headers.Connection.Clear();
 
-            using var response = await _noRedirectClient.Value.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
+            using var response = await NoRedirectClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
             if ((int)response.StatusCode is >= 300 and < 400)
             {
                 var location = response.Headers.Location;
@@ -171,7 +186,8 @@ public static class HTTPUtil
                 continue;
             }
             string htmlCode = await response.Content.ReadAsStringAsync(token);
-            Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
+            if (Config.Current.DebugLog)
+                Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
             return htmlCode;
         }
         return current;
@@ -198,7 +214,9 @@ public static class HTTPUtil
         string htmlCode = await webResponse.Content.ReadAsStringAsync(token);
         // 响应体可达数 MB（如 intl 回退抓取的整张 HTML 页面），翻页类 fetcher 会放大几十倍，
         // 全部落盘会把日志文件灌满；截断到前 1KB 即可排查问题。
-        Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
+        // 截断实参含子串分配，DebugLog 关闭时跳过求值（见 GetWebSourceWithSetCookiesAsync）。
+        if (Config.Current.DebugLog)
+            Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
         return htmlCode;
     }
 
@@ -258,7 +276,7 @@ public static class HTTPUtil
                 webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
                 webRequest.Headers.Connection.Clear();
 
-                using var response = await _noRedirectClient.Value.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
+                using var response = await NoRedirectClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
                 if ((int)response.StatusCode is >= 300 and < 400)
                 {
                     var location = response.Headers.Location;
@@ -300,7 +318,7 @@ public static class HTTPUtil
                     getRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
                     getRequest.Headers.Connection.Clear();
 
-                    using var getResponse = await _noRedirectClient.Value.SendAsync(getRequest, HttpCompletionOption.ResponseHeadersRead, token);
+                    using var getResponse = await NoRedirectClient.SendAsync(getRequest, HttpCompletionOption.ResponseHeadersRead, token);
                     if ((int)getResponse.StatusCode is >= 300 and < 400)
                     {
                         var location = getResponse.Headers.Location;
@@ -359,9 +377,21 @@ public static class HTTPUtil
         }
 
         // 不检查状态码会把 4xx/5xx 的错误页当成 grpc 响应体返回，
-        // 下游只能报出难以定位的反序列化错误
-        using HttpResponseMessage response = (await AppHttpClient.SendAsync(request, token)).EnsureSuccessStatusCode();
-        byte[] bytes = await response.Content.ReadAsByteArrayAsync(token);
+        // 下游只能报出难以定位的反序列化错误。
+        // ResponseHeadersRead：先拿到状态码再单独 await 响应体，使 EnsureSuccessStatusCode
+        // 不必等整包缓冲完就能抛错，且响应体读取阶段仍受调用方 token 控制（可取消）。
+        // 注意：ResponseHeadersRead 会让 HttpClient.Timeout 不再约束响应体读取（实测见
+        // StreamingHttpClient 注释），服务端发完响应头后响应体停滞会无限挂起；因此这里
+        // 用 CancelAfter 重建与 HttpClient.Timeout 等价的整体 2 分钟上限。
+        // 先把 response 绑定到 using 再检查状态码：若在初始化表达式内抛错，response 未绑定、
+        // using 不会 Dispose，连接会被未消费的响应体占用无法归还连接池；绑定后再
+        // EnsureSuccessStatusCode，抛错时 using 会 Dispose → SocketsHttpHandler 自动排空
+        // 小响应体归还连接。
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeoutCts.CancelAfter(TimeSpan.FromMinutes(2));
+        using var response = await AppHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+        response.EnsureSuccessStatusCode();
+        byte[] bytes = await response.Content.ReadAsByteArrayAsync(timeoutCts.Token);
 
         return bytes;
     }

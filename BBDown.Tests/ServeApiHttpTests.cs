@@ -235,6 +235,27 @@ public class ServeApiHttpTests
     }
 
     [Fact]
+    public async Task TokenAuth_WrongToken_Returns401()
+    {
+        using var server = new RunningServer(withToken: true);
+
+        // 错误 token → 401（常量时间比较路径：FixedTimeEquals 先哈希再比较，行为一致）
+        server.Client.DefaultRequestHeaders.Add("X-Serve-Token", "wrong-token");
+        using (var wrong = await server.Client.GetAsync("/get-tasks/"))
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, wrong.StatusCode);
+        }
+
+        // 前缀相同但整体不同的 token → 也 401（覆盖"正确 token 前缀 + 追加字符"）
+        server.Client.DefaultRequestHeaders.Remove("X-Serve-Token");
+        server.Client.DefaultRequestHeaders.Add("X-Serve-Token", "test-token-x");
+        using (var prefix = await server.Client.GetAsync("/get-tasks/"))
+        {
+            Assert.Equal(HttpStatusCode.Unauthorized, prefix.StatusCode);
+        }
+    }
+
+    [Fact]
     public async Task Cors_NoAllowAnyOrigin_NoCorsHeaders()
     {
         // 服务端已移除任意来源 CORS：浏览器跨域 POST 会被同源策略拦截，

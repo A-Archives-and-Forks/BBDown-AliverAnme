@@ -35,6 +35,9 @@ public class FavListFetcher : IFetcher
         int pageSize = 20;
         int index = 1;
         List<Page> pagesInfo = new();
+        // 翻页去重集合：Contains 是 O(n)，翻页几十页时 O(n²) 拖慢解析；Page 已实现
+        // Equals/GetHashCode（按 aid+cid+epid），HashSet 去重与 Contains 语义一致。
+        HashSet<Page> seenPages = new();
 
         var api = $"https://api.bilibili.com/x/v3/fav/resource/list?media_id={favId}&pn=1&ps={pageSize}&order=mtime&type=2&tid=0&platform=web";
         var json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
@@ -77,7 +80,7 @@ public class FavListFetcher : IFetcher
                             };
                             // 翻页边界条目重复出现时 index 已自增：命中重复需回退一位，
                             // 否则 Page.index 出现空洞（与 MediaListFetcher/SeriesListFetcher 一致）
-                            if (pagesInfo.Contains(p))
+                            if (!seenPages.Add(p))
                             {
                                 index--;
                                 continue;
@@ -112,7 +115,7 @@ public class FavListFetcher : IFetcher
                         m.GetValueAsStringSafe("intro"),
                         m.GetPropertySafe("upper").GetValueAsStringSafe("name"),
                         m.GetPropertySafe("upper").GetValueAsStringSafe("mid"));
-                    if (pagesInfo.Contains(p)) { index--; continue; }
+                    if (!seenPages.Add(p)) { index--; continue; }
                     pagesInfo.Add(p);
                 }
             }

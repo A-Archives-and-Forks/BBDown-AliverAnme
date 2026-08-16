@@ -6,6 +6,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Net.Http;
 using System.Net.Http.Json;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Serialization;
@@ -124,7 +125,7 @@ public class BBDownApiServer
                     || path.StartsWithSegments("/add-task")
                     || path.StartsWithSegments("/cancel")
                     || path.StartsWithSegments("/remove-finished");
-                if (isApi && context.Request.Headers["X-Serve-Token"] != _serveToken)
+                if (isApi && !FixedTimeEquals(context.Request.Headers["X-Serve-Token"], _serveToken!))
                 {
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     return;
@@ -310,6 +311,30 @@ public class BBDownApiServer
         // 最后一次持久化：确保取消前已完成的任务记录落盘
         PersistFinishedTasks();
     }
+
+    /// <summary>
+    /// 令牌的常量时间比较：先 SHA-256 定长化（规避长度泄漏），再 FixedTimeEquals。
+    /// 字符串 != 按序比较会在首个差异字符短路，理论上允许对高熵 serve token 做
+    /// 时序侧信道逐位探测；哈希输出定长后每次比较耗时与输入内容无关。
+    /// </summary>
+    private static bool FixedTimeEquals(string? provided, string expected)
+    {
+        if (string.IsNullOrEmpty(provided)) return false;
+        return CryptographicOperations.FixedTimeEquals(
+            SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(provided)),
+            SHA256.HashData(System.Text.Encoding.UTF8.GetBytes(expected)));
+    }
+
+    /// <summary>
+    /// OperationCanceledException 归类：token 已请求取消 → 用户/服务关停主动取消（Cancelled）；
+    /// token 未取消 → HttpClient 超时等内部中断（真实失败，Failed）。HttpClient 超时抛的
+    /// TaskCanceledException 其 token 未取消，若一律按取消处理会把超时失败误标"已取消"，
+    /// 掩盖真实失败原因。解析与下载阶段的 catch 复用此判定。
+    /// </summary>
+    internal static (DownloadTaskStatus Status, string Message) ClassifyCancellation(bool cancellationRequested, string failureMessage)
+        => cancellationRequested
+            ? (DownloadTaskStatus.Cancelled, "已取消")
+            : (DownloadTaskStatus.Failed, failureMessage);
 
     /// <summary>
     /// 监听地址是否属于本机回环：127.0.0.1、localhost、[::1]、::1。
@@ -737,13 +762,18 @@ public class BBDownApiServer
         }
         catch (OperationCanceledException)
         {
-            // 解析阶段被取消：与排队阶段一致，标记取消而非失败（此前会被 catch(Exception)
-            // 吞成 Failed，取消语义丢失）。
+            // 解析阶段被取消：分两种来源——用户/服务关停主动取消（linkedCts 已请求取消），
+            // 与 HttpClient 超时抛的 TaskCanceledException（其 token 未取消，见 UrlResolver
+            // FixAvidAsync 的同类判别）。ClassifyCancellation 区分两者，避免超时被误标
+            // "已取消"掩盖解析失败。
             if (slotAcquired) _concurrencyLimiter.Release();
             task.SetAid(option.Url);
-            task.ErrorMessage = "已取消";
             task.TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds();
-            task.SetStatus(DownloadTaskStatus.Cancelled);
+            var (cancelStatus, cancelMessage) = ClassifyCancellation(linkedCts.IsCancellationRequested, "解析请求超时或被中断");
+            task.ErrorMessage = cancelMessage;
+            task.SetStatus(cancelStatus);
+            if (cancelStatus == DownloadTaskStatus.Failed)
+                Logger.LogError($"解析链接失败: {option.Url} - {cancelMessage}");
             lock (_taskLock)
             {
                 task.CancelCts.Dispose();
@@ -794,9 +824,15 @@ public class BBDownApiServer
         }
         catch (OperationCanceledException)
         {
-            // 客户端经 /cancel/{id} 取消（或服务器关停）：标记为 Cancelled
-            task.SetStatus(DownloadTaskStatus.Cancelled);
-            Logger.LogDebug($"{aid} 任务被取消");
+            // 取消语义与解析阶段一致：主动取消标记 Cancelled；HttpClient 超时抛的
+            // TaskCanceledException（token 未取消）是真实失败，标记 Failed 而非冒充取消。
+            var (cancelStatus, cancelMessage) = ClassifyCancellation(linkedCts.IsCancellationRequested, "下载请求超时或被中断");
+            task.ErrorMessage = cancelMessage;
+            task.SetStatus(cancelStatus);
+            if (cancelStatus == DownloadTaskStatus.Cancelled)
+                Logger.LogDebug($"{aid} 任务被取消");
+            else
+                Logger.LogError($"{aid} 下载失败: {cancelMessage}");
         }
         // 捕获所有异常：任何漏网的异常类型都会跳过下方的收尾逻辑，
         // 使任务永久滞留在 runningTasks 中，之后再也无法重新下载。
@@ -944,7 +980,10 @@ public class BBDownApiServer
                 Logger.LogDebug($"回调返回 HTTP {(int)resp.StatusCode}: {webhook}");
             }
         }
-        catch (Exception e) when (e is HttpRequestException or UriFormatException or InvalidOperationException or SocketException)
+        // TaskCanceledException 也要接住：回调 HttpClient.Timeout（2 分钟）触发时抛它且
+        // token 未取消，若不进此过滤器会一路冒泡到 RunAcceptedTaskAsync 的 catch(Exception)，
+        // 对一个已成功且已持久化的任务打印误导性的"任务异常终止"。
+        catch (Exception e) when (e is HttpRequestException or UriFormatException or InvalidOperationException or SocketException or TaskCanceledException)
         {
             Logger.LogDebug("回调失败: {0}", e.Message);
         }

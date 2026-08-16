@@ -37,10 +37,17 @@ public class ArticleCommand : Command<ArticleSettings>
                 Logger.Log($"专栏已保存: {path}");
                 return 0;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
-                Logger.LogWarn("已取消");
-                return 0;
+                // 区分主动取消（Ctrl+C，token 已取消）与 HttpClient 超时（token 未取消）：
+                // 超时是真实失败，返回非零退出码而非以"已取消"+0 隐藏失败
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    Logger.LogWarn("已取消");
+                    return 0;
+                }
+                Logger.LogError($"专栏获取超时或被中断: {ex.Message}");
+                return 1;
             }
             catch (Exception ex)
             {

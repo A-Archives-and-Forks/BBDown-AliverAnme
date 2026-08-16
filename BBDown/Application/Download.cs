@@ -64,14 +64,18 @@ internal partial class Program
             .ToDictionary(g => g.Key, g => g.Count());
         var failedAids = new HashSet<string>();
 
+        // 计数循环而非 foreach + IndexOf：IndexOf 是 O(n)，全量分P时 O(n²) 且按值
+        // 匹配重复分P会得到错误序号；序号在循环顶部递增，与 foreach 遍历一一对应。
+        int pageOrdinal = 0;
         foreach (Page p in pagesInfo)
         {
+            pageOrdinal++;
             if (pagesInfo.Count > 1 && delay > 0)
             {
                 Logger.Log($"停顿{delay}秒...");
                 await Task.Delay(delay * 1000, cancellationToken);
             }
-            Logger.Log($"开始解析P{p.index}: {p.aid}... ({pagesInfo.IndexOf(p) + 1} of {pagesInfo.Count})");
+            Logger.Log($"开始解析P{p.index}: {p.aid}... ({pageOrdinal} of {pagesInfo.Count})");
 
             if (myOption.SaveArchivesToFile && CheckAidFromFile(p.aid))
             {
@@ -835,9 +839,11 @@ internal partial class Program
                     // 会把可用的临时签名 URL 写进日志文件。与 Parser 的 debug 摘要一致，
                     // 只记录长度 + 前 1KB 摘要，避免签名 URL 泄漏。
                     var webJson = parsedResult.WebJsonString;
-                    Logger.LogDebug("WebJson {0} chars: {1}",
-                        webJson.Length,
-                        webJson.Length > 1024 ? webJson[..1024] + "…" : webJson);
+                    // 截断实参含子串分配，DebugLog 关闭时跳过求值
+                    if (Config.Current.DebugLog)
+                        Logger.LogDebug("WebJson {0} chars: {1}",
+                            webJson.Length,
+                            webJson.Length > 1024 ? webJson[..1024] + "…" : webJson);
                     return false;
                 }
 

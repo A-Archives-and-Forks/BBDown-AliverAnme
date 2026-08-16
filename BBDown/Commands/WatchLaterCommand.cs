@@ -100,10 +100,17 @@ public class WatchLaterCommand : Command<WatchLaterSettings>
                 Logger.Log($"稍后再看下载完成：成功 {succeeded} 个，失败 {failed} 个");
                 return failed == 0 ? 0 : 1;
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException ex)
             {
-                Logger.LogWarn("已取消");
-                return 0;
+                // 区分主动取消（Ctrl+C，token 已取消）与 HttpClient 超时（token 未取消）：
+                // 超时是真实失败，必须返回非零退出码，不能以"已取消"+0 隐藏失败（脚本/CI 误判成功）
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    Logger.LogWarn("已取消");
+                    return 0;
+                }
+                Logger.LogError($"稍后再看下载超时或被中断: {ex.Message}");
+                return 1;
             }
             catch (Exception ex)
             {

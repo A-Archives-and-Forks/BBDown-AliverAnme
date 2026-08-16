@@ -190,7 +190,9 @@ public sealed class WidevineCdm : IDisposable
         req.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
         req.Headers.TryAddWithoutValidation("Accept", "*/*");
 
-        using var resp = await HTTPUtil.AppHttpClient.SendAsync(req);
+        // 许可证响应携带内容解密密钥：强制走始终校验证书的客户端（VerifiedAppHttpClient），
+        // 不受用户 --insecure 影响——跳过 TLS 校验会让中间人直接窃取内容密钥。
+        using var resp = await HTTPUtil.VerifiedAppHttpClient.SendAsync(req);
         resp.EnsureSuccessStatusCode();
         return await resp.Content.ReadAsByteArrayAsync();
     }
@@ -258,7 +260,9 @@ public sealed class WidevineCdm : IDisposable
         hmac.TransformBlock(oem, 0, oem.Length, null, 0);
         var computed = hmac.ComputeHash(msg);
 
-        if (!sig.AsSpan().SequenceEqual(computed))
+        // 常量时间比较：SequenceEqual 在首个差异字节短路，对 HMAC 签名做时序探测
+        // 理论上可逐字节还原签名；FixedTimeEquals 在定长输入上耗时与内容无关。
+        if (!CryptographicOperations.FixedTimeEquals(sig, computed))
         {
             Logger.LogWarn("许可证 HMAC 签名校验失败");
             return null;

@@ -26,7 +26,9 @@ internal partial class Program
 
         if (!string.IsNullOrEmpty(parsed.KeyHex) && !string.IsNullOrEmpty(parsed.KidHex))
         {
-            Logger.Log($"使用手动提供的密钥: KEY={parsed.KeyHex[..Math.Min(8, parsed.KeyHex.Length)]}...");
+            // 手动密钥也不回显 key 材料：与 CkcDecryptor 的 A2 修复一致，只记 kid 与长度，
+            // 否则 INFO 级日志会把 AES-128 密钥的 25% 写进持久日志文件
+            Logger.Log($"使用手动提供的密钥: kid={parsed.KidHex}, key 长度={parsed.KeyHex.Length} hex 字符");
         }
         else
         {
@@ -78,7 +80,7 @@ internal partial class Program
             }
         }
 
-        Logger.Log($"密钥获取成功: KEY={parsed.KeyHex[..Math.Min(8, parsed.KeyHex.Length)]}...");
+        Logger.Log($"密钥获取成功: kid={parsed.KidHex}, key 长度={parsed.KeyHex.Length} hex 字符");
 
         var mp4decrypt = !string.IsNullOrEmpty(myOption.Mp4decryptPath) && File.Exists(myOption.Mp4decryptPath)
             ? myOption.Mp4decryptPath

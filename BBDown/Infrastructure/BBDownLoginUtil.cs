@@ -159,7 +159,12 @@ internal static class BBDownLoginUtil
         }
         catch (OperationCanceledException)
         {
-            Logger.LogWarn("WEB 登录已取消。");
+            // 区分主动取消与 HttpClient 超时：超时抛的 TaskCanceledException 其 token 未取消，
+            // 应报告网络超时而非"已取消"，避免掩盖真实失败原因（与 B3 的 ClassifyCancellation 一致）。
+            if (cancellationToken.IsCancellationRequested)
+                Logger.LogWarn("WEB 登录已取消。");
+            else
+                Logger.LogError("WEB 登录超时或被中断，请检查网络连接。");
             return false;
         }
         finally
@@ -246,7 +251,12 @@ internal static class BBDownLoginUtil
         }
         catch (OperationCanceledException)
         {
-            Logger.LogWarn("TV 登录已取消。");
+            // 与 WEB 登录一致：token 未取消的 TaskCanceledException 是 HttpClient 超时，
+            // 报告网络失败而非"已取消"
+            if (cancellationToken.IsCancellationRequested)
+                Logger.LogWarn("TV 登录已取消。");
+            else
+                Logger.LogError("TV 登录超时或被中断，请检查网络连接。");
             return false;
         }
         finally
