@@ -463,14 +463,14 @@ public class BBDownApiServer
         // 携带 {"insecure":true} 即可让携带操作者 SESSDATA 的请求跳过 TLS 校验被中间人截获。
         // serve 强制启用 TLS 校验，忽略该字段。
         req.Insecure = false;
-        // UserAgent 是进程级静态字段：一个任务带自定义 UA 会污染此后所有任务
-        // （SetUpWork 中空值不覆盖、非空值永久改写），serve 下统一用默认 UA。
+        // UserAgent 现按异步流隔离（Config.Current.UserAgent，经 SetUpWork 写入）；
+        // serve 下仍统一清零：客户端不能控制服务端出站请求的 UA 指纹。
         req.UserAgent = "";
         // NotifyWebhook 是 CLI 功能：serve 的 /add-task 请求体若携带它，会绕过
         // CallBackWebHook 的 SSRF 校验，让服务器向攻击者指定的任意地址 POST 任务数据。
         req.NotifyWebhook = "";
         // 任务完成回调改为服务端 allowlist：只接受 serve 启动时 --notify-webhook 配置的
-        // 固定地址，客户端请求体中的 CallBackWebHook 一律清零（此前仅靠 IsSafeCallbackUrl
+        // 固定地址，客户端请求体中的 CallBackWebHook 一律清零（此前仅靠 IsSafeCallbackUrlAsync
         // 校验后仍接受客户端传值——现在完全忽略客户端回调，杜绝任意客户端驱动本机 POST）。
         // FilePattern/MultiFilePattern 会被 SetUpWork 当作 savePathFormat 拼进保存路径，
         // FormatSavePath 只替换占位符、字面量里的 ".." 段原样保留，BBDownMuxer 会按 savePath
@@ -545,8 +545,9 @@ public class BBDownApiServer
     /// 可先解析为公网通过校验、回调时改指 169.254.169.254/内网）。因此每次回调前
     /// （NotifyCompletionCallbackAsync）都会再次调用本方法复查，并在 SendCallbackAsync 中
     /// 用 ConnectCallback 把连接绑定到本次校验解析出的 IP，把窗口压缩到连接前瞬间。
+    /// 异步解析（GetHostAddressesAsync）：回调路径在 async 流程中，同步 DNS 会阻塞线程池线程。
     /// </summary>
-    internal static bool IsSafeCallbackUrl(string? url, Func<string, IPAddress[]>? dnsResolver = null)
+    internal static async Task<bool> IsSafeCallbackUrlAsync(string? url, Func<string, Task<IPAddress[]>>? dnsResolver = null)
     {
         if (string.IsNullOrWhiteSpace(url)) return true; // 未配置回调视为合法
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
@@ -588,7 +589,7 @@ public class BBDownApiServer
         // 即拒绝——内网地址只允许"字面 IP"形式的显式配置，域名一律要求公网可达。
         try
         {
-            var addresses = (dnsResolver ?? Dns.GetHostAddresses)(host);
+            var addresses = dnsResolver is not null ? await dnsResolver(host) : await Dns.GetHostAddressesAsync(host);
             foreach (var addr in addresses)
             {
                 var resolvedIp = addr.IsIPv4MappedToIPv6 ? addr.MapToIPv4() : addr;
@@ -885,7 +886,7 @@ public class BBDownApiServer
         // 域名回调在"启动时校验"与"回调连接时刻"之间可能存在解析结果变化（短 TTL 域名），
         // 因此每次回调前都重新校验；并在 SendCallbackAsync 中用 ConnectCallback 把连接
         // 绑定到本次校验解析出的 IP，避免 HttpClient 再次做 DNS 解析（消除重绑定窗口）。
-        if (!IsSafeCallbackUrl(notifyWebhook))
+        if (!await IsSafeCallbackUrlAsync(notifyWebhook))
         {
             Logger.LogWarn($"回调地址不合法，已跳过本次回调: {notifyWebhook}");
             return;
@@ -898,10 +899,10 @@ public class BBDownApiServer
 
     /// <summary>
     /// 向固定回调地址 POST 任务快照。用 SocketsHttpHandler.ConnectCallback 把 TCP 连接
-    /// 绑定到 IsSafeCallbackUrl 本次校验解析出的 IP：HTTP 请求的 Host（SNI）仍是原域名，
+    /// 绑定到 IsSafeCallbackUrlAsync 本次校验解析出的 IP：HTTP 请求的 Host（SNI）仍是原域名，
     /// 但实际连到的地址来自已校验的解析结果，杜绝"校验用一套 DNS、连接用另一套 DNS"
     /// 的 TOCTOU 重绑定窗口。每个回调请求独立创建 handler（连接不复用），代价最小。
-    /// 校验语义与 <see cref="IsSafeCallbackUrl"/> 保持一致：字面 IP（管理员配置的局域网
+    /// 校验语义与 <see cref="IsSafeCallbackUrlAsync"/> 保持一致：字面 IP（管理员配置的局域网
     /// 回调）仅拦回环/链路本地/云元数据，域名解析出的内网地址一律拒绝。
     /// </summary>
     private static async Task SendCallbackAsync(string webhook, string jsonContent)
@@ -915,7 +916,7 @@ public class BBDownApiServer
             IPAddress target;
             if (hostIsLiteralIp)
             {
-                // 字面 IP 是管理员显式配置的地址：直接绑定到该 IP（与 IsSafeCallbackUrl 的
+                // 字面 IP 是管理员显式配置的地址：直接绑定到该 IP（与 IsSafeCallbackUrlAsync 的
                 // 字面 IP 分支一致，RFC1918 局域网回调放行）。此处不再解析 DNS。
                 literalIp = literalIp!.IsIPv4MappedToIPv6 ? literalIp.MapToIPv4() : literalIp;
                 if (IsUnsafeLiteralIpAddress(literalIp))
@@ -928,11 +929,11 @@ public class BBDownApiServer
             else
             {
                 // 域名回调：解析一次并校验全部地址；任一地址命中敏感/内网段即跳过。
-                // 与 IsSafeCallbackUrl 使用同一套 DNS 解析逻辑（域名重绑定校验在此完成）。
+                // 与 IsSafeCallbackUrlAsync 使用同一套 DNS 解析逻辑（域名重绑定校验在此完成）。
                 IPAddress[] addresses;
                 try
                 {
-                    addresses = Dns.GetHostAddresses(host);
+                    addresses = await Dns.GetHostAddressesAsync(host);
                 }
                 catch (SocketException)
                 {
@@ -990,7 +991,7 @@ public class BBDownApiServer
     }
 
     /// <summary>
-    /// 字面 IP 回调的敏感地址判定：与 <see cref="IsSafeCallbackUrl"/> 的字面 IP 分支一致，
+    /// 字面 IP 回调的敏感地址判定：与 <see cref="IsSafeCallbackUrlAsync"/> 的字面 IP 分支一致，
     /// 仅拦回环、链路本地、云元数据面（169.254/16）与全零地址；RFC1918 私网放行
     /// （管理员显式配置的局域网回调是 serve 正常用法）。
     /// </summary>

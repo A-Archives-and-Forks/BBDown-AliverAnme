@@ -215,7 +215,15 @@ partial class Program
         Logger.LogFilePath = Path.Combine(Directory.GetCurrentDirectory(), "bbdown-api.log");
         var server = new BBDownApiServer(maxConcurrent, serveToken, notifyWebhook: notifyWebhook);
         server.SetUpServer();
-        server.Run(string.IsNullOrEmpty(listenUrl) ? defaultListenUrl : listenUrl, cancellationToken);
+        try
+        {
+            server.Run(string.IsNullOrEmpty(listenUrl) ? defaultListenUrl : listenUrl, cancellationToken);
+        }
+        finally
+        {
+            // 关停后释放持久日志 writer 的文件句柄（Run 可能抛异常，finally 保证释放）
+            Logger.CloseFile();
+        }
     }
 
     internal static async Task DoWorkAsync(MyOption myOption, CancellationToken cancellationToken = default)

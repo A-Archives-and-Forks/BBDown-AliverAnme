@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
+using BBDown.Core.Util;
 
 namespace BBDown;
 
@@ -39,7 +40,7 @@ static class BBDownAria2c
         input.Append(url).Append('\n');
         if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
             input.Append("  header=Referer: https://www.bilibili.com\n");
-        input.Append("  header=User-Agent: Mozilla/5.0\n");
+        input.Append($"  header=User-Agent: {HTTPUtil.GetUserAgent(null)}\n");
         if (!string.IsNullOrEmpty(Core.Config.Current.Cookie))
             input.Append("  header=Cookie: ").Append(Core.Config.Current.Cookie).Append('\n');
         input.Append("  dir=").Append(Path.GetDirectoryName(path)).Append('\n');

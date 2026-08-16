@@ -55,7 +55,7 @@ internal static class BBDownDownloadUtil
         using var httpRequestMessage = new HttpRequestMessage();
         if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
             httpRequestMessage.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
-        httpRequestMessage.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0");
+        httpRequestMessage.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.GetUserAgent(null));
         httpRequestMessage.Headers.TryAddWithoutValidation("Cookie", Core.Config.Current.Cookie);
         // 只发 Range：续传正确性由 Range: bytes=N- 保证，服务器支持则回 206、不支持则回 200
         // （下方 200 分支已做降级处理）。不发送 If-Range——此前用本地临时文件的
@@ -510,7 +510,7 @@ internal static class BBDownDownloadUtil
             if (clips.Count == 0) return; // 单线程降级或 aria2 路径：成品已直接写到目标路径
             // 在锁内合并：合并到临时文件后原子替换，避免锁内写目标路径时被读取方读到半截
             string tmpMerged = path + ".merging";
-            BBDownUtil.CombineMultipleFilesIntoSingleFile(clips.ToArray(), tmpMerged);
+            await BBDownUtil.CombineMultipleFilesIntoSingleFileAsync(clips.ToArray(), tmpMerged, token);
             // 完整性闭环：合并产物必须与服务器声明的总长度一致，否则删除半截成品并抛错，
             // 触发上层重试。合并时若任一来源分片不完整/缺失，产物长度会小于预期。
             if (fileSize > 0)
@@ -721,7 +721,7 @@ internal static class BBDownDownloadUtil
         using var httpRequestMessage = new HttpRequestMessage();
         if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
             httpRequestMessage.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
-        httpRequestMessage.Headers.TryAddWithoutValidation("User-Agent", "Mozilla/5.0");
+        httpRequestMessage.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.GetUserAgent(null));
         httpRequestMessage.Headers.TryAddWithoutValidation("Cookie", Core.Config.Current.Cookie);
         httpRequestMessage.RequestUri = new(url);
         using var response = (await HTTPUtil.AppHttpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead, token))

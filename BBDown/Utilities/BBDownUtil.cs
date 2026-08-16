@@ -74,8 +74,16 @@ public static partial class BBDownUtil
         return totalHours == 0 ? $"{minutes:D2}m{seconds:D2}s" : $"{totalHours}h{minutes:D2}m{seconds:D2}s";
     }
 
-    public static void CombineMultipleFilesIntoSingleFile(string[] files, string outputFilePath)
+    /// <summary>
+    /// 把多个分片文件合并成一个文件。异步流式复制（CopyToAsync + 81920 缓冲）：
+    /// 数 GB 分片合并不再以同步 CopyTo 阻塞线程池线程数十秒，且支持取消。
+    /// 失败/取消时删除半截产物：FLV 路径直接写最终 .mp4、DASH 路径写 .merging，
+    /// 不清理会把损坏文件留在磁盘上（下次下载虽会被 File.Create 截断自愈，
+    /// 但取消那一刻用户/脚本可能已把最终路径的半截文件当成品消费）。
+    /// </summary>
+    public static async Task CombineMultipleFilesIntoSingleFileAsync(string[] files, string outputFilePath, CancellationToken token = default)
     {
+        token.ThrowIfCancellationRequested();
         if (!files.Any()) return;
         if (files.Length == 1)
         {
@@ -87,18 +95,26 @@ public static partial class BBDownUtil
         if (!Directory.Exists(Path.GetDirectoryName(outputFilePath)))
             Directory.CreateDirectory(Path.GetDirectoryName(outputFilePath)!);
 
-        string[] inputFilePaths = files;
-        using var outputStream = File.Create(outputFilePath);
-        foreach (var inputFilePath in inputFilePaths)
+        try
         {
-            if (inputFilePath == "")
-                continue;
-            using var inputStream = File.OpenRead(inputFilePath);
-            // Buffer size can be passed as the second argument.
-            inputStream.CopyTo(outputStream);
-            //Console.WriteLine("The file {0} has been processed.", inputFilePath);
+            using var outputStream = File.Create(outputFilePath);
+            foreach (var inputFilePath in files)
+            {
+                if (inputFilePath == "")
+                    continue;
+                using var inputStream = File.OpenRead(inputFilePath);
+                await inputStream.CopyToAsync(outputStream, 81920, token);
+            }
         }
-        //Global.ExplorerFile(outputFilePath);
+        catch
+        {
+            // 失败/取消：删除半截产物（using 在异常展开时已释放输出流，此处删除不撞句柄）。
+            // 清理失败绝不能掩盖原始异常——若删除因 ACL/只读抛 UnauthorizedAccessException 而
+            // 只捕 IOException，会替换原始异常（含取消的 OperationCanceledException，导致取消
+            // 被误判为失败）。IOException 会传播给调用方触发页面级重试——重试前必须清掉损坏产物。
+            try { if (File.Exists(outputFilePath)) File.Delete(outputFilePath); } catch (Exception) { }
+            throw;
+        }
     }
 
     /// <summary>

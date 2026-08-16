@@ -186,7 +186,7 @@ public sealed class WidevineCdm : IDisposable
         content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/x-protobuf");
 
         using var req = new HttpRequestMessage(HttpMethod.Post, LicenseUrl) { Content = content };
-        req.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.UserAgent);
+        req.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.GetUserAgent(null));
         req.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
         req.Headers.TryAddWithoutValidation("Accept", "*/*");
 

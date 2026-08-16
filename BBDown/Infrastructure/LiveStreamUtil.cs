@@ -332,7 +332,7 @@ public static class LiveStreamUtil
     private static async Task<(long Written, bool ReadInterrupted)> StreamToFileAsync(string url, string segPath, long progressBase, Action<long>? onProgress, CancellationToken token = default)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
-        req.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.UserAgent);
+        req.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.GetUserAgent(null));
         req.Headers.TryAddWithoutValidation("Referer", "https://live.bilibili.com/");
         // 直播流是无限连接：用专用的无超时客户端（StreamingHttpClient），而非全局
         // AppHttpClient（Timeout=2min）。实测 HttpClient.Timeout 对 ResponseHeadersRead

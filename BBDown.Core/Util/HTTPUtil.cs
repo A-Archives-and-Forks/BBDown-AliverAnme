@@ -3,7 +3,7 @@ using System.Net.Http.Headers;
 
 namespace BBDown.Core.Util;
 
-public static class HTTPUtil
+public static partial class HTTPUtil
 {
 
     /// <summary>
@@ -97,19 +97,39 @@ public static class HTTPUtil
 
     private static readonly string[] platforms = { "Windows NT 10.0; Win64", "Macintosh; Intel Mac OS X 10_15", "X11; Linux x86_64" };
 
-    private static string RandomVersion(int min, int max)
+    private static string RandomVersion(int minInclusive, int maxInclusive)
     {
-        double version = Random.Shared.NextDouble() * (max - min) + min;
-        return version.ToString("F3");
+        // 真实浏览器主版本是整数（如 139），比浮点小数更接近真实指纹；闭区间含 maxInclusive
+        return Random.Shared.Next(minInclusive, maxInclusive + 1).ToString();
     }
 
     private static string GetRandomUserAgent()
     {
-        string[] browsers = { $"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{RandomVersion(80, 110)} Safari/537.36", $"Gecko/20100101 Firefox/{RandomVersion(80, 110)}" };
+        // 2026 年主流 Chrome/Firefox 版本段：80-110 的陈旧指纹本身就是风控信号
+        string[] browsers = { $"AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{RandomVersion(130, 150)}.0.0.0 Safari/537.36", $"Gecko/20100101 Firefox/{RandomVersion(130, 150)}.0" };
         return $"Mozilla/5.0 ({platforms[Random.Shared.Next(platforms.Length)]}) {browsers[Random.Shared.Next(browsers.Length)]}";
     }
 
-    public static string UserAgent { get; set; } = GetRandomUserAgent();
+    /// <summary>进程级默认 UA：没有任务级 UA 时使用，保持整个进程一个默认值（与原静态属性行为一致）。</summary>
+    private static readonly Lazy<string> _defaultUserAgent = new(GetRandomUserAgent, LazyThreadSafetyMode.ExecutionAndPublication);
+
+    /// <summary>
+    /// 解析实际使用的 User-Agent：显式参数优先，其次当前异步流配置的
+    /// <see cref="Config.Current"/> UserAgent（CLI --user-agent / serve 任务统一经
+    /// SetUpWork 写入），都没有时用进程级随机默认值。原先的静态可变属性
+    /// HTTPUtil.UserAgent 会被并发任务互相覆盖（一个任务带自定义 UA 污染所有后续任务），
+    /// 这里收敛为按流隔离，serve 下各任务互不干扰。
+    /// </summary>
+    public static string GetUserAgent(string? userAgent)
+        => !string.IsNullOrEmpty(userAgent)
+            ? userAgent
+            : !string.IsNullOrEmpty(Config.Current.UserAgent)
+                ? Config.Current.UserAgent!
+                : _defaultUserAgent.Value;
+
+    /// <summary>从 User-Agent 提取 Chrome 主版本（构造 sec-ch-ua 用；非 Chrome UA 不匹配）。</summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"Chrome/(\d+)")]
+    private static partial System.Text.RegularExpressions.Regex ChromeVersionRegex();
 
     public static async Task<string> GetWebSourceAsync(string url, string? userAgent = null, CancellationToken token = default)
         => await GetWebSourceCoreAsync(url, sendCookie: true, userAgent: userAgent, token: token);
@@ -124,7 +144,7 @@ public static class HTTPUtil
         string url, string? userAgent = null, CancellationToken token = default)
     {
         using var webRequest = new HttpRequestMessage(HttpMethod.Get, url);
-        webRequest.Headers.TryAddWithoutValidation("User-Agent", userAgent ?? UserAgent);
+        webRequest.Headers.TryAddWithoutValidation("User-Agent", GetUserAgent(userAgent));
         webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
         if (!string.IsNullOrEmpty(Config.Current.Cookie))
             webRequest.Headers.TryAddWithoutValidation("Cookie", Config.Current.Cookie);
@@ -165,7 +185,7 @@ public static class HTTPUtil
         for (int hop = 0; hop < maxHops; hop++)
         {
             using var webRequest = new HttpRequestMessage(HttpMethod.Get, current);
-            webRequest.Headers.TryAddWithoutValidation("User-Agent", userAgent ?? UserAgent);
+            webRequest.Headers.TryAddWithoutValidation("User-Agent", GetUserAgent(userAgent));
             webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
             webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
             webRequest.Headers.Connection.Clear();
@@ -196,14 +216,23 @@ public static class HTTPUtil
     private static async Task<string> GetWebSourceCoreAsync(string url, bool sendCookie, string? userAgent, CancellationToken token)
     {
         using var webRequest = new HttpRequestMessage(HttpMethod.Get, url);
-        webRequest.Headers.TryAddWithoutValidation("User-Agent", userAgent ?? UserAgent);
+        var effectiveUa = GetUserAgent(userAgent);
+        webRequest.Headers.TryAddWithoutValidation("User-Agent", effectiveUa);
         webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
         if (sendCookie)
             webRequest.Headers.TryAddWithoutValidation("Cookie", (url.Contains("/ep") || url.Contains("/ss")) ? Config.Current.Cookie + ";CURRENT_FNVAL=4048;" : Config.Current.Cookie);
         if (url.Contains("api.bilibili.com"))
             webRequest.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
         if (url.Contains("api.bilibili.tv"))
-            webRequest.Headers.TryAddWithoutValidation("sec-ch-ua", "\"Google Chrome\";v=\"131\", \"Chromium\";v=\"131\", \"Not_A Brand\";v=\"24\"");
+        {
+            // sec-ch-ua 与 UA 自洽：只有 Chrome UA 才发送（真实 Firefox 不发送 Chrome 品牌
+            // sec-ch-ua），版本取自已解析的 UA——避免"UA 145 + sec-ch-ua 131"这类可被识别
+            // 的指纹不一致（此前硬编码 131，与升级后的 UA 池同样不匹配）。
+            var chromeVersion = ChromeVersionRegex().Match(effectiveUa).Groups[1].Value;
+            if (chromeVersion.Length > 0)
+                webRequest.Headers.TryAddWithoutValidation("sec-ch-ua",
+                    $"\"Google Chrome\";v=\"{chromeVersion}\", \"Chromium\";v=\"{chromeVersion}\", \"Not_A Brand\";v=\"99\"");
+        }
         webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
         webRequest.Headers.Connection.Clear();
 
@@ -229,7 +258,7 @@ public static class HTTPUtil
             try
             {
                 using var webRequest = new HttpRequestMessage(method, url);
-                webRequest.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+                webRequest.Headers.TryAddWithoutValidation("User-Agent", GetUserAgent(null));
                 webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
                 webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
                 webRequest.Headers.Connection.Clear();
@@ -271,7 +300,7 @@ public static class HTTPUtil
             try
             {
                 using var webRequest = new HttpRequestMessage(method, current);
-                webRequest.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+                webRequest.Headers.TryAddWithoutValidation("User-Agent", GetUserAgent(null));
                 webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
                 webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
                 webRequest.Headers.Connection.Clear();
@@ -313,7 +342,7 @@ public static class HTTPUtil
                 try
                 {
                     using var getRequest = new HttpRequestMessage(HttpMethod.Get, current);
-                    getRequest.Headers.TryAddWithoutValidation("User-Agent", UserAgent);
+                    getRequest.Headers.TryAddWithoutValidation("User-Agent", GetUserAgent(null));
                     getRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
                     getRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
                     getRequest.Headers.Connection.Clear();

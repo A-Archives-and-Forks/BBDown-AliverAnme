@@ -375,7 +375,7 @@ static partial class BBDownMuxer
                 // 源文件在全部转换、合并成功后才统一删除（见下方）。
                 sourceFiles.Add(file);
             }
-            BBDownUtil.CombineMultipleFilesIntoSingleFile(tsFiles.ToArray(), outPath);
+            await BBDownUtil.CombineMultipleFilesIntoSingleFileAsync(tsFiles.ToArray(), outPath, cancellationToken);
             // 全部转换 + 合并成功后才清理：删除 .ts 中间产物与源分段
             foreach (var s in tsFiles) TryDelete(s);
             foreach (var s in sourceFiles) TryDelete(s);

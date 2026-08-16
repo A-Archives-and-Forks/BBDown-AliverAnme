@@ -6,30 +6,30 @@ namespace BBDown.Tests;
 public class ServeApiSecurityTests
 {
     // 域名用例需要解析 DNS：注入固定解析器保证测试确定性、不依赖网络
-    private static IPAddress[] ResolvePublic(string _) => [IPAddress.Parse("93.184.216.34")];
+    private static Task<IPAddress[]> ResolvePublic(string _) => Task.FromResult(new IPAddress[] { IPAddress.Parse("93.184.216.34") });
 
     [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("   ")]
-    public void IsSafeCallbackUrl_Empty_Allowed(string? url)
-        => Assert.True(BBDownApiServer.IsSafeCallbackUrl(url));
+    public async Task IsSafeCallbackUrl_Empty_Allowed(string? url)
+        => Assert.True(await BBDownApiServer.IsSafeCallbackUrlAsync(url));
 
     [Theory]
     [InlineData("https://example.com/hook")]
     [InlineData("http://192.168.1.10:9000/cb")]   // RFC1918 私网：局域网回调是 serve 的正常用法
     [InlineData("https://10.0.0.5/cb")]
     [InlineData("https://api.bilibili.com/x/")]
-    public void IsSafeCallbackUrl_PublicOrPrivateNet_Allowed(string url)
-        => Assert.True(BBDownApiServer.IsSafeCallbackUrl(url, ResolvePublic));
+    public async Task IsSafeCallbackUrl_PublicOrPrivateNet_Allowed(string url)
+        => Assert.True(await BBDownApiServer.IsSafeCallbackUrlAsync(url, ResolvePublic));
 
     [Theory]
     [InlineData("ftp://example.com/hook")]
     [InlineData("file:///etc/passwd")]
     [InlineData("/relative/path")]
     [InlineData("not a url")]
-    public void IsSafeCallbackUrl_NonHttpOrRelative_Rejected(string url)
-        => Assert.False(BBDownApiServer.IsSafeCallbackUrl(url));
+    public async Task IsSafeCallbackUrl_NonHttpOrRelative_Rejected(string url)
+        => Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync(url));
 
     [Theory]
     [InlineData("http://localhost:5000/cb")]
@@ -41,35 +41,35 @@ public class ServeApiSecurityTests
     [InlineData("http://[::ffff:127.0.0.1]/cb")]        // IPv4-mapped IPv6 回环
     [InlineData("http://0.0.0.0/cb")]           // 全零地址连接时绑定回环
     [InlineData("http://[::]/cb")]              // IPv6 全零
-    public void IsSafeCallbackUrl_LoopbackOrLinkLocal_Rejected(string url)
-        => Assert.False(BBDownApiServer.IsSafeCallbackUrl(url));
+    public async Task IsSafeCallbackUrl_LoopbackOrLinkLocal_Rejected(string url)
+        => Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync(url));
 
     [Fact]
-    public void IsSafeCallbackUrl_DnsRebindingDomain_Rejected()
+    public async Task IsSafeCallbackUrl_DnsRebindingDomain_Rejected()
     {
         // 攻击者注册一个解析到云元数据地址的域名：字符串比对会放行，
         // 必须解析 DNS 后按地址拒绝
-        IPAddress[] ResolveToMetadata(string _) => [IPAddress.Parse("169.254.169.254")];
-        Assert.False(BBDownApiServer.IsSafeCallbackUrl("http://metadata.internal/cb", ResolveToMetadata));
+        Task<IPAddress[]> ResolveToMetadata(string _) => Task.FromResult(new IPAddress[] { IPAddress.Parse("169.254.169.254") });
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://metadata.internal/cb", ResolveToMetadata));
 
-        IPAddress[] ResolveToLoopback(string _) => [IPAddress.Parse("127.0.0.1")];
-        Assert.False(BBDownApiServer.IsSafeCallbackUrl("http://rebind.test/cb", ResolveToLoopback));
+        Task<IPAddress[]> ResolveToLoopback(string _) => Task.FromResult(new IPAddress[] { IPAddress.Parse("127.0.0.1") });
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://rebind.test/cb", ResolveToLoopback));
 
         // 域名解析到 RFC1918 内网也应拒绝：内网地址只允许"字面 IP"显式配置，
         // 域名重绑定打内网是 SSRF 横向面（攻击者注册域名解析到 10.0.0.x）
-        IPAddress[] ResolveToPrivate(string _) => [IPAddress.Parse("10.0.0.5")];
-        Assert.False(BBDownApiServer.IsSafeCallbackUrl("http://rebind-to-private.test/cb", ResolveToPrivate));
+        Task<IPAddress[]> ResolveToPrivate(string _) => Task.FromResult(new IPAddress[] { IPAddress.Parse("10.0.0.5") });
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://rebind-to-private.test/cb", ResolveToPrivate));
 
         // 字面 IP 的 RFC1918 仍放行（局域网回调是 serve 的正常用法）
-        Assert.True(BBDownApiServer.IsSafeCallbackUrl("http://10.0.0.5:9000/cb"));
+        Assert.True(await BBDownApiServer.IsSafeCallbackUrlAsync("http://10.0.0.5:9000/cb"));
     }
 
     [Fact]
-    public void IsSafeCallbackUrl_DnsFailure_Rejected()
+    public async Task IsSafeCallbackUrl_DnsFailure_Rejected()
     {
         // 域名无法解析：回调必然失败，按不安全处理
-        IPAddress[] Throws(string _) => throw new SocketException((int)SocketError.HostNotFound);
-        Assert.False(BBDownApiServer.IsSafeCallbackUrl("http://unresolvable.test/cb", Throws));
+        Task<IPAddress[]> Throws(string _) => throw new SocketException((int)SocketError.HostNotFound);
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://unresolvable.test/cb", Throws));
     }
 
     [Fact]

@@ -35,9 +35,6 @@ internal partial class Program
         var encodingPriority = ParseEncodingPriority(myOption, out var firstEncoding);
         var dfnPriority = ParseDfnPriority(myOption);
 
-        //优先使用用户设置的UA
-        HTTPUtil.UserAgent = string.IsNullOrEmpty(myOption.UserAgent) ? HTTPUtil.UserAgent : myOption.UserAgent;
-
         bool downloadDanmaku = myOption.DownloadDanmaku || myOption.DanmakuOnly;
         BBDownDanmakuFormat[] downloadDanmakuFormats = ParseDownloadDanmakuFormats(myOption);
 
@@ -60,7 +57,10 @@ internal partial class Program
             MuxerTimeoutMinutes: myOption.MuxerTimeout,
             MaxRetryCount: myOption.RetryCount,
             RetryDelayMs: myOption.RetryDelay,
-            ThreadSegmentSizeMb: myOption.ThreadSegmentSize
+            ThreadSegmentSizeMb: myOption.ThreadSegmentSize,
+            // UA 按异步流隔离写入 Config.Current，HTTPUtil.GetUserAgent 读它：
+            // 不再改进程级静态 HTTPUtil.UserAgent，serve 并发任务互不污染
+            UserAgent: myOption.UserAgent
         ));
 
         Logger.LogDebug("AppDirectory: {0}", APP_DIR);

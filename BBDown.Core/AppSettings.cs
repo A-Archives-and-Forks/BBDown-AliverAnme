@@ -17,7 +17,8 @@ public record AppSettings(
     int MuxerTimeoutMinutes = 30,
     int MaxRetryCount = 3,
     int RetryDelayMs = 3000,
-    int ThreadSegmentSizeMb = 20
+    int ThreadSegmentSizeMb = 20,
+    string UserAgent = ""
 )
 {
     /// <summary>
