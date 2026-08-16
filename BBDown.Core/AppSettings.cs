@@ -17,6 +17,10 @@ public record AppSettings(
     int MuxerTimeoutMinutes = 30,
     int MaxRetryCount = 3,
     int RetryDelayMs = 3000,
+    // 单次 API 请求的整体超时（毫秒，默认 2 分钟）。HttpClient.Timeout 只约束响应头阶段，
+    // 响应体读取在 ResponseHeadersRead 后不再受其约束，因此 GetWebSourceAsync /
+    // GetPostResponseAsync 用此值重建整体超时。默认可由测试覆盖以验证超时重试。
+    int ApiTimeoutMs = 120000,
     int ThreadSegmentSizeMb = 20,
     string UserAgent = "",
     // 当前任务流的工作目录（--work-dir）。serve 模式下每个 /add-task 经 SetUpWork

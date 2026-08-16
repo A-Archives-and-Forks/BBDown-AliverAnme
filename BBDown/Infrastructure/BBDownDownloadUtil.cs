@@ -8,6 +8,7 @@ using System.Linq;
 using System.Net.Http;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Runtime.ExceptionServices;
 using System.Threading.Tasks;
 using static BBDown.Core.Entity.Entity;
 
@@ -105,14 +106,14 @@ internal static class BBDownDownloadUtil
             // 若与真实总长不符（CDN 对 HEAD 返回缓存/占位长度、或探测后内容已变化），
             // 分片划分会按错误大小切割，静默产出截断文件——合并长度校验用的是同一个
             // HEAD 值，是自引用比较，拦不住。这里用每个分片的 206 响应交叉校验：
-            // total != 探测 size 即丢弃本地内容并抛可重试错误，让页面级重试重新探测
-            //（GET），而不是产出"长度正确但内容截断"的成品。
+            // total != 探测 size 即丢弃本地内容并抛 RemoteSizeMismatchException（携带权威
+            // 总长），上层据此按权威总长重新切分/重试，而不是产出"长度正确但内容截断"
+            // 的成品，也不是用错误大小空转重试。
             if (expectedTotalSize > 0 && contentRange.Length is { } total && total != expectedTotalSize)
             {
                 fileStream.SetLength(0);
                 fileStream.Seek(0, SeekOrigin.Begin);
-                throw new IOException(
-                    $"Content-Range 声明总长({total})与探测大小({expectedTotalSize})不符，远端内容已变化，已丢弃本地内容并重新下载");
+                throw new RemoteSizeMismatchException(expectedTotalSize, total);
             }
         }
 
@@ -327,8 +328,24 @@ internal static class BBDownDownloadUtil
         // 此时若 path 恰好是上次失败留下的空文件，会被误判成"已下载完成"
         if (fileSize > 0 && File.Exists(path) && new FileInfo(path).Length == fileSize)
         {
-            Logger.LogDebug("文件已下载过, 跳过下载");
-            return;
+            // 长度匹配还须确认探测大小权威：HEAD 可能被 CDN 返回缓存/占位长度
+            //（与 RangeDownloadToTmpAsync 的 Content-Range 交叉校验同源的问题），等长陈旧
+            // 文件会被误报为"已完整下载"。用 GET 读权威总长复核，一致才跳过；删除只发生在
+            // 权威总长**已知**且与探测不符时——复核失败/未知总长一律退回纯长度跳过，
+            // 避免误删有效文件。
+            long? authoritativeSize = await GetAuthoritativeSizeAsync(url, token);
+            if (authoritativeSize is not { } known || known <= 0 || known == fileSize)
+            {
+                Logger.LogDebug("文件已下载过, 跳过下载");
+                return;
+            }
+            Logger.LogDebug("探测大小({0})与权威大小({1})不符，既有文件不可信，删除后完整重下", fileSize, known);
+            File.Delete(path);
+            DeleteResumeManifest(path);
+            // 用权威总长继续下载：占位 HEAD 会一路带进 expectedTotalSize，若服务器又无视
+            // Range（GET 回 200 全量，无 Content-Range 可交叉校验），written != fileSize
+            // 会空转重试直至永久失败——必须改为权威总长。
+            fileSize = known;
         }
         if (fileSize > 0 && File.Exists(tmpName) && new FileInfo(tmpName).Length == fileSize)
         {
@@ -383,6 +400,9 @@ internal static class BBDownDownloadUtil
         // 下次运行才能确认其资源身份而续传。若等下载完成才写，中断的 .tmp 无清单，
         // 下次一定被删除——跨进程续传实际不可用。
         WriteResumeManifest(tmpName, url, fileSize, probeHeaders, probeContentHeaders);
+        // 尺寸修正不消耗 --retry-count（见下方 RemoteSizeMismatchException catch）：
+        // 否则 --retry-count 1 时修正后没有剩余下载机会。
+        bool sizeRepaired = false;
         while (retry < maxRetry)
         {
             try
@@ -401,6 +421,17 @@ internal static class BBDownDownloadUtil
             catch (Exception ex) when (ex is ArgumentException or NotSupportedException or InvalidOperationException)
             {
                 throw; // non-retryable: bad input, unsupported feature, logic error
+            }
+            catch (RemoteSizeMismatchException ex)
+            {
+                // HEAD 探测大小与 206 Content-Range 声明总长不符（CDN 对 HEAD 返回缓存/占位长度）：
+                // 用权威总长修正后继续下载，不再用错误大小空转（每次重试必然再次失败）。
+                // 修正不计入 --retry-count 消耗；同一下载最多修正一次，仍不符视为真实异常抛出。
+                if (sizeRepaired) throw;
+                sizeRepaired = true;
+                fileSize = ex.ActualTotal;
+                WriteResumeManifest(tmpName, url, fileSize, probeHeaders, probeContentHeaders);
+                Logger.LogDebug("Content-Range 总长与探测大小不符，已按权威总长({0})继续下载", fileSize);
             }
             catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
             {
@@ -498,7 +529,8 @@ internal static class BBDownDownloadUtil
             if (config.ForceHttp) url = ReplaceUrl(url);
             // 探测合并：链路顶层探测一次，结果下传 Core，不再在 Core 内重复探测
             var probe = await GetFileSizeAndHeadersAsync(url, token);
-            clips = await MultiThreadDownloadCoreAsync(url, path, config, probe, token);
+            var (coreClips, _) = await MultiThreadDownloadCoreAsync(url, path, config, probe, token);
+            clips = coreClips;
         }, token);
         return clips ?? [];
     }
@@ -525,26 +557,41 @@ internal static class BBDownDownloadUtil
             // 已完整下载过：直接跳过（不再产生分片，也不做任何合并/清理）。
             // aria2 路径不走此纯长度跳过：等长跨资源残留会被误当"完整"跳过，身份校验
             // 交给 MultiThreadDownloadCoreAsync 内的 PrepareAria2cTarget。
+            // 非 aria2 路径同样不能只凭 HEAD 长度跳过——HEAD 可能被 CDN 返回缓存/占位长度
+            //（与 Content-Range 交叉校验同源的问题），等长陈旧文件会被误报为"已完整下载"。
+            // 删除只发生在权威总长**已知**且与探测不符时；复核失败/未知总长退回纯长度跳过。
             if (!config.UseAria2c && fileSize > 0 && File.Exists(path) && new FileInfo(path).Length == fileSize)
             {
-                Logger.LogDebug("文件已下载过, 跳过下载");
-                return;
+                long? authoritativeSize = await GetAuthoritativeSizeAsync(url, token);
+                if (authoritativeSize is not { } known || known <= 0 || known == fileSize)
+                {
+                    Logger.LogDebug("文件已下载过, 跳过下载");
+                    return;
+                }
+                Logger.LogDebug("探测大小({0})与权威大小({1})不符，既有文件不可信，删除后完整重下", fileSize, known);
+                File.Delete(path);
+                DeleteResumeManifest(path);
+                // 用权威总长下传 Core：占位 HEAD 若一路带进 expectedTotalSize，对无视 Range
+                //（GET 回 200 全量）的服务器会以 NotSupportedException 失败，而非按正确大小下载。
+                fileSize = known;
             }
-            var clips = await MultiThreadDownloadCoreAsync(url, path, config, (fileSize, probeHeaders, probeContentHeaders), token);
+            // 分片下载内部可能按 206 Content-Range 的权威总长修复 HEAD 探测错误的大小，
+            // 返回实际使用的总长，合并长度校验用它对账（而不是外层可能错误的探测值）。
+            var (clips, actualFileSize) = await MultiThreadDownloadCoreAsync(url, path, config, (fileSize, probeHeaders, probeContentHeaders), token);
             if (clips.Count == 0) return; // 单线程降级或 aria2 路径：成品已直接写到目标路径
             // 在锁内合并：合并到临时文件后原子替换，避免锁内写目标路径时被读取方读到半截
             string tmpMerged = path + ".merging";
             await BBDownUtil.CombineMultipleFilesIntoSingleFileAsync(clips.ToArray(), tmpMerged, token);
             // 完整性闭环：合并产物必须与服务器声明的总长度一致，否则删除半截成品并抛错，
             // 触发上层重试。合并时若任一来源分片不完整/缺失，产物长度会小于预期。
-            if (fileSize > 0)
+            if (actualFileSize > 0)
             {
                 long mergedLength = File.Exists(tmpMerged) ? new FileInfo(tmpMerged).Length : 0;
-                if (mergedLength != fileSize)
+                if (mergedLength != actualFileSize)
                 {
                     try { File.Delete(tmpMerged); } catch (IOException) { }
                     throw new InvalidOperationException(
-                        $"分片合并产物长度 ({mergedLength} 字节) 与服务器声明总长 ({fileSize} 字节) 不符，已触发重试");
+                        $"分片合并产物长度 ({mergedLength} 字节) 与服务器声明总长 ({actualFileSize} 字节) 不符，已触发重试");
                 }
             }
             File.Move(tmpMerged, path, true);
@@ -565,8 +612,9 @@ internal static class BBDownDownloadUtil
         }, token);
     }
 
-    /// <summary>本次多线程下载实际产生的分片文件列表。无分片（单线程降级/已存在跳过）时返回空列表。</summary>
-    private static async Task<List<string>> MultiThreadDownloadCoreAsync(string url, string path, DownloadConfig config,
+    /// <summary>本次多线程下载实际产生的分片文件列表（无分片时返回空列表）及实际使用的文件总长。
+    /// 总长可能在下载中经 206 Content-Range 交叉校验修正（HEAD 探测被 CDN 返回缓存/占位长度）。</summary>
+    private static async Task<(List<string> clips, long fileSize)> MultiThreadDownloadCoreAsync(string url, string path, DownloadConfig config,
         (long size, HttpResponseHeaders? headers, HttpContentHeaders? contentHeaders) probe, CancellationToken token)
     {
         if (config.ForceHttp) url = ReplaceUrl(url);
@@ -577,13 +625,13 @@ internal static class BBDownDownloadUtil
             // 与单线程 aria2 分支一致：先校验续传目标身份（防跨资源续传拼损坏文件），
             // 已完整则跳过（MultiThreadDownloadAndMergeAsync 已做过一次长度跳过，此处兜底）
             if (PrepareAria2cTarget(url, path, fileSize, probeHeaders, probeContentHeaders))
-                return [];
+                return ([], fileSize);
             await BBDownAria2c.DownloadFileByAria2cAsync(url, path, config.Aria2cArgs, token);
             if (File.Exists(path + ".aria2") || !File.Exists(path))
                 throw new InvalidOperationException("aria2下载可能存在错误");
             // 同单线程：保留身份清单作为完成证书，供重跑跳过完整文件
             Console.WriteLine();
-            return [];
+            return ([], fileSize);
         }
         Logger.LogDebug("文件大小：{0} bytes", fileSize);
         // 分片必须依赖已知的文件大小：拿不到 Content-Length 时 GetAllClips 会返回空列表，
@@ -594,106 +642,165 @@ internal static class BBDownDownloadUtil
             Logger.LogWarn("服务器未返回文件大小, 已降级为单线程下载");
             // 复用本链路已探测的结果：不重新探测（探测合并）
             await DownloadFileCoreAsync(url, path, config, probe, token);
-            return [];
+            return ([], fileSize);
         }
         //已下载过, 跳过下载
         if (File.Exists(path) && new FileInfo(path).Length == fileSize)
         {
-            Logger.LogDebug("文件已下载过, 跳过下载");
-            // 目标文件已完整：清理上一次中断遗留的该路径分片。否则调用方（Display）
-            // 在下载返回后仍会无条件重合并目录里的 .vclip，用残缺分片截断覆盖这份完整成品。
-            CleanStaleClipsFor(path);
-            return [];
-        }
-        List<Clip> allClips = GetAllClips(url, fileSize);
-        int total = allClips.Count;
-        Logger.LogDebug("分段数量：{0}", total);
-        // 轨道级资源身份清单：多线程分片（.vclip/.aclip）由同一 URL 切出，轨道清单记录
-        // 整条轨道的资源身份。身份不符（1080P→720P / AVC→HEVC）时一次性删除该轨道
-        // 全部分片，而不是逐片按长度判断——长度相同的前缀会被复用拼入新资源，内容混合。
-        string dir0 = Path.GetDirectoryName(path)!;
-        string stem0 = Path.GetFileNameWithoutExtension(path);
-        string clipExt0 = Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip";
-        // 该轨道的全部预期分片路径（与 allClips 一一对应）：用于检测"是否存在任意分片"，
-        // 不要求首分片存在——中断可能只留下后续分片，只要任一存在就必须做身份校验。
-        List<string> expectedClips = allClips
-            .Select(c => Path.Combine(dir0, c.index.ToString("00000") + "_" + stem0 + clipExt0))
-            .ToList();
-        string manifestClip = expectedClips[0]; // 轨道清单挂在首分片名下（00000_<stem>.vclip.manifest.json）
-        // 存在任意旧分片 → 校验轨道 manifest；缺失/损坏/不匹配 → 清理全部分片和旧 manifest
-        bool anyExistingSegment = expectedClips.Any(File.Exists);
-        if (anyExistingSegment && !CanResumeFrom(manifestClip, url, fileSize, out var trackReason, probeHeaders?.ETag?.Tag, probeContentHeaders?.LastModified?.ToString("R")))
-        {
-            Logger.LogDebug("多线程: 轨道分片资源身份不可信（{0}），删除全部分片后完整重下", trackReason ?? "未知原因");
-            CleanStaleClipsFor(path);
-            DeleteResumeManifest(manifestClip);
-        }
-        // 下载分片前写入轨道清单（真正中断也会留下清单，下次可确认身份续传）
-        WriteResumeManifest(manifestClip, url, fileSize, probeHeaders, probeContentHeaders);
-        // 分片进度按下标存放并维护一个原子累计值。
-        // 此前每次回调都要对 ConcurrentDictionary.Values 求两次和，
-        // 而 Values 每次访问都会复制出一份快照 —— 回调频率是每分片每 256KB 一次，
-        // 10GB 的下载会触发约 4 万次 O(分片数) 的遍历。
-        var clipProgress = new long[total];
-        long downloadedTotal = 0;
-
-        using var progress = new ProgressBar(config.RelatedTask);
-        progress.Report(0);
-        int maxRetry = Config.Current.MaxRetryCount;
-        // 显式限制单文件分片并发：不设上限时 Parallel.ForEachAsync 用 CPU 核数，
-        // 高核数机器 × serve 并发任务会把出站连接数放大到远超需要的量级。
-        // 每文件封顶 8 路并发分片，下载带宽通常先于并发数饱和，足够。
-        var parallelOptions = new ParallelOptions
-        {
-            CancellationToken = token,
-            MaxDegreeOfParallelism = Math.Min(8, Math.Max(1, Environment.ProcessorCount)),
-        };
-        await Parallel.ForEachAsync(allClips, parallelOptions, async (clip, _) =>
-        {
-            int retry = 0;
-            string tmp = Path.Combine(Path.GetDirectoryName(path)!, clip.index.ToString("00000") + "_" + Path.GetFileNameWithoutExtension(path) + (Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip"));
-            while (retry < maxRetry)
+            // 长度匹配还须确认探测大小权威（HEAD 可能被 CDN 返回缓存/占位长度）：
+            // 等长陈旧文件会被误报为"已完整下载"。用 GET 读权威总长复核，一致才跳过；
+            // 删除只发生在权威总长**已知**且与探测不符时（复核失败/未知总长退回纯长度跳过，
+            // 避免误删有效文件；也防止 fileSize 被置 0 导致切分崩溃）。
+            long? authoritativeSize = await GetAuthoritativeSizeAsync(url, token);
+            if (authoritativeSize is not { } known || known <= 0 || known == fileSize)
             {
-                try
-                {
-                    await RangeDownloadToTmpAsync(clip.index, url, tmp, clip.from, clip.to == -1 ? null : clip.to, (index, downloaded, _) =>
-                    {
-                        // 同一分片的回调只在它自己的任务里串行发生，
-                        // 因此这里只需保证跨分片累加的原子性
-                        var previous = Interlocked.Exchange(ref clipProgress[index], downloaded);
-                        var current = Interlocked.Add(ref downloadedTotal, downloaded - previous);
-                        progress.Report(fileSize > 0 ? (double)current / fileSize : 0, current);
-                    }, true, expectedTotalSize: fileSize, token: _);
-                    break;
-                }
-                catch (NotSupportedException)
-                {
-                    // 次数与其他分支统一用 maxRetry，原先硬编码的 3 会随配置变化而偏多或偏少
-                    if (++retry == maxRetry) throw new NotSupportedException("服务器可能并不支持多线程下载, 请使用 --multi-thread false 关闭多线程");
-                    await Task.Delay(retry * Config.Current.RetryDelayMs, _);
-                }
-                catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
-                {
-                    throw; // non-retryable
-                }
-                catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
-                {
-                    int backoffMs = (retry + 1) * Config.Current.RetryDelayMs;
-                    Logger.LogDebug("分段下载失败(第{0}次重试, {1}ms后): {2}", retry + 1, backoffMs, ex.Message);
-                    await Task.Delay(backoffMs, _);
-                    if (++retry == maxRetry) throw new IOException($"分段 {clip.index} 下载失败，请检查网络或关闭多线程重试", ex);
-                }
+                Logger.LogDebug("文件已下载过, 跳过下载");
+                // 目标文件已完整：清理上一次中断遗留的该路径分片。否则调用方（Display）
+                // 在下载返回后仍会无条件重合并目录里的 .vclip，用残缺分片截断覆盖这份完整成品。
+                CleanStaleClipsFor(path);
+                return ([], fileSize);
             }
-        });
+            Logger.LogDebug("探测大小({0})与权威大小({1})不符，既有文件不可信，删除后完整重下", fileSize, known);
+            File.Delete(path);
+            DeleteResumeManifest(path);
+            fileSize = known;
+        }
+        // 探测大小可能被 CDN 的 HEAD 缓存/占位长度欺骗（见 MismatchedHeadSizeServer）：
+        // 分片切分按错误大小进行，每个分片的 206 Content-Range 交叉校验会抛
+        // RemoteSizeMismatchException。这里按声明的权威总长最多重新切分一次，
+        // 而不是用错误大小空转重试（每次必然再次失败）。
+        long mismatchTotal = 0;
+        List<Clip>? allClips = null;
+        for (int sizeAttempt = 0; ; sizeAttempt++)
+        {
+            allClips = GetAllClips(url, fileSize);
+            int total = allClips.Count;
+            Logger.LogDebug("分段数量：{0}", total);
+            // 轨道级资源身份清单：多线程分片（.vclip/.aclip）由同一 URL 切出，轨道清单记录
+            // 整条轨道的资源身份。身份不符（1080P→720P / AVC→HEVC）时一次性删除该轨道
+            // 全部分片，而不是逐片按长度判断——长度相同的前缀会被复用拼入新资源，内容混合。
+            string dir0 = Path.GetDirectoryName(path)!;
+            string stem0 = Path.GetFileNameWithoutExtension(path);
+            string clipExt0 = Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip";
+            // 该轨道的全部预期分片路径（与 allClips 一一对应）：用于检测"是否存在任意分片"，
+            // 不要求首分片存在——中断可能只留下后续分片，只要任一存在就必须做身份校验。
+            List<string> expectedClips = allClips
+                .Select(c => Path.Combine(dir0, c.index.ToString("00000") + "_" + stem0 + clipExt0))
+                .ToList();
+            string manifestClip = expectedClips[0]; // 轨道清单挂在首分片名下（00000_<stem>.vclip.manifest.json）
+            // 存在任意旧分片 → 校验轨道 manifest；缺失/损坏/不匹配 → 清理全部分片和旧 manifest
+            bool anyExistingSegment = expectedClips.Any(File.Exists);
+            if (anyExistingSegment && !CanResumeFrom(manifestClip, url, fileSize, out var trackReason, probeHeaders?.ETag?.Tag, probeContentHeaders?.LastModified?.ToString("R")))
+            {
+                Logger.LogDebug("多线程: 轨道分片资源身份不可信（{0}），删除全部分片后完整重下", trackReason ?? "未知原因");
+                CleanStaleClipsFor(path);
+                DeleteResumeManifest(manifestClip);
+            }
+            // 下载分片前写入轨道清单（真正中断也会留下清单，下次可确认身份续传）
+            WriteResumeManifest(manifestClip, url, fileSize, probeHeaders, probeContentHeaders);
+            // 分片进度按下标存放并维护一个原子累计值。
+            // 此前每次回调都要对 ConcurrentDictionary.Values 求两次和，
+            // 而 Values 每次访问都会复制出一份快照 —— 回调频率是每分片每 256KB 一次，
+            // 10GB 的下载会触发约 4 万次 O(分片数) 的遍历。
+            var clipProgress = new long[total];
+            long downloadedTotal = 0;
+
+            using var progress = new ProgressBar(config.RelatedTask);
+            progress.Report(0);
+            int maxRetry = Config.Current.MaxRetryCount;
+            // 显式限制单文件分片并发：不设上限时 Parallel.ForEachAsync 用 CPU 核数，
+            // 高核数机器 × serve 并发任务会把出站连接数放大到远超需要的量级。
+            // 每文件封顶 8 路并发分片，下载带宽通常先于并发数饱和，足够。
+            var parallelOptions = new ParallelOptions
+            {
+                CancellationToken = token,
+                MaxDegreeOfParallelism = Math.Min(8, Math.Max(1, Environment.ProcessorCount)),
+            };
+            mismatchTotal = 0;
+            Exception? clipFailure = null;
+            try
+            {
+                await Parallel.ForEachAsync(allClips, parallelOptions, async (clip, _) =>
+                {
+                    int retry = 0;
+                    string tmp = Path.Combine(Path.GetDirectoryName(path)!, clip.index.ToString("00000") + "_" + Path.GetFileNameWithoutExtension(path) + (Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip"));
+                    while (retry < maxRetry)
+                    {
+                        try
+                        {
+                            await RangeDownloadToTmpAsync(clip.index, url, tmp, clip.from, clip.to == -1 ? null : clip.to, (index, downloaded, _) =>
+                            {
+                                // 同一分片的回调只在它自己的任务里串行发生，
+                                // 因此这里只需保证跨分片累加的原子性
+                                var previous = Interlocked.Exchange(ref clipProgress[index], downloaded);
+                                var current = Interlocked.Add(ref downloadedTotal, downloaded - previous);
+                                progress.Report(fileSize > 0 ? (double)current / fileSize : 0, current);
+                            }, true, expectedTotalSize: fileSize, token: _);
+                            break;
+                        }
+                        catch (RemoteSizeMismatchException ex)
+                        {
+                            // 所有分片共享同一错误探测大小，本地重试必然再次失败：不做空转。
+                            // 记录权威总长后立即结束本分片，交由下方按权威总长重新切分下载。
+                            Interlocked.CompareExchange(ref mismatchTotal, ex.ActualTotal, 0);
+                            return;
+                        }
+                        catch (NotSupportedException)
+                        {
+                            // 次数与其他分支统一用 maxRetry，原先硬编码的 3 会随配置变化而偏多或偏少
+                            if (++retry == maxRetry) throw new NotSupportedException("服务器可能并不支持多线程下载, 请使用 --multi-thread false 关闭多线程");
+                            await Task.Delay(retry * Config.Current.RetryDelayMs, _);
+                        }
+                        catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
+                        {
+                            throw; // non-retryable
+                        }
+                        catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
+                        {
+                            int backoffMs = (retry + 1) * Config.Current.RetryDelayMs;
+                            Logger.LogDebug("分段下载失败(第{0}次重试, {1}ms后): {2}", retry + 1, backoffMs, ex.Message);
+                            await Task.Delay(backoffMs, _);
+                            if (++retry == maxRetry) throw new IOException($"分段 {clip.index} 下载失败，请检查网络或关闭多线程重试", ex);
+                        }
+                    }
+                });
+            }
+            catch (Exception ex)
+            {
+                // 分片下载失败：可能是尺寸错位（待下方修复），也可能是真实网络/协议错误。
+                // 尺寸错位优先修复；无错位则保留原异常原样重抛。
+                clipFailure = ex;
+            }
+
+            if (mismatchTotal > 0)
+            {
+                // 尺寸错位：按权威总长重新切分下载（最多修复一次；仍不符则抛出）。
+                // 越界分片会因请求超出真实资源范围而报 416/网络错（IOException/HttpRequestException），
+                // 属切分错误的连带，修复后自愈，允许覆盖；但**非可重试**错误（InvalidOperationException/
+                // ArgumentException）与真实取消是独立缺陷，必须原样抛出，不能被尺寸修复吞掉——
+                // 否则一次性的协议错会在重切分后被误报为成功。
+                if (sizeAttempt > 0)
+                    throw new RemoteSizeMismatchException(fileSize, mismatchTotal);
+                if (clipFailure is not null && !IsSizeArtifactFailure(clipFailure))
+                    ExceptionDispatchInfo.Capture(clipFailure).Throw();
+                fileSize = mismatchTotal;
+                CleanStaleClipsFor(path);
+                Logger.LogDebug("Content-Range 总长与探测大小不符，已按权威总长({0})重新切分下载", fileSize);
+                continue;
+            }
+            if (clipFailure is not null)
+                ExceptionDispatchInfo.Capture(clipFailure).Throw();
+            break;
+        }
         // 返回本次产生的精确分片列表：与 allClips 的 index 一一对应。
         // 合并/清理调用方据此操作，不扫描目录（避免混入其它任务的残留分片）。
         string dir = Path.GetDirectoryName(path)!;
         string stem = Path.GetFileNameWithoutExtension(path);
         string clipExt = Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip";
-        return allClips
+        return (allClips!
             .Select(c => Path.Combine(dir, c.index.ToString("00000") + "_" + stem + clipExt))
             .OrderBy(p => p)
-            .ToList();
+            .ToList(), fileSize);
     }
 
     /// <summary>
@@ -740,6 +847,60 @@ internal static class BBDownDownloadUtil
             index++;
         }
         return clips;
+    }
+
+    /// <summary>
+    /// 分片失败是否属于"切分错误"的连带（越界分片 416 / 网络错）：这类失败在按权威总长
+    /// 重新切分后会自愈，允许被尺寸修复覆盖。其余（非可重试的输入/逻辑错误、真实取消）
+    /// 是独立缺陷，必须原样抛出。
+    /// </summary>
+    private static bool IsSizeArtifactFailure(Exception ex)
+        => ex is IOException or HttpRequestException
+           || (ex is AggregateException ae && ae.InnerExceptions.All(IsSizeArtifactFailure));
+
+    /// <summary>
+    /// 用 GET（Range: bytes=0-0）读取资源的权威总长，用于"已下载完成"跳过前的复核：
+    /// HEAD 探测可能被 CDN 返回缓存/占位长度（与 <see cref="RangeDownloadToTmpAsync"/> 的
+    /// Content-Range 交叉校验同源的问题），若既有文件长度恰好等于错误的 HEAD 值，会被误判为
+    /// "已完整下载"而把陈旧/截断文件报成成功。
+    /// 返回 null 表示**无法确认**权威总长（复核失败 / 服务端不提供总长）：调用方必须退回
+    /// 纯长度跳过、**绝不能删除既有文件**——否则对 `bytes 0-0/*`（未知总长）或分块响应
+    ///（无 Content-Length）的服务，每次重跑都会误删一份完整文件。
+    /// 只走跳过路径（文件已存在），不影响全新下载的探测合并（仍只发一次 HEAD）。
+    /// </summary>
+    private static async Task<long?> GetAuthoritativeSizeAsync(string url, CancellationToken token)
+    {
+        try
+        {
+            using var request = new HttpRequestMessage(HttpMethod.Get, url);
+            if (!url.Contains("platform=android_tv_yst") && !url.Contains("platform=android"))
+                request.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
+            request.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.GetUserAgent(null));
+            request.Headers.TryAddWithoutValidation("Cookie", Core.Config.Current.Cookie);
+            request.Headers.Range = new(0, 0);
+            // 复核只是单字节小请求，独立短超时兜底，避免卡死跳过路径（失败一律视为"无法确认"）
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeoutCts.CancelAfter(TimeSpan.FromSeconds(15));
+            using var response = await HTTPUtil.AppHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+            response.EnsureSuccessStatusCode();
+            // 206 的 Content-Range 尾段 /total 是权威总长；缺尾段（bytes 0-0/*）无法确认
+            if (response.Content.Headers.ContentRange is { HasRange: true, Length: { } total })
+                return total;
+            // 服务器忽略 Range 返回 200：Content-Length 是权威总长（完整响应）。
+            // 206 部分响应的 Content-Length 只是分片大小（如 bytes 0-0/* 时为 1），
+            // 绝不能当总长——否则会据此误删有效文件；分块（无 Content-Length）同样无法确认。
+            if (response.StatusCode == HttpStatusCode.OK && response.Content.Headers.ContentLength is { } length)
+                return length;
+            return null;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or IOException or OperationCanceledException)
+        {
+            // 真正的用户取消必须向上传播；复核失败（瞬时网络/被拒）不阻断跳过——
+            // "无法确认"≠"不符"，退回纯长度跳过，不删除既有文件。
+            if (token.IsCancellationRequested) throw;
+            Logger.LogDebug("权威大小复核失败，退回长度跳过: {0}", ex.Message);
+            return null;
+        }
     }
 
     private static async Task<(long size, HttpResponseHeaders? headers, HttpContentHeaders? contentHeaders)> GetFileSizeAndHeadersAsync(string url, CancellationToken token = default)
@@ -960,4 +1121,26 @@ internal static class BBDownDownloadUtil
 [System.Text.Json.Serialization.JsonSerializable(typeof(BBDownDownloadUtil.ResumeManifest))]
 internal partial class DownloadManifestJsonContext : System.Text.Json.Serialization.JsonSerializerContext
 {
+}
+
+/// <summary>
+/// 206 响应 Content-Range 声明的资源总长与探测大小不符：说明 HEAD 探测被 CDN 返回
+/// 缓存/占位长度（或探测后内容已变化）。携带权威总长 <see cref="ActualTotal"/>，
+/// 上层据此修正后重试/重新切分，而不是用错误大小空转重试。
+/// 继承 <see cref="IOException"/> 使页面级重试的既有 catch 原样生效。
+/// </summary>
+internal sealed class RemoteSizeMismatchException : IOException
+{
+    /// <summary>当前探测（HEAD/上轮切分）使用的大小。</summary>
+    public long ExpectedTotalSize { get; }
+
+    /// <summary>206 Content-Range 声明的权威总长。</summary>
+    public long ActualTotal { get; }
+
+    public RemoteSizeMismatchException(long expectedTotalSize, long actualTotal)
+        : base($"Content-Range 声明总长({actualTotal})与探测大小({expectedTotalSize})不符，远端内容已变化，已丢弃本地内容并按权威总长重新下载")
+    {
+        ExpectedTotalSize = expectedTotalSize;
+        ActualTotal = actualTotal;
+    }
 }

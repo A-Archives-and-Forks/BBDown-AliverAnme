@@ -136,7 +136,7 @@ public static partial class HTTPUtil
     /// B 站风控/错误页常以 200 返回 HTML，此时抛 <see cref="RiskControlResponseException"/>
     /// 给出可读诊断，替代下游 JsonDocument.Parse 的裸 JsonException。
     /// 少数确实抓取 HTML/XML 的调用点（番剧页、player.so）传 <paramref name="rejectHtml"/> = false。
-    /// 5xx/传输层失败按 MaxRetryCount 指数退避重试（4xx 风控不重试）。
+    /// 5xx/传输层失败/超时按 MaxRetryCount 指数退避重试（4xx 风控不重试）。
     /// </summary>
     public static async Task<string> GetWebSourceAsync(string url, string? userAgent = null, CancellationToken token = default, bool rejectHtml = true)
         => await GetWebSourceCoreAsync(url, sendCookie: true, userAgent: userAgent, token: token, rejectHtml: rejectHtml);
@@ -223,8 +223,9 @@ public static partial class HTTPUtil
 
     private static async Task<string> GetWebSourceCoreAsync(string url, bool sendCookie, string? userAgent, CancellationToken token, bool rejectHtml = false)
     {
-        // API 层统一重试：仅对 5xx 与传输层失败（HttpRequestException.StatusCode 为 null）
-        // 按有界次数（最多 3，min(MaxRetryCount,3)）指数退避重试。有界是刻意的：
+        // API 层统一重试：仅对 5xx、传输层失败（HttpRequestException.StatusCode 为 null）
+        // 与超时（用户 token 未取消的 OperationCanceledException，见下方 catch）按有界次数
+        //（最多 3，min(MaxRetryCount,3)）指数退避重试。有界是刻意的：
         // 页面级已有 while(retryCount<maxRetry) 重试，若 API 层也用全量 MaxRetryCount 会
         // 乘积放大请求数与总等待；且总退避 ~9s 远小于 WBI 签名 wts 的时效窗口，重试不会
         // 因签名过期被误判。4xx 是风控/参数/鉴权错误，重试只会加重风控状态，直接抛出。
@@ -257,7 +258,11 @@ public static partial class HTTPUtil
 
                 Logger.LogDebug("获取网页内容: Url: {0}, Headers: {1}",
                     SensitiveDataMasker.MaskUrl(url), SensitiveDataMasker.MaskHeaders(webRequest.Headers));
-                using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
+                // ResponseHeadersRead 之后 HttpClient.Timeout 不再约束响应体读取（实测，见
+                // StreamingHttpClient 注释），用 CancelAfter 重建整体超时（默认 2 分钟）。
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
+                using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
                 // 5xx：显式抛 HttpRequestException（带状态码）走下方退避；
                 // 4xx 交给 EnsureSuccessStatusCode 立即抛出（HttpRequestException.StatusCode < 500，
                 // 不满足重试过滤条件，不会被重试）。
@@ -265,11 +270,15 @@ public static partial class HTTPUtil
                     throw new HttpRequestException($"服务器返回 {(int)webResponse.StatusCode} {webResponse.ReasonPhrase}", null, webResponse.StatusCode);
                 webResponse.EnsureSuccessStatusCode();
 
-                string htmlCode = await webResponse.Content.ReadAsStringAsync(token);
+                string htmlCode = await webResponse.Content.ReadAsStringAsync(timeoutCts.Token);
                 // 200+HTML 风控页识别：JSON 响应不可能以 '<' 开头，因此这一定是 HTML 页面。
                 // 给出可读的"疑似风控页"异常，替代下游 JsonDocument.Parse 的裸 JsonException
-                //（难定位、看似偶发）。此为业务性拦截，不参与上面的 5xx 重试。
-                if (rejectHtml && htmlCode.StartsWith('<'))
+                //（难定位、看似偶发）。TrimStart 处理前导空白——部分 WAF/风控页在 '<html' 前
+                // 带换行或空白，直接 StartsWith('<') 会漏检并让裸 JsonException 回潮；并防御性
+                // 剥离 UTF-8 BOM（char.IsWhiteSpace 不认 U+FEFF，ReadAsStringAsync 通常已剥离，
+                // 此处兜底）。用 AsSpan 避免为每条响应分配截断串。此为业务性拦截，不参与上面的
+                // 5xx 重试。
+                if (rejectHtml && htmlCode.AsSpan().TrimStart('\uFEFF').TrimStart().StartsWith("<"))
                     throw new RiskControlResponseException(url);
                 // 响应体可达数 MB（如 intl 回退抓取的整张 HTML 页面），翻页类 fetcher 会放大几十倍，
                 // 全部落盘会把日志文件灌满；截断到前 1KB 即可排查问题。
@@ -282,6 +291,15 @@ public static partial class HTTPUtil
             {
                 int backoffMs = ExponentialBackoffMs(attempt);
                 Logger.LogDebug("API 请求失败(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(url));
+                await Task.Delay(backoffMs, token);
+            }
+            catch (OperationCanceledException) when (attempt < maxRetry && !token.IsCancellationRequested)
+            {
+                // HttpClient.Timeout / 响应体读取超时抛的 TaskCanceledException 其用户 token 未取消：
+                // 超时是最常见的瞬时传输层故障，与 5xx 同权参与有界重试。
+                // 真正的用户取消（token 已取消）不重试，直接向上传播。
+                int backoffMs = ExponentialBackoffMs(attempt);
+                Logger.LogDebug("API 请求超时(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(url));
                 await Task.Delay(backoffMs, token);
             }
         }
@@ -429,8 +447,9 @@ public static partial class HTTPUtil
 
     public static async Task<byte[]> GetPostResponseAsync(string Url, byte[] postData, Dictionary<string, string>? headers = null, CancellationToken token = default)
     {
-        // 与 GetWebSourceCoreAsync 相同的 API 层统一重试：仅对 5xx 与传输层失败
-        //（HttpRequestException.StatusCode 为 null）按有界次数（最多 3）指数退避重试。
+        // 与 GetWebSourceCoreAsync 相同的 API 层统一重试：仅对 5xx、传输层失败
+        //（HttpRequestException.StatusCode 为 null）与超时（用户 token 未取消的
+        // OperationCanceledException）按有界次数（最多 3）指数退避重试。
         // grpc 帧首字节是压缩标志（0/1），不可能为 '<'；若首字节是 '<'，说明拿到的是
         // HTML 错误/风控页，抛 RiskControlResponseException 替代下游反序列化的乱码错误。
         int maxRetry = Math.Max(1, Math.Min(Config.Current.MaxRetryCount, 3));
@@ -469,13 +488,13 @@ public static partial class HTTPUtil
                 // 不必等整包缓冲完就能抛错，且响应体读取阶段仍受调用方 token 控制（可取消）。
                 // 注意：ResponseHeadersRead 会让 HttpClient.Timeout 不再约束响应体读取（实测见
                 // StreamingHttpClient 注释），服务端发完响应头后响应体停滞会无限挂起；因此这里
-                // 用 CancelAfter 重建与 HttpClient.Timeout 等价的整体 2 分钟上限。
+                // 用 CancelAfter 重建与 HttpClient.Timeout 等价的整体超时（ApiTimeoutMs，默认 2 分钟）。
                 // 先把 response 绑定到 using 再检查状态码：若在初始化表达式内抛错，response 未绑定、
                 // using 不会 Dispose，连接会被未消费的响应体占用无法归还连接池；绑定后再
                 // EnsureSuccessStatusCode，抛错时 using 会 Dispose → SocketsHttpHandler 自动排空
                 // 小响应体归还连接。
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
-                timeoutCts.CancelAfter(TimeSpan.FromMinutes(2));
+                timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
                 using var response = await AppHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
                 if (!response.IsSuccessStatusCode && (int)response.StatusCode >= 500)
                     throw new HttpRequestException($"服务器返回 {(int)response.StatusCode} {response.ReasonPhrase}", null, response.StatusCode);
@@ -490,6 +509,15 @@ public static partial class HTTPUtil
             {
                 int backoffMs = ExponentialBackoffMs(attempt);
                 Logger.LogDebug("API POST 失败(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(Url));
+                await Task.Delay(backoffMs, token);
+            }
+            catch (OperationCanceledException) when (attempt < maxRetry && !token.IsCancellationRequested)
+            {
+                // timeoutCts 超时抛的 OperationCanceledException 其用户 token 未取消：
+                // 超时是最常见的瞬时传输层故障，与 5xx 同权参与有界重试。
+                // 真正的用户取消（token 已取消）不重试，直接向上传播。
+                int backoffMs = ExponentialBackoffMs(attempt);
+                Logger.LogDebug("API POST 超时(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(Url));
                 await Task.Delay(backoffMs, token);
             }
         }

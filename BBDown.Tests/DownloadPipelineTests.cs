@@ -921,14 +921,15 @@ public class DownloadPipelineTests
     }
 
     /// <summary>
-    /// C3 回归：HEAD 探测返回的 size 若与真实资源总长不符（CDN 对 HEAD 返回缓存/占位长度），
+    /// C3/F6 回归：HEAD 探测返回的 size 若与真实资源总长不符（CDN 对 HEAD 返回缓存/占位长度），
     /// 分片会按错误大小切割、静默产出截断文件——合并长度校验用的是同一个 HEAD 值，是
     /// 自引用比较拦不住。修复：每个分片的 206 响应 Content-Range 尾段（/total）交叉校验，
-    /// total != 探测 size 即抛错。此测试断言 HEAD 声称 100 字节、真实 256KB 时下载失败，
-    /// 而非产出"长度 100 但内容截断"的成品。
+    /// total != 探测 size 即抛 RemoteSizeMismatchException（携带权威总长），按权威总长重新
+    /// 切分下载，而不是用错误大小空转重试后失败。此测试断言 HEAD 声称 100 字节、真实
+    /// 256KB 时下载**成功**且产物逐字节等于服务端载荷（而非"长度 100 但内容截断"的成品）。
     /// </summary>
     [Fact]
-    public async Task MultiThreadDownloadAndMerge_HeadSizeMismatch_DetectedByContentRangeTotal()
+    public async Task MultiThreadDownloadAndMerge_HeadSizeMismatch_RepairedViaContentRangeTotal()
     {
         using var server = new MismatchedHeadSizeServer(payloadSize: 256 * 1024, headClaimedSize: 100);
         var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
@@ -942,18 +943,270 @@ public class DownloadPipelineTests
             try
             {
                 Config.Apply(Config.Current with { ThreadSegmentSizeMb = 1, RetryDelayMs = 10 });
-                await Assert.ThrowsAsync<IOException>(() =>
-                    BBDownDownloadUtil.MultiThreadDownloadAndMergeAsync(
-                        $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None));
+                await BBDownDownloadUtil.MultiThreadDownloadAndMergeAsync(
+                    $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
             }
             finally
             {
                 Config.Apply(Config.Current with { ThreadSegmentSizeMb = original, RetryDelayMs = originalDelay });
             }
 
-            // 关键：不得产出被当作成品的截断文件（长度恰好等于错误的 HEAD size）
-            if (File.Exists(target))
-                Assert.True(new FileInfo(target).Length == 0, "HEAD 大小错位必须失败而非产出截断文件");
+            // 关键：不得产出被当作成品的截断文件（长度恰好等于错误的 HEAD size）；
+            // 修复后必须得到与服务端载荷逐字节一致的完整产物。
+            Assert.True(File.Exists(target), "HEAD 大小错位应被修复为正确产物而非失败");
+            Assert.Equal(256 * 1024, new FileInfo(target).Length);
+            Assert.Equal(server.PayloadHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// F6 单线程：HEAD 探测返回错误的（偏小）长度时，下载不应用错误大小空转重试——
+    /// 首个 206 的 Content-Range 权威总长被捕获后修正，产物与服务端载荷逐字节一致。
+    /// </summary>
+    [Fact]
+    public async Task SingleThreadDownload_HeadSizeMismatch_RepairedViaContentRangeTotal()
+    {
+        using var server = new MismatchedHeadSizeServer(payloadSize: 256 * 1024, headClaimedSize: 100);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            var config = new BBDownDownloadUtil.DownloadConfig();
+            var originalDelay = Config.Current.RetryDelayMs;
+            try
+            {
+                Config.Apply(Config.Current with { RetryDelayMs = 10 });
+                await BBDownDownloadUtil.DownloadFileAsync(
+                    $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
+            }
+            finally
+            {
+                Config.Apply(Config.Current with { RetryDelayMs = originalDelay });
+            }
+
+            Assert.True(File.Exists(target), "HEAD 大小错位应被修复为正确产物而非失败");
+            Assert.Equal(server.PayloadHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// F1 单线程回归：HEAD 探测返回错误的（偏小）长度、且目标路径已存在等长陈旧文件时，
+    /// "文件已下载过, 跳过下载"不得误跳过——否则陈旧/截断文件被报为下载成功。
+    /// 修复：跳过前用 GET 权威总长复核，不符即删除重下，最终产物等于服务端载荷。
+    /// </summary>
+    [Fact]
+    public async Task SingleThreadDownload_HeadSizeMismatchStaleFile_IsRedownloaded()
+    {
+        using var server = new MismatchedHeadSizeServer(payloadSize: 256 * 1024, headClaimedSize: 100);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            // 预置等长陈旧文件（长度恰好等于错误的 HEAD size）：此前会被纯长度跳过误报为成功
+            File.WriteAllBytes(target, new byte[100]);
+            var config = new BBDownDownloadUtil.DownloadConfig();
+            var originalDelay = Config.Current.RetryDelayMs;
+            try
+            {
+                Config.Apply(Config.Current with { RetryDelayMs = 10 });
+                await BBDownDownloadUtil.DownloadFileAsync(
+                    $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
+            }
+            finally
+            {
+                Config.Apply(Config.Current with { RetryDelayMs = originalDelay });
+            }
+
+            Assert.True(File.Exists(target), "陈旧文件应被删除并以正确内容重下");
+            Assert.Equal(server.PayloadHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// F1 多线程回归：同 <see cref="SingleThreadDownload_HeadSizeMismatchStaleFile_IsRedownloaded"/>，
+    /// 但走多线程下载+合并链路。
+    /// </summary>
+    [Fact]
+    public async Task MultiThreadDownloadAndMerge_HeadSizeMismatchStaleFile_IsRedownloaded()
+    {
+        using var server = new MismatchedHeadSizeServer(payloadSize: 256 * 1024, headClaimedSize: 100);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            File.WriteAllBytes(target, new byte[100]);
+            var config = new BBDownDownloadUtil.DownloadConfig { MultiThread = true };
+            var original = Config.Current.ThreadSegmentSizeMb;
+            var originalDelay = Config.Current.RetryDelayMs;
+            try
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = 1, RetryDelayMs = 10 });
+                await BBDownDownloadUtil.MultiThreadDownloadAndMergeAsync(
+                    $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
+            }
+            finally
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = original, RetryDelayMs = originalDelay });
+            }
+
+            Assert.True(File.Exists(target), "陈旧文件应被删除并以正确内容重下");
+            Assert.Equal(server.PayloadHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// F1 正向：目标路径已有与服务器同长（HEAD 探测正确）的完整文件时，跳过下载且不覆盖
+    /// 既有内容。此前纯长度跳过已覆盖此场景；此处确认权威复核在 HEAD 正确时不误删重下。
+    /// </summary>
+    [Fact]
+    public async Task SingleThreadDownload_ExistingCompleteFile_IsSkippedWithoutRedownload()
+    {
+        using var server = new LocalByteServer(256 * 1024);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            // 预置与服务端载荷同长的既有文件（内容不同）：用于断言跳过时不被覆盖
+            var existing = new byte[256 * 1024];
+            new Random(77).NextBytes(existing);
+            await File.WriteAllBytesAsync(target, existing);
+            var existingHash = TestHash.ComputeSha256Hex(existing);
+
+            var config = new BBDownDownloadUtil.DownloadConfig();
+            await BBDownDownloadUtil.DownloadFileAsync(
+                $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
+
+            // 已完整下载过 → 跳过，既有内容保持不变（未被覆盖）
+            Assert.Equal(existingHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// F1 回归：权威总长复核遇到"无法确认总长"的响应（分块、无 Content-Length）时，
+    /// 必须退回纯长度跳过、**不得删除**既有完整文件——否则每次重跑都会误删重下
+    ///（曾因 ContentLength ?? 0 把有效文件误判为不符而删除）。
+    /// </summary>
+    [Fact]
+    public async Task SingleThreadDownload_UnknownAuthoritativeSize_DoesNotDeleteExistingFile()
+    {
+        using var server = new ChunkedNoLengthServer(256 * 1024);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            var existing = new byte[256 * 1024];
+            new Random(99).NextBytes(existing);
+            await File.WriteAllBytesAsync(target, existing);
+            var existingHash = TestHash.ComputeSha256Hex(existing);
+
+            var config = new BBDownDownloadUtil.DownloadConfig();
+            await BBDownDownloadUtil.DownloadFileAsync(
+                $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
+
+            // 复核无法确认总长 → 跳过，既有文件未被删除/覆盖
+            Assert.Equal(existingHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// F1 回归：权威总长复核遇到 206 但 Content-Range 无尾段总长（bytes 0-0/*）时，
+    /// 必须返回 null 退回纯长度跳过、不得删除既有文件——部分响应的 Content-Length（1 字节）
+    /// 曾被视为权威总长而误删有效文件。
+    /// </summary>
+    [Fact]
+    public async Task SingleThreadDownload_UnknownTotal206_DoesNotDeleteExistingFile()
+    {
+        using var server = new UnknownTotalRangeServer(256 * 1024);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            var existing = new byte[256 * 1024];
+            new Random(98).NextBytes(existing);
+            await File.WriteAllBytesAsync(target, existing);
+            var existingHash = TestHash.ComputeSha256Hex(existing);
+
+            var config = new BBDownDownloadUtil.DownloadConfig();
+            await BBDownDownloadUtil.DownloadFileAsync(
+                $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
+
+            // 206 未知总长 → 无法确认 → 跳过，既有文件未被删除/覆盖
+            Assert.Equal(existingHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    /// <summary>
+    /// F1 回归：HEAD 返回占位（偏小）长度且服务器无视 Range（GET 一律 200 全量）时，
+    /// 删除陈旧文件后必须按权威总长（200 Content-Length）继续下载，否则会用占位长度
+    /// 一路带进 expectedTotalSize 空转并永久失败（written != fileSize）。
+    /// </summary>
+    [Fact]
+    public async Task SingleThreadDownload_PlaceholderHead_DeletesStaleFile_AndRedownloadsCorrectSize()
+    {
+        using var server = new PlaceholderHeadServer(payloadSize: 256 * 1024, headClaimedSize: 100);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            // 陈旧文件（长度=占位 HEAD 声称值）：复核发现权威大小不符后删除重下
+            File.WriteAllBytes(target, new byte[100]);
+            var config = new BBDownDownloadUtil.DownloadConfig();
+            var originalDelay = Config.Current.RetryDelayMs;
+            try
+            {
+                Config.Apply(Config.Current with { RetryDelayMs = 10 });
+                await BBDownDownloadUtil.DownloadFileAsync(
+                    $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
+            }
+            finally
+            {
+                Config.Apply(Config.Current with { RetryDelayMs = originalDelay });
+            }
+
+            Assert.True(File.Exists(target), "陈旧文件应被删除并以正确内容重下");
+            Assert.Equal(server.PayloadHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
             Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
         }
         finally
@@ -1051,10 +1304,14 @@ public class DownloadPipelineTests
         private readonly Task _loop;
         public int Port { get; }
 
+        /// <summary>服务端载荷的 SHA-256 十六进制串：用于断言修复后的产物内容一致。</summary>
+        public string PayloadHash { get; }
+
         public MismatchedHeadSizeServer(int payloadSize, long headClaimedSize)
         {
             _payload = new byte[payloadSize];
             new Random(5).NextBytes(_payload);
+            PayloadHash = TestHash.ComputeSha256Hex(_payload);
             _headClaimedSize = headClaimedSize;
             Port = TestPort.Allocate();
             _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
@@ -1096,6 +1353,194 @@ public class DownloadPipelineTests
                                 resp.AddHeader("Content-Range", $"bytes {from}-{to}/{_payload.Length}");
                                 await resp.OutputStream.WriteAsync(_payload.AsMemory(from, count), _cts.Token);
                             }
+                            resp.Close();
+                        }
+                        catch { /* 客户端中止：忽略 */ }
+                    }
+                }
+                catch (HttpListenerException) { /* 服务停止 */ }
+            });
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            try { _listener.Stop(); } catch { }
+            _listener.Close();
+            try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { }
+            _cts.Dispose();
+        }
+    }
+
+    /// <summary>HEAD 返回正常长度、GET 返回分块（无 Content-Length）的本地服务：
+    /// 验证权威总长复核在"无法确认总长"时退回纯长度跳过、不删除既有文件。</summary>
+    private sealed class ChunkedNoLengthServer : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private readonly CancellationTokenSource _cts = new();
+        private readonly byte[] _payload;
+        private readonly Task _loop;
+        public int Port { get; }
+
+        public ChunkedNoLengthServer(int size)
+        {
+            _payload = new byte[size];
+            new Random(88).NextBytes(_payload);
+            Port = TestPort.Allocate();
+            _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
+            _listener.Start();
+            _loop = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!_cts.IsCancellationRequested)
+                    {
+                        var ctx = await _listener.GetContextAsync();
+                        try
+                        {
+                            var resp = ctx.Response;
+                            if (ctx.Request.HttpMethod == "HEAD")
+                            {
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _payload.Length;
+                                resp.Close();
+                                continue;
+                            }
+                            // GET：分块响应（不设 Content-Length）→ 客户端无法确认权威总长
+                            resp.StatusCode = 200;
+                            resp.SendChunked = true;
+                            await resp.OutputStream.WriteAsync(_payload, _cts.Token);
+                            resp.Close();
+                        }
+                        catch { /* 客户端中止：忽略 */ }
+                    }
+                }
+                catch (HttpListenerException) { /* 服务停止 */ }
+            });
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            try { _listener.Stop(); } catch { }
+            _listener.Close();
+            try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { }
+            _cts.Dispose();
+        }
+    }
+
+    /// <summary>HEAD 返回正常长度、GET Range 返回 206 但 Content-Range 无尾段总长（bytes 0-0/*）的本地服务：
+    /// 验证权威总长复核在"206 未知总长"时返回 null、不删除既有文件（部分响应的 Content-Length
+    /// 只是分片大小，不能当权威总长）。</summary>
+    private sealed class UnknownTotalRangeServer : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private readonly CancellationTokenSource _cts = new();
+        private readonly byte[] _payload;
+        private readonly Task _loop;
+        public int Port { get; }
+
+        public UnknownTotalRangeServer(int size)
+        {
+            _payload = new byte[size];
+            new Random(77).NextBytes(_payload);
+            Port = TestPort.Allocate();
+            _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
+            _listener.Start();
+            _loop = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!_cts.IsCancellationRequested)
+                    {
+                        var ctx = await _listener.GetContextAsync();
+                        try
+                        {
+                            var resp = ctx.Response;
+                            if (ctx.Request.HttpMethod == "HEAD")
+                            {
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _payload.Length;
+                                resp.Close();
+                                continue;
+                            }
+                            var rangeHeader = ctx.Request.Headers["Range"];
+                            if (string.IsNullOrEmpty(rangeHeader))
+                            {
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _payload.Length;
+                                await resp.OutputStream.WriteAsync(_payload, _cts.Token);
+                            }
+                            else
+                            {
+                                // 206 但 Content-Range 无尾段总长（bytes 0-0/*）：权威总长未知
+                                resp.StatusCode = 206;
+                                resp.ContentLength64 = 1;
+                                resp.AddHeader("Content-Range", "bytes 0-0/*");
+                                await resp.OutputStream.WriteAsync(_payload.AsMemory(0, 1), _cts.Token);
+                            }
+                            resp.Close();
+                        }
+                        catch { /* 客户端中止：忽略 */ }
+                    }
+                }
+                catch (HttpListenerException) { /* 服务停止 */ }
+            });
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            try { _listener.Stop(); } catch { }
+            _listener.Close();
+            try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { }
+            _cts.Dispose();
+        }
+    }
+
+    /// <summary>HEAD 返回占位（偏小）长度、GET 无视 Range 一律返回 200 全量的本地服务：
+    /// 验证 F1 删除陈旧文件后按权威总长（200 Content-Length）继续下载，而非用占位长度空转失败。</summary>
+    private sealed class PlaceholderHeadServer : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private readonly CancellationTokenSource _cts = new();
+        private readonly byte[] _payload;
+        private readonly long _headClaimedSize;
+        private readonly Task _loop;
+        public int Port { get; }
+        public string PayloadHash { get; }
+
+        public PlaceholderHeadServer(int payloadSize, long headClaimedSize)
+        {
+            _payload = new byte[payloadSize];
+            new Random(123).NextBytes(_payload);
+            PayloadHash = TestHash.ComputeSha256Hex(_payload);
+            _headClaimedSize = headClaimedSize;
+            Port = TestPort.Allocate();
+            _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
+            _listener.Start();
+            _loop = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!_cts.IsCancellationRequested)
+                    {
+                        var ctx = await _listener.GetContextAsync();
+                        try
+                        {
+                            var resp = ctx.Response;
+                            if (ctx.Request.HttpMethod == "HEAD")
+                            {
+                                // 占位（错误、偏小）长度：探测据此会切错/带错
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _headClaimedSize;
+                                resp.Close();
+                                continue;
+                            }
+                            // GET 一律 200 全量（无视 Range），Content-Length 是真实长度
+                            resp.StatusCode = 200;
+                            resp.ContentLength64 = _payload.Length;
+                            await resp.OutputStream.WriteAsync(_payload, _cts.Token);
                             resp.Close();
                         }
                         catch { /* 客户端中止：忽略 */ }

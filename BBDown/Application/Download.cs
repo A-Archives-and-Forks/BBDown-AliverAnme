@@ -339,11 +339,17 @@ internal partial class Program
                             Logger.Log($"跳过下载AI字幕");
                             subtitleInfo = subtitleInfo.Where(s => !s.lan.StartsWith("ai-")).ToList();
                         }
+                        var downloadedSubtitles = new List<Subtitle>();
                         foreach (Subtitle s in subtitleInfo)
                         {
                             Logger.Log($"下载字幕 {s.lan} => {SubUtil.GetSubtitleCode(s.lan).Item2}...");
                             Logger.LogDebug("下载：{0}", s.url);
-                            await SubUtil.SaveSubtitleAsync(s.url, s.path, cancellationToken);
+                            // 字幕是装饰性资源：任何下载失败（含过期签名 URL 返回 200+HTML
+                            // 风控页）只降级为警告并跳过该条，绝不进入页面级重试或中止整批。
+                            // SubOnly 模式下字幕是唯一产物，失败应抛出交由页面级重试恢复。
+                            if (!await TryDownloadSubtitleAsync(s, cancellationToken, degradeOnFailure: !myOption.SubOnly))
+                                continue;
+                            downloadedSubtitles.Add(s);
                             if (myOption.SubOnly && File.Exists(s.path) && File.ReadAllText(s.path) != "")
                             {
                                 var _outSubPath = PathUtil.ResolveWorkPath(FormatSavePath(savePathFormat, title, null, null, p, pagesCount, apiType, pubTime));
@@ -358,6 +364,9 @@ internal partial class Program
                                 anyProductProduced = true;
                             }
                         }
+                        // 只把成功落盘的字幕交给混流/清理：失败的字幕不参与，避免 mux 嵌入
+                        // 不存在的文件或按不存在的路径清理。
+                        subtitleInfo = downloadedSubtitles;
                     }
 
                     if (myOption.SubOnly)
@@ -858,12 +867,15 @@ internal partial class Program
                 }
                 return true; // success, exit retry loop
             }
-            catch (Exception ex) when ((ex is HttpRequestException or JsonException or IOException or InvalidOperationException)
-                              && ex is not RiskControlResponseException)
+            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException
+                              || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
             {
-                // RiskControlResponseException（200+HTML 风控页）不参与页面级重试：
-                // 重试只会反复冲击已被风控的端点、加重风控状态，且风控不是瞬时故障。
-                // 其余类型（HTTP/解析/IO）按 --retry-count 退避重试。
+                // 风控页（200+HTML 的 RiskControlResponseException，继承 JsonException）也参与
+                // 页面级重试：B 站 windmill/风控页常为瞬时故障（数秒到一分钟内自动解除），
+                // 重试可在解除后恢复，且次数受 --retry-count 约束。装饰性资源（字幕/封面/
+                // 评论）的抓取失败已在各自调用点降级为警告，不会进入此 catch 触发整页重下。
+                // 超时（HttpClient 超时抛的 TaskCanceledException 其 token 未取消）同样参与重试；
+                // 真正的用户取消（token 已取消）不重试，直接向上传播。
                 retryCount++;
                 if (retryCount >= maxRetry)
                 {
@@ -879,6 +891,31 @@ internal partial class Program
             }
         }
         return false;
+    }
+
+    /// <summary>
+    /// 下载单条字幕文件。默认（非 SubOnly）字幕是装饰性资源：任何失败（含过期签名 URL
+    /// 返回 200+HTML 风控页的 <see cref="RiskControlResponseException"/>，继承 JsonException）
+    /// 都只降级为警告并返回 false，由调用方跳过该条字幕——绝不进入页面级重试或中止整批。
+    /// SubOnly 模式下字幕是唯一产物（<paramref name="degradeOnFailure"/> = false），失败应
+    /// 抛出交由页面级重试恢复。真正的用户取消（token 已取消）向上传播。
+    /// </summary>
+    internal static async Task<bool> TryDownloadSubtitleAsync(Subtitle s, CancellationToken token, bool degradeOnFailure = true)
+    {
+        try
+        {
+            await SubUtil.SaveSubtitleAsync(s.url, s.path, token);
+            return true;
+        }
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or TaskCanceledException or InvalidOperationException)
+        {
+            // HttpClient 超时抛的 TaskCanceledException 其 token 未取消，仍按字幕降级处理；
+            // 真正的取消必须向上传播中止下载，不能吞掉后继续执行无可取消的网络调用。
+            if (token.IsCancellationRequested) throw;
+            if (!degradeOnFailure) throw;
+            Logger.LogWarn($"字幕 {s.lan} 下载失败（已跳过）: {ex.Message}");
+            return false;
+        }
     }
 
 }
