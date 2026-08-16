@@ -118,6 +118,7 @@ public static class DanmakuUtil
         Array.Sort(danmakus, comparer);
         foreach (DanmakuItem danmaku in danmakus)
         {
+            if (string.IsNullOrEmpty(danmaku.StartTime) || string.IsNullOrEmpty(danmaku.EndTime)) continue;
             int height = controller.UpdatePosition(danmaku.DanmakuMode, danmaku.Second, danmaku.Content.Length);
             if (height == -1) continue;
             string effect = "";
@@ -146,7 +147,8 @@ public static class DanmakuUtil
     /// 弹幕内容由其他用户提供：花括号在 ASS 中界定样式覆盖标签块，
     /// 一条 <c>{\c&amp;HFF0000&amp;}</c> 就能改掉后续渲染；换行则会让正文
     /// 后半段脱离 Dialogue 行，变成解析器无法识别的孤立行。
-    /// 花括号替换为全角字符以保留可读性，换行折叠为 ASS 自身的 \N。
+    /// 花括号替换为全角字符以保留可读性，换行折叠为 ASS 自身的 \N，
+    /// 反斜杠替换为全角反斜杠以防止恶意注入 \N 或排版标签。
     /// </summary>
     private static string EscapeAssText(string content)
     {
@@ -157,6 +159,7 @@ public static class DanmakuUtil
         {
             switch (content[i])
             {
+                case '\\': sb.Append('＼'); break;
                 case '{': sb.Append('｛'); break;
                 case '}': sb.Append('｝'); break;
                 case '\r':

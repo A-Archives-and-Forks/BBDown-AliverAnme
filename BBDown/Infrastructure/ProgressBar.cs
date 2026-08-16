@@ -136,7 +136,10 @@ class ProgressBar : IDisposable, IProgress<double>
             outputBuilder.Append('\b', overlapCount);
         }
 
-        Console.Write(outputBuilder);
+        lock (BBDown.Core.Logger.ConsoleLock)
+        {
+            Console.Write(outputBuilder);
+        }
         currentText = text;
     }
 

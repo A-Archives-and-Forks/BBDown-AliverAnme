@@ -331,7 +331,7 @@ internal partial class Program
             token = File.ReadAllText(Path.Combine(APP_DIR, "BBDownApp.data")).Replace("access_token=", "");
         }
 
-        return (cookie.Trim(), token.Trim());
+        return (cookie?.Trim() ?? "", token?.Trim() ?? "");
     }
 
 }

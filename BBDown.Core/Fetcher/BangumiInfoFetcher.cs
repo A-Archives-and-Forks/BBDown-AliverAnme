@@ -64,8 +64,10 @@ public class BangumiInfoFetcher : IFetcher
 
         foreach (var page in pages)
         {
-            //跳过预告
-            if (page.TryGetProperty("badge", out JsonElement badge) && badge.ToString() == "预告") continue;
+            string pageId = page.GetValueAsStringSafe("id");
+            // 跳过非用户显式请求的预告（若用户指定了该 epId 则保留，防止 Index 变空导致整季被静默下载）
+            if (page.TryGetProperty("badge", out JsonElement badge) && badge.ToString() == "预告" && (string.IsNullOrEmpty(id) || pageId != id))
+                continue;
             string res = "";
             if (page.TryGetProperty("dimension", out var dim) &&
                 dim.TryGetProperty("width", out var w) &&
@@ -80,7 +82,7 @@ public class BangumiInfoFetcher : IFetcher
             Page p = new(i++,
                 page.GetValueAsStringSafe("aid"),
                 page.GetValueAsStringSafe("cid"),
-                page.GetValueAsStringSafe("id"),
+                pageId,
                 _title,
                 0, res,
                 page.GetInt64Safe("pub_time"));
@@ -88,6 +90,10 @@ public class BangumiInfoFetcher : IFetcher
             pagesInfo.Add(p);
         }
 
+        if (!string.IsNullOrEmpty(id) && string.IsNullOrEmpty(index))
+            throw new KeyNotFoundException($"未找到指定的剧集分P (ep_id={id})");
+        if (pagesInfo.Count == 0)
+            throw new KeyNotFoundException("未找到剧集分P信息");
 
         var info = new VInfo
         {

@@ -96,10 +96,18 @@ public static class LiveStreamUtil
     /// B 站直播流地址带时效参数，长时间录制中过期是常态，网络瞬断或地址过期时
     /// 重新解析流地址续录（最多 <see cref="ReconnectLimit"/> 次）。
     /// 全部重连失败时保留 .part 中已录制的内容并抛错。
-    /// 未收到任何字节（流立即断开/下播前无数据）时返回 false 且不生成空文件，
-    /// 调用方据此避免把"什么都没录到"报告为成功。
+    public enum LiveRecordResult
+    {
+        Success,
+        NoData,
+        ConcatFailedWithSegmentsSaved
+    }
+
+    /// <summary>
+    /// 录制直播流到文件。如果发生断流且房间仍在直播，会自动重连并生成多个分段，
+    /// 录制结束后将所有分段合并为最终文件。
     /// </summary>
-    public static async Task<bool> DownloadToFileAsync(string roomId, string path, Action<long>? onProgress, CancellationToken token = default)
+    public static async Task<LiveRecordResult> DownloadToFileAsync(string roomId, string path, Action<long>? onProgress, CancellationToken token = default)
     {
         const int ReconnectLimit = 3;
         // 每段独立文件：重连后的新 FLV 流含新的 FLV 头与重置时间戳，
@@ -260,11 +268,11 @@ public static class LiveStreamUtil
             // 取消发生在重连等待 Task.Delay 或 while 顶部检查（try 外）：先走到循环后的合成保存再退出
         }
 
-        // 未收到任何字节：不生成空文件，返回 false 让调用方明确失败
-        if (total == 0)
+        // 未收到任何字节：不生成空文件，返回 NoData 让调用方明确失败
+        if (total == 0 || segmentFiles.Count == 0)
         {
             try { if (Directory.Exists(segDir)) Directory.Delete(segDir, true); } catch (IOException) { }
-            return false;
+            return LiveRecordResult.NoData;
         }
 
         // 多段 → FFmpeg concat 合成最终文件；单段直接改名。
@@ -279,18 +287,31 @@ public static class LiveStreamUtil
             // 半截产物。这里用独立的合并令牌：录制停止后给合成阶段一个有限的
             // 收尾窗口（MuxerTimeoutMinutes 以内），超时仍失败则保留分段供重录。
             using var finalizeCts = CancellationTokenSource.CreateLinkedTokenSource(CancellationToken.None);
-            if (!await ConcatSegmentsAsync(segmentFiles, path, finalizeCts.Token))
+            string tempOutPath = path + $".concat-{Guid.NewGuid():N}.tmp.flv";
+            bool concatOk = false;
+            try
             {
-                // 合并失败：删除可能残留的半成品最终文件（避免下次被误当作完整录制），
-                // 但保留分段目录——那是用户可恢复的资产。
-                try { if (File.Exists(path)) File.Delete(path); } catch (IOException) { }
-                Logger.LogWarn($"直播分段合成失败，已删除半成品输出并保留分段在 {segDir}");
-                return false;
+                concatOk = await ConcatSegmentsAsync(segmentFiles, tempOutPath, finalizeCts.Token);
+                if (concatOk && File.Exists(tempOutPath))
+                {
+                    File.Move(tempOutPath, path, true);
+                }
+            }
+            finally
+            {
+                try { if (File.Exists(tempOutPath)) File.Delete(tempOutPath); } catch (IOException) { }
+            }
+
+            if (!concatOk)
+            {
+                // 合并失败：保留分段目录——那是用户可恢复的资产，且不破坏可能已存在的旧输出文件。
+                Logger.LogWarn($"直播分段合成失败，已保留分段在 {segDir}");
+                return LiveRecordResult.ConcatFailedWithSegmentsSaved;
             }
         }
         // 合成成功：清理本次会话的分段目录（仅本会话，不动其它会话/旧会话）
         try { if (Directory.Exists(segDir)) Directory.Delete(segDir, true); } catch (IOException) { }
-        return true;
+        return LiveRecordResult.Success;
     }
 
     /// <summary>
@@ -322,6 +343,19 @@ public static class LiveStreamUtil
         var absoluteOutPath = Path.GetFullPath(outPath);
         try
         {
+            long totalInputBytes = 0;
+            foreach (var seg in segmentFiles)
+            {
+                if (!File.Exists(seg))
+                {
+                    Logger.LogWarn($"直播分段不存在: {seg}");
+                    return false;
+                }
+                totalInputBytes += new FileInfo(seg).Length;
+            }
+
+            if (totalInputBytes == 0) return false;
+
             await File.WriteAllLinesAsync(listPath, segmentFiles.Select(f => $"file '{f.Replace("'", "'\\''")}'"), token);
             var args = new List<string>
             {
@@ -342,9 +376,28 @@ public static class LiveStreamUtil
                 ToolDisplayName = "ffmpeg",
             };
             int code = await BBDownMuxer.ProcessRunner.RunAsync(spec, token);
-            return code == 0 && File.Exists(absoluteOutPath) && new FileInfo(absoluteOutPath).Length > 0;
+            if (code != 0 || !File.Exists(absoluteOutPath))
+                return false;
+
+            long outLen = new FileInfo(absoluteOutPath).Length;
+            if (outLen == 0) return false;
+
+            // FLV concat copy 时，产物大小应与所有分段总和相当（FLV header 占 9~13 字节，多段合并时略有减少）。
+            // 若某个分段遇到坏段/HTML导致 demux 提前终止，ffmpeg exit=0 但输出大小会显著小于全部输入总大小（如只生成了坏段之前的几KB）。
+            // 当分段数大于1时，输出大小若低于输入总大小的 80% 且差异超过 64KB，判定为截断坏产物。
+            if (segmentFiles.Count > 1)
+            {
+                long minExpected = (long)(totalInputBytes * 0.8);
+                if (outLen < minExpected && (totalInputBytes - outLen) > 64 * 1024)
+                {
+                    Logger.LogWarn($"直播分段合成产物大小异常(输出: {outLen} 字节, 预期总输入: {totalInputBytes} 字节)，判定为合成截断失败");
+                    return false;
+                }
+            }
+
+            return true;
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException)
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or TimeoutException)
         {
             Logger.LogDebug("直播分段合成失败: {0}", ex.Message);
             return false;

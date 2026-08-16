@@ -30,6 +30,7 @@ public static class Logger
     // Console.ForegroundColor 是进程级全局状态：并发下载时多线程交错"设色-写入-复位"
     // 会互相插入颜色区间，导致日志颜色错乱、行内容交错。单条日志的写入需整体加锁。
     private static readonly object _consoleLock = new();
+    public static object ConsoleLock => _consoleLock;
 
     // 文件写入串行化：与 Console 写入的先后顺序由锁保证（Log/LogColor/LogWarn 先取
     // _consoleLock、释放后再 AppendToFile 取 _fileLock，不构成嵌套锁，不会死锁）。

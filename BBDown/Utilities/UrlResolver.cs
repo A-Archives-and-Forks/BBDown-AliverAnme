@@ -27,7 +27,7 @@ public static partial class UrlResolver
                 && inputUri.Host.Equals("b23.tv", StringComparison.OrdinalIgnoreCase))
             {
                 string tmp = await HTTPUtil.GetWebLocationCheckedAsync(input, IsTrustedBilibiliUri, token: token);
-                if (tmp == input) throw new InvalidOperationException("无限重定向");
+                if (tmp == input) throw new HttpRequestException($"短链解析失败（目标可能已失效或无法重定向）: {input}");
                 input = tmp;
                 lowerInput = input.ToLowerInvariant();
             }

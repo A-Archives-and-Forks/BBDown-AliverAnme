@@ -113,4 +113,14 @@ public class DanmakuAssEscapingTests
         // 移动弹幕依赖 \move 标签，转义不能把它一并破坏
         Assert.Contains(@"\move(", dialogue);
     }
+
+    [Fact]
+    public async Task BackslashInContent_IsEscaped()
+    {
+        var ass = await RenderAsync(Make(@"测试\N换行\h空格\b粗体"));
+        var dialogue = ass.Split('\n').Single(l => l.StartsWith("Dialogue:"));
+        var text = dialogue.Split(',', 10)[9];
+        // 用户正文里的反斜杠被替换为全角反斜杠，避免被 ASS 解析器当作指令执行
+        Assert.Contains("测试＼N换行＼h空格＼b粗体", text);
+    }
 }

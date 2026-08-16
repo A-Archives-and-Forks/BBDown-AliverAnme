@@ -47,6 +47,9 @@ public class WvdDevice : IDisposable
 
     private static WvdDevice ParseWvd(Span<byte> data)
     {
+        if (data.Length < 6)
+            throw new InvalidDataException("WVD 数据长度不足（头部损坏）");
+
         var version = data[0];
         if (version is not (1 or 2))
             throw new InvalidDataException($"Unsupported WVD version: {version}");
@@ -60,10 +63,16 @@ public class WvdDevice : IDisposable
         var flags = data[3];
 
         var privateKeyLen = (data[4] << 8) | data[5];
+        if (data.Length < 6 + privateKeyLen + 2)
+            throw new InvalidDataException("WVD 私钥段长度超出数据范围（文件已损坏或被截断）");
+
         var privateKeyBytes = data.Slice(6, privateKeyLen).ToArray();
         var offset = 6 + privateKeyLen;
 
         var clientIdLen = (data[offset] << 8) | data[offset + 1];
+        if (data.Length < offset + 2 + clientIdLen)
+            throw new InvalidDataException("WVD ClientId 段长度超出数据范围（文件已损坏或被截断）");
+
         var clientIdBytes = data.Slice(offset + 2, clientIdLen).ToArray();
 
         return Create(privateKeyBytes, clientIdBytes);

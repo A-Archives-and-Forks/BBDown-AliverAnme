@@ -152,12 +152,12 @@ public class HttpUtilRetryTests
     public async Task GetWebSource_Timeout_IsRetriedThenThrows()
     {
         // F5：超时（用户 token 未取消的 OperationCanceledException）是最常见的瞬时传输层故障，
-        // 必须与 5xx 同权参与 API 层有界重试，而不是首次即失败。
+        // 必须与 5xx 同权参与 API 层有界重试，而不是首次即失败。重试耗尽后转为 TimeoutException 抛出。
         using var server = new StallingServer();
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10, ApiTimeoutMs = 100 });
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            await Assert.ThrowsAnyAsync<TimeoutException>(() =>
                 HTTPUtil.GetWebSourceAsync($"http://127.0.0.1:{server.Port}/api", token: CancellationToken.None));
             Assert.Equal(3, server.RequestCount); // 超时被重试到耗尽，没有多余请求
         }
@@ -175,7 +175,7 @@ public class HttpUtilRetryTests
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10, ApiTimeoutMs = 100 });
-            await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            await Assert.ThrowsAnyAsync<TimeoutException>(() =>
                 HTTPUtil.GetPostResponseAsync($"http://127.0.0.1:{server.Port}/grpc", new byte[] { 0x00 }, token: CancellationToken.None));
             Assert.Equal(3, server.RequestCount);
         }

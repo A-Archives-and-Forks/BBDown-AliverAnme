@@ -90,6 +90,11 @@ static class AppHelper
     private static string ConvertToDashJson(object data)
     {
         var resp = (PlayViewReply)data;
+        if (resp.VideoInfo == null)
+        {
+            throw new InvalidOperationException("APP接口未返回视频流信息（可能需要大会员登录或存在区域/播放限制）");
+        }
+
         var videos = new List<object>();
         var audios = new List<object>();
         var clips = new List<object>();
@@ -107,6 +112,16 @@ static class AppHelper
                         (uint)(item.DashVideo.Size * 8 / Math.Max(resp.VideoInfo.Timelength / 1000, 1)),
                         item.DashVideo.Codecid
                     ));
+                }
+            }
+
+            if (videos.Count == 0)
+            {
+                var limitedItem = resp.VideoInfo.StreamList.FirstOrDefault(s => s.StreamInfo?.Limit != null || s.StreamInfo?.NeedVip == true);
+                if (limitedItem != null)
+                {
+                    var msg = limitedItem.StreamInfo?.Limit?.Msg ?? (limitedItem.StreamInfo?.NeedVip == true ? "需要大会员权限" : "存在播放限制");
+                    throw new InvalidOperationException($"APP接口返回播放限制: {msg}");
                 }
             }
         }

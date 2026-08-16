@@ -42,6 +42,11 @@ public class FavListFetcher : IFetcher
         var api = $"https://api.bilibili.com/x/v3/fav/resource/list?media_id={favId}&pn=1&ps={pageSize}&order=mtime&type=2&tid=0&platform=web";
         var json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
+        if (infoJson.RootElement.TryGetProperty("code", out var rootCode) && rootCode.GetInt64() != 0)
+        {
+            var msg = infoJson.RootElement.GetValueAsStringSafe("message");
+            throw new InvalidOperationException($"获取收藏夹失败: {msg} (code={rootCode})");
+        }
         var data = infoJson.RootElement.GetPropertySafe("data");
         var favInfo = data.GetPropertySafe("info");
         int totalCount = favInfo.GetInt32Safe("media_count");
@@ -98,13 +103,13 @@ public class FavListFetcher : IFetcher
                     catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
                                                   or InvalidOperationException or TaskCanceledException)
                     {
-                        failures.Add($"av{m.GetValueAsStringSafe("id")} {m.GetValueAsStringSafe("title")} —— {ex.Message}");
+                        failures.Add($"aid={m.GetValueAsStringSafe("id")} ({m.GetValueAsStringSafe("title")}): {ex.Message}");
                     }
                 }
                 else
                 {
-                    var upperElem = m.TryGetPropertySafe("upper");
                     var ugcElem = m.TryGetPropertySafe("ugc");
+                    var upperElem = m.TryGetPropertySafe("upper");
                     Page p = new(index++,
                         m.GetValueAsStringSafe("id"),
                         ugcElem?.GetValueAsStringSafe("first_cid") ?? "",
@@ -129,7 +134,16 @@ public class FavListFetcher : IFetcher
             api = $"https://api.bilibili.com/x/v3/fav/resource/list?media_id={favId}&pn={page}&ps={pageSize}&order=mtime&type=2&tid=0&platform=web";
             json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
             using var jsonDoc = JsonDocument.Parse(json);
-            await ProcessPageAsync(jsonDoc.RootElement.GetPropertySafe("data"));
+            if (jsonDoc.RootElement.TryGetProperty("code", out var pageCode) && pageCode.GetInt64() != 0)
+            {
+                var msg = jsonDoc.RootElement.GetValueAsStringSafe("message");
+                throw new InvalidOperationException($"获取收藏夹第 {page} 页失败: {msg} (code={pageCode})");
+            }
+            if (!jsonDoc.RootElement.TryGetProperty("data", out var pageData) || pageData.ValueKind != JsonValueKind.Object)
+            {
+                throw new InvalidOperationException($"获取收藏夹第 {page} 页失败: 响应数据为空");
+            }
+            await ProcessPageAsync(pageData);
         }
 
         if (failures.Count > 0)

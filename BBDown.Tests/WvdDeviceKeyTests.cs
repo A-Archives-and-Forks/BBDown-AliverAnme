@@ -147,4 +147,22 @@ public class WvdDeviceKeyTests
             File.Delete(path);
         }
     }
+
+    [Fact]
+    public void Load_TruncatedWvd_ThrowsInvalidDataException()
+    {
+        // 头部声明私钥长度 100 字节，但实际数据只有 10 字节截断数据
+        var truncated = new byte[] { 0x57, 0x56, 0x44, 0x01, 0x01, 0x03, 0x00, 0x00, 0x64, 0x01, 0x02 };
+        var path = Path.Combine(Path.GetTempPath(), $"bbdown-trunc-{Guid.NewGuid():N}.wvd");
+        File.WriteAllBytes(path, truncated);
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() => WvdDevice.Load(path));
+            Assert.Contains("超出数据范围", ex.Message);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

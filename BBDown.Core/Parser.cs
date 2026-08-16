@@ -250,38 +250,36 @@ public static partial class Parser
                 //免二压视频需要重新请求
                 for (int reparsePass = 0; reparsePass < 2; reparsePass++)
                 {
-                    // 第二轮若直接 respJson.Dispose() 再取值，重请求响应（未经业务校验，
-                    // 风控/错误页时可能无 dash）会让 video/audio 引用已释放文档抛
-                    // ObjectDisposedException。改为：新响应带 dash 才接管并退役旧文档，
-                    // 否则丢弃新响应、沿用第一轮结果降级。
                     if (reparsePass == 1)
                     {
                         if (appApi) break; //只有非APP接口需要免二压
-                        parsedResult.WebJsonString = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn(), token);
-                        var newResp = JsonDocument.Parse(parsedResult.WebJsonString);
-                        var newRoot = newResp.RootElement;
-                        var pickedRoot = newRoot.TryGetProperty("result", out var rr) && rr.ValueKind == JsonValueKind.Object && rr.TryGetProperty("video_info", out var vvii) ? vvii :
-                               newRoot.TryGetProperty("result", out var rr2) && rr2.ValueKind == JsonValueKind.Object ? rr2 :
-                               newRoot.TryGetProperty("data", out var dd) ? dd : newRoot;
-                        if (pickedRoot.TryGetProperty("dash", out var newDash) && newDash.TryGetProperty("video", out _))
+                        try
                         {
-                            // 新 dash 带 video 即可接管（保留免二压的高清视频轨）。
-                            // 不要求 audio 数组同时存在：杜比/FLAC-only 片源的普通 audio 数组本就缺失，
-                            // 音轨在其 dash.dolby.audio / dash.flac.audio 节点，由下方"处理杜比/Hi-Res"
-                            // 分支补出。仅当新响应连 video 都缺（风控/错误页）才整体沿用第一轮。
-                            respJson.Dispose(); // 旧文档退役，新文档接管生命周期
-                            respJson = newResp;
-                            root = pickedRoot;
-                            video = newDash.TryGetProperty("video", out var newVidArr) ? newVidArr.EnumerateArray().ToList() : null;
-                            // 新 dash 无 audio 数组时置 null：若其带 dolby/flac 则下方补出音轨；
-                            // 若完全无音频信息则退化为纯视频（优于整体降级第一轮低清）。
-                            audio = newDash.TryGetProperty("audio", out var newAudArr) ? newAudArr.EnumerateArray().ToList() : null;
+                            var reparsePlayJson = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn(), token);
+                            var newResp = JsonDocument.Parse(reparsePlayJson);
+                            var newRoot = newResp.RootElement;
+                            ThrowIfBizError(newRoot);
+                            ThrowIfPlayLimited(newRoot);
+                            var pickedRoot = newRoot.TryGetProperty("result", out var rr) && rr.ValueKind == JsonValueKind.Object && rr.TryGetProperty("video_info", out var vvii) ? vvii :
+                                   newRoot.TryGetProperty("result", out var rr2) && rr2.ValueKind == JsonValueKind.Object ? rr2 :
+                                   newRoot.TryGetProperty("data", out var dd) ? dd : newRoot;
+                            if (pickedRoot.TryGetProperty("dash", out var newDash) && newDash.TryGetProperty("video", out _))
+                            {
+                                respJson.Dispose(); // 旧文档退役，新文档接管生命周期
+                                respJson = newResp;
+                                root = pickedRoot;
+                                parsedResult.WebJsonString = reparsePlayJson;
+                                video = newDash.TryGetProperty("video", out var newVidArr) ? newVidArr.EnumerateArray().ToList() : null;
+                                audio = newDash.TryGetProperty("audio", out var newAudArr) ? newAudArr.EnumerateArray().ToList() : null;
+                            }
+                            else
+                            {
+                                newResp.Dispose();
+                            }
                         }
-                        else
+                        catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or TimeoutException or TaskCanceledException)
                         {
-                            // 重请求响应无 dash 或缺 video（风控/错误页等）：沿用第一轮结果，不替换 root，
-                            // 避免第二轮异常响应把第一轮已解析的完整轨道静默丢弃
-                            newResp.Dispose();
+                            Logger.LogDebug("免二压重新请求失败（降级沿用第一轮结果）: {0}", ex.Message);
                         }
                     }
                     if (root.TryGetProperty("dash", out var dash) && dash.TryGetProperty("video", out var vidArr))
@@ -334,10 +332,7 @@ public static partial class Parser
                         foreach (var node in video)
                         {
                             var urlList = new List<string>() { node.GetValueAsStringSafe("base_url") };
-                            if (node.TryGetProperty("backup_url", out JsonElement element) && element.ValueKind != JsonValueKind.Null)
-                            {
-                                urlList.AddRange(element.EnumerateArray().Select(i => i.ToString()));
-                            }
+                            urlList.AddRange(node.EnumerateArraySafe("backup_url").Select(i => i.ToString()));
                             var videoId = node.GetValueAsStringSafe("id");
                             Video v = new()
                             {
@@ -386,10 +381,7 @@ public static partial class Parser
                     foreach (var node in audio)
                     {
                         var urlList = new List<string>() { node.GetValueAsStringSafe("base_url") };
-                        if (node.TryGetProperty("backup_url", out JsonElement element) && element.ValueKind != JsonValueKind.Null)
-                        {
-                            urlList.AddRange(element.EnumerateArray().Select(i => i.ToString()));
-                        }
+                        urlList.AddRange(node.EnumerateArraySafe("backup_url").Select(i => i.ToString()));
                         var audioId = node.GetValueAsStringSafe("id");
                         var codecs = node.GetValueAsStringSafe("codecs");
                         codecs = codecs switch

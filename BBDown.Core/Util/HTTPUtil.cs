@@ -177,9 +177,12 @@ public static partial class HTTPUtil
         webRequest.Headers.Connection.Clear();
 
         Logger.LogDebug("获取网页内容: Url: {0}", SensitiveDataMasker.MaskUrl(url));
-        using var webResponse = (await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
+        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
+        using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+        webResponse.EnsureSuccessStatusCode();
 
-        string htmlCode = await webResponse.Content.ReadAsStringAsync(token);
+        string htmlCode = await webResponse.Content.ReadAsStringAsync(timeoutCts.Token);
         // 截断实参含 `htmlCode[..1024]` 的子串分配：DebugLog 关闭时跳过求值，
         // 避免为每次元数据响应（可达数 MB）白白分配 1KB 截断串
         if (Config.Current.DebugLog)
@@ -210,13 +213,15 @@ public static partial class HTTPUtil
         string current = url;
         for (int hop = 0; hop < maxHops; hop++)
         {
+            using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
             using var webRequest = new HttpRequestMessage(HttpMethod.Get, current);
             webRequest.Headers.TryAddWithoutValidation("User-Agent", GetUserAgent(userAgent));
             webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
             webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
             webRequest.Headers.Connection.Clear();
 
-            using var response = await NoRedirectClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
+            using var response = await NoRedirectClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
             if ((int)response.StatusCode is >= 300 and < 400)
             {
                 var location = response.Headers.Location;
@@ -231,7 +236,7 @@ public static partial class HTTPUtil
                 current = next.ToString();
                 continue;
             }
-            string htmlCode = await response.Content.ReadAsStringAsync(token);
+            string htmlCode = await response.Content.ReadAsStringAsync(timeoutCts.Token);
             if (Config.Current.DebugLog)
                 Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
             return htmlCode;
@@ -322,6 +327,13 @@ public static partial class HTTPUtil
                 Logger.LogDebug("API 请求超时(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(url));
                 await Task.Delay(backoffMs, token);
             }
+            catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+            {
+                // 重试预算耗尽后的超时异常：如果不转换，抛出的 OCE 携带已取消的 timeoutCts token，
+                // 会被 CLI 顶层 (Program.cs / SetExceptionHandler) 误识别为用户主动取消 (Ctrl+C / 退出码 130)。
+                // 此时向外部抛出真实的 TimeoutException，准确表达超时故障。
+                throw new TimeoutException($"API 请求超时 ({Config.Current.ApiTimeoutMs}ms): {SensitiveDataMasker.MaskUrl(url)}", ex);
+            }
         }
     }
 
@@ -351,7 +363,8 @@ public static partial class HTTPUtil
                 webRequest.Headers.Connection.Clear();
 
                 Logger.LogDebug("获取网页重定向地址(method={1}): Url: {0}", SensitiveDataMasker.MaskUrl(url), method);
-                using var webResponse = (await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
+                using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, token);
+                webResponse.EnsureSuccessStatusCode();
                 string location = webResponse.RequestMessage?.RequestUri?.AbsoluteUri ?? url;
                 Logger.LogDebug("Location: {0}", SensitiveDataMasker.MaskUrl(location));
                 return location;
@@ -541,6 +554,10 @@ public static partial class HTTPUtil
                 int backoffMs = ExponentialBackoffMs(attempt);
                 Logger.LogDebug("API POST 超时(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(Url));
                 await Task.Delay(backoffMs, token);
+            }
+            catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+            {
+                throw new TimeoutException($"API POST 超时 ({Config.Current.ApiTimeoutMs}ms): {SensitiveDataMasker.MaskUrl(Url)}", ex);
             }
         }
     }

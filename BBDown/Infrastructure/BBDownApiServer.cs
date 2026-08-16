@@ -488,14 +488,32 @@ public class BBDownApiServer
         // 回调字段被完全忽略（服务端 allowlist，不接受客户端指定）。
         req.CallBackWebHook = "";
 
+        // 限制重试参数：客户端传入失控的重试次数或超长延迟会在共享并发槽内阻塞长达数十天，
+        // 占满并发槽并使服务瘫痪。将 API 任务重试次数限制在 [0, 3]，延迟限制在 [0, 5000]ms 内。
+        req.RetryCount = Math.Clamp(req.RetryCount, 0, 3);
+        req.RetryDelay = Math.Clamp(req.RetryDelay, 0, 5000);
+
+        // Debug 字段若受客户端控制，任务失败时会将服务端完整异常堆栈暴露在 /get-tasks API 中。
+        req.Debug = false;
+
         // host 字段决定凭据（Cookie/access_token）的发送目标：serve 默认无认证，
         // 若不校验，任意客户端可把请求指向自己的服务器，骗取操作者保存在
         // BBDown.data 的 B 站 Cookie（LoadCredentials 会在任务流中加载）。
-        // 仅允许 B 站官方域名；空值/非官方一律回落官方默认值。
-        req.Host = (string.IsNullOrWhiteSpace(req.Host) || !IsOfficialHost(req.Host)) ? "api.bilibili.com" : req.Host;
-        req.EpHost = (string.IsNullOrWhiteSpace(req.EpHost) || !IsOfficialHost(req.EpHost)) ? "api.bilibili.com" : req.EpHost;
-        req.TvHost = (string.IsNullOrWhiteSpace(req.TvHost) || !IsOfficialHost(req.TvHost)) ? "api.snm0516.aisee.tv" : req.TvHost;
-        req.UposHost = (string.IsNullOrWhiteSpace(req.UposHost) || !IsOfficialHost(req.UposHost)) ? "" : req.UposHost;
+        // 仅允许 B 站官方域名；空值/非官方一律回落官方默认值，并规范化剥离 scheme 前缀。
+        req.Host = NormalizeHost(req.Host, "api.bilibili.com");
+        req.EpHost = NormalizeHost(req.EpHost, "api.bilibili.com");
+        req.TvHost = NormalizeHost(req.TvHost, "api.snm0516.aisee.tv");
+        req.UposHost = string.IsNullOrWhiteSpace(req.UposHost) || !IsOfficialHost(req.UposHost)
+            ? ""
+            : (Uri.TryCreate(req.UposHost, UriKind.Absolute, out var uposUri) ? uposUri.Host : req.UposHost.Trim());
+    }
+
+    private static string NormalizeHost(string? host, string defaultHost)
+    {
+        if (string.IsNullOrWhiteSpace(host) || !IsOfficialHost(host)) return defaultHost;
+        if (Uri.TryCreate(host, UriKind.Absolute, out var uri))
+            return uri.Host;
+        return host.Trim();
     }
 
     /// <summary>B 站官方域名后缀白名单（含子域）。</summary>

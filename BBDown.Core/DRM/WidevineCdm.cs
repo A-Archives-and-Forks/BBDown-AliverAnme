@@ -23,7 +23,7 @@ public sealed class WidevineCdm : IDisposable
         _device = device;
     }
 
-    public static async Task<(string kid, string key)[]?> GetKeysAsync(string psshB64, string wvdPath)
+    public static async Task<(string kid, string key)[]?> GetKeysAsync(string psshB64, string wvdPath, CancellationToken token = default)
     {
         WvdDevice device;
         try
@@ -39,7 +39,7 @@ public sealed class WidevineCdm : IDisposable
         using var cdm = new WidevineCdm(device);
         try
         {
-            return await cdm.GetKeysInternalAsync(psshB64);
+            return await cdm.GetKeysInternalAsync(psshB64, token);
         }
         catch (Exception ex)
         {
@@ -48,7 +48,7 @@ public sealed class WidevineCdm : IDisposable
         }
     }
 
-    private async Task<(string kid, string key)[]?> GetKeysInternalAsync(string psshB64)
+    private async Task<(string kid, string key)[]?> GetKeysInternalAsync(string psshB64, CancellationToken token = default)
     {
         // BiliBili 不需要 service certificate / privacy mode
         var (psshPayload, keyIds) = ParsePsshBox(psshB64);
@@ -63,7 +63,7 @@ public sealed class WidevineCdm : IDisposable
         byte[] responseBytes;
         try
         {
-            responseBytes = await SendRequestAsync(challenge);
+            responseBytes = await SendRequestAsync(challenge, token);
         }
         catch (HttpRequestException ex)
         {
@@ -180,7 +180,7 @@ public sealed class WidevineCdm : IDisposable
 
     // ---- HTTP ----
 
-    private static async Task<byte[]> SendRequestAsync(byte[] body)
+    private static async Task<byte[]> SendRequestAsync(byte[] body, CancellationToken token = default)
     {
         using var content = new ByteArrayContent(body);
         content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/x-protobuf");
@@ -192,21 +192,21 @@ public sealed class WidevineCdm : IDisposable
 
         // 许可证响应携带内容解密密钥：强制走始终校验证书的客户端（VerifiedAppHttpClient），
         // 不受用户 --insecure 影响——跳过 TLS 校验会让中间人直接窃取内容密钥。
-        using var resp = await HTTPUtil.VerifiedAppHttpClient.SendAsync(req);
+        using var resp = await HTTPUtil.VerifiedAppHttpClient.SendAsync(req, token);
         if (!resp.IsSuccessStatusCode)
         {
             // 非 2xx：许可证服务器常回错误状态文本（设备证书被拒/吊销等）。读错误体
             // 给出可操作诊断，替代 EnsureSuccessStatusCode 的裸状态码消息（状态码消息
             // 不含吊销/证书这类可定位信息）。错误体通常很短且不含密钥材料。
             string errorBody;
-            try { errorBody = await resp.Content.ReadAsStringAsync(); }
+            try { errorBody = await resp.Content.ReadAsStringAsync(token); }
             catch (Exception) { errorBody = ""; }
             throw new HttpRequestException(
                 $"许可证请求失败 (HTTP {(int)resp.StatusCode})" +
                 (string.IsNullOrEmpty(errorBody) ? "" : $": {errorBody}"),
                 null, resp.StatusCode);
         }
-        return await resp.Content.ReadAsByteArrayAsync();
+        return await resp.Content.ReadAsByteArrayAsync(token);
     }
 
     // ---- license response ----
@@ -266,82 +266,92 @@ public sealed class WidevineCdm : IDisposable
         var (encContext, macContext) = WidevineCrypto.DeriveContext(challenge);
         var (encKey, macKeyServer, _) = WidevineCrypto.DeriveKeys(sessionKey, encContext, macContext);
 
-        // Verify HMAC-SHA256 signature
-        var msg = sm.Msg.ToByteArray();
-        var sig = sm.Signature.ToByteArray();
-        using var hmac = new HMACSHA256(macKeyServer);
-        var oem = sm.OemcryptoCoreMessage?.ToByteArray() ?? Array.Empty<byte>();
-        hmac.TransformBlock(oem, 0, oem.Length, null, 0);
-        var computed = hmac.ComputeHash(msg);
-
-        // 常量时间比较：SequenceEqual 在首个差异字节短路，对 HMAC 签名做时序探测
-        // 理论上可逐字节还原签名；FixedTimeEquals 在定长输入上耗时与内容无关。
-        if (!CryptographicOperations.FixedTimeEquals(sig, computed))
+        try
         {
-            Logger.LogWarn("许可证 HMAC 签名校验失败");
-            return null;
-        }
+            // Verify HMAC-SHA256 signature
+            var msg = sm.Msg.ToByteArray();
+            var sig = sm.Signature.ToByteArray();
+            using var hmac = new HMACSHA256(macKeyServer);
+            var oem = sm.OemcryptoCoreMessage?.ToByteArray() ?? Array.Empty<byte>();
+            hmac.TransformBlock(oem, 0, oem.Length, null, 0);
+            var computed = hmac.ComputeHash(msg);
 
-        // msg is plaintext License
-        var license = License.Parser.ParseFrom(msg);
-        if (license.Key.Count == 0)
-        {
-            Logger.LogWarn("许可证中未包含密钥");
-            return null;
-        }
-
-        var keys = new List<(string kid, string key)>();
-        foreach (var kc in license.Key)
-        {
-            if (kc.Type != License.Types.KeyContainer.Types.KeyType.Content)
-                continue;
-
-            var kidBytes = kc.Id?.ToByteArray();
-            if (kidBytes == null || kidBytes.Length == 0)
-                continue;
-
-            var keyIv = kc.Iv?.ToByteArray() ?? new byte[16];
-            if (keyIv.Length < 16)
+            // 常量时间比较：SequenceEqual 在首个差异字节短路，对 HMAC 签名做时序探测
+            // 理论上可逐字节还原签名；FixedTimeEquals 在定长输入上耗时与内容无关。
+            if (!CryptographicOperations.FixedTimeEquals(sig, computed))
             {
-                var tmp = new byte[16];
-                Buffer.BlockCopy(keyIv, 0, tmp, 0, Math.Min(keyIv.Length, 16));
-                keyIv = tmp;
+                Logger.LogWarn("许可证 HMAC 签名校验失败");
+                return null;
             }
 
-            var encContentKey = kc.Key.ToByteArray();
-            if (encContentKey.Length == 0)
-                continue;
-
-            byte[] contentKey;
-
-            // Widevine spec: if IV is unset or all zeros → ECB, otherwise CBC
-            var isZeroIv = keyIv.All(b => b == 0);
-            try
+            // msg is plaintext License
+            var license = License.Parser.ParseFrom(msg);
+            if (license.Key.Count == 0)
             {
-                if (isZeroIv)
+                Logger.LogWarn("许可证中未包含密钥");
+                return null;
+            }
+
+            var keys = new List<(string kid, string key)>();
+            foreach (var kc in license.Key)
+            {
+                if (kc.Type != License.Types.KeyContainer.Types.KeyType.Content)
+                    continue;
+
+                var kidBytes = kc.Id?.ToByteArray();
+                if (kidBytes == null || kidBytes.Length == 0)
+                    continue;
+
+                var keyIv = kc.Iv?.ToByteArray() ?? new byte[16];
+                if (keyIv.Length < 16)
                 {
-                    contentKey = WidevineCrypto.AesEcbDecrypt(encContentKey, encKey);
+                    var tmp = new byte[16];
+                    Buffer.BlockCopy(keyIv, 0, tmp, 0, Math.Min(keyIv.Length, 16));
+                    keyIv = tmp;
                 }
-                else
+
+                var encContentKey = kc.Key.ToByteArray();
+                if (encContentKey.Length == 0)
+                    continue;
+
+                byte[] contentKey;
+
+                // Widevine spec: if IV is unset or all zeros → ECB, otherwise CBC
+                var isZeroIv = keyIv.All(b => b == 0);
+                try
                 {
-                    var dec = WidevineCrypto.AesCbcDecrypt(encContentKey, encKey, keyIv);
-                    contentKey = WidevineCrypto.Pkcs7Unpad(dec);
+                    if (isZeroIv)
+                    {
+                        contentKey = WidevineCrypto.AesEcbDecrypt(encContentKey, encKey);
+                    }
+                    else
+                    {
+                        var dec = WidevineCrypto.AesCbcDecrypt(encContentKey, encKey, keyIv);
+                        contentKey = WidevineCrypto.Pkcs7Unpad(dec);
+                    }
                 }
-            }
-            catch (Exception ex) when (ex is CryptographicException or FormatException or InvalidDataException)
-            {
-                // 单个 key 解密失败（key/IV 不匹配或数据损坏）不应放弃整份授权：
-                // 其余 key 仍可正常解密，跳过这条损坏记录
-                Logger.LogDebug("解密 content key 失败: {0}", ex.Message);
-                continue;
+                catch (Exception ex) when (ex is CryptographicException or FormatException or InvalidDataException)
+                {
+                    // 单个 key 解密失败（key/IV 不匹配或数据损坏）不应放弃整份授权：
+                    // 其余 key 仍可正常解密，跳过这条损坏记录
+                    Logger.LogDebug("解密 content key 失败: {0}", ex.Message);
+                    continue;
+                }
+
+                var kidHex = Convert.ToHexString(kidBytes).ToLowerInvariant();
+                var keyHex = Convert.ToHexString(contentKey).ToLowerInvariant();
+                CryptographicOperations.ZeroMemory(contentKey);
+                keys.Add((kidHex, keyHex));
             }
 
-            var kidHex = Convert.ToHexString(kidBytes).ToLowerInvariant();
-            var keyHex = Convert.ToHexString(contentKey).ToLowerInvariant();
-            keys.Add((kidHex, keyHex));
+            return keys.Count > 0 ? keys.ToArray() : null;
         }
-
-        return keys.Count > 0 ? keys.ToArray() : null;
+        finally
+        {
+            CryptographicOperations.ZeroMemory(sessionKey);
+            CryptographicOperations.ZeroMemory(encKey);
+            CryptographicOperations.ZeroMemory(macKeyServer);
+        }
     }
 
     public void Dispose()

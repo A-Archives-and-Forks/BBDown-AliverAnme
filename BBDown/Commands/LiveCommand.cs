@@ -49,7 +49,7 @@ public class LiveCommand : Command<LiveSettings>
 
                 DateTime lastLog = DateTime.MinValue;
                 // 传 roomId：断流/地址过期时内部重新解析流地址续录
-                bool recorded = await LiveStreamUtil.DownloadToFileAsync(settings.RoomId, path, total =>
+                var recordResult = await LiveStreamUtil.DownloadToFileAsync(settings.RoomId, path, total =>
                 {
                     if (DateTime.Now - lastLog >= TimeSpan.FromSeconds(5))
                     {
@@ -58,10 +58,15 @@ public class LiveCommand : Command<LiveSettings>
                     }
                 }, cancellationToken);
 
-                if (!recorded)
+                if (recordResult == LiveStreamUtil.LiveRecordResult.NoData)
                 {
                     // 未收到任何字节就结束：不生成空文件，也不报告"录制已保存"
                     Logger.LogWarn("录制未收到任何数据，未保存文件");
+                    return 1;
+                }
+                else if (recordResult == LiveStreamUtil.LiveRecordResult.ConcatFailedWithSegmentsSaved)
+                {
+                    Logger.LogError("录制分段已保留，但未能自动合成最终文件。可手动使用 ffmpeg 进行 concat 合并。");
                     return 1;
                 }
                 Logger.Log($"录制已保存: {path}");

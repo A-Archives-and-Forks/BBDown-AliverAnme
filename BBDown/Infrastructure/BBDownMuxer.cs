@@ -369,20 +369,23 @@ static partial class BBDownMuxer
     public static async Task MergeFLV(string[] files, string outPath, CancellationToken cancellationToken = default)
     {
         if (files.Length == 0) return;
-        // --skip-mux 下 FindBinaries 的 ffmpeg 探测被门控跳过，但多段 FLV 合并
-        //（每段转 .ts 后 concat）仍执行：运行时守卫给出清晰报错，替代原生 Win32Exception。
-        EnsureToolAvailable(FFMPEG, "--ffmpeg-path", "FLV 分段合并");
         if (files.Length == 1)
         {
             File.Move(files[0], outPath, true);
+            return;
         }
-        else
+
+        // --skip-mux 下 FindBinaries 的 ffmpeg 探测被门控跳过，但多段 FLV 合并
+        //（每段转 .ts 后 concat）仍执行：运行时守卫给出清晰报错，替代原生 Win32Exception。
+        EnsureToolAvailable(FFMPEG, "--ffmpeg-path", "FLV 分段合并");
+
+        // 只处理本次传入的分段派生出的 .ts，不再扫描整个目录：
+        // 目录里可能有同一 aid 其它分P 已完成的 .ts / 成品，扫目录会把它们
+        // 一并拼进本P 输出，产出串味的损坏文件。
+        var tsFiles = new List<string>();
+        var sourceFiles = new List<string>();
+        try
         {
-            // 只处理本次传入的分段派生出的 .ts，不再扫描整个目录：
-            // 目录里可能有同一 aid 其它分P 已完成的 .ts / 成品，扫目录会把它们
-            // 一并拼进本P 输出，产出串味的损坏文件。
-            var tsFiles = new List<string>();
-            var sourceFiles = new List<string>();
             foreach (var file in files)
             {
                 var tmpFile = Path.Combine(Path.GetDirectoryName(file)!, Path.GetFileNameWithoutExtension(file) + ".ts");
@@ -393,7 +396,6 @@ static partial class BBDownMuxer
                 // ffmpeg 失败时源已删、.ts 为空，合并出缺段文件且不可恢复。
                 if (code != 0 || !File.Exists(tmpFile) || new FileInfo(tmpFile).Length == 0)
                 {
-                    foreach (var ts in tsFiles) TryDelete(ts);
                     TryDelete(tmpFile);
                     throw new InvalidOperationException(
                         $"FLV 分段转封装失败 (ffmpeg code={code})：{Path.GetFileName(file)}，已保留源分段以便重试");
@@ -404,9 +406,13 @@ static partial class BBDownMuxer
                 sourceFiles.Add(file);
             }
             await BBDownUtil.CombineMultipleFilesIntoSingleFileAsync(tsFiles.ToArray(), outPath, cancellationToken);
-            // 全部转换 + 合并成功后才清理：删除 .ts 中间产物与源分段
-            foreach (var s in tsFiles) TryDelete(s);
+            // 全部转换 + 合并成功后才清理源分段
             foreach (var s in sourceFiles) TryDelete(s);
+        }
+        finally
+        {
+            // 无论成功、失败或被取消，中间生成的 .ts 临时文件都应被清理
+            foreach (var s in tsFiles) TryDelete(s);
         }
     }
 

@@ -181,9 +181,9 @@ public class ServeApiSecurityTests
             UposHost = "upos-sz-mirrorcoso1.bilivideo.com",
         };
         BBDownApiServer.SanitizeUntrustedOptions(ok);
-        Assert.Equal("https://api.bilibili.com", ok.Host);
-        Assert.Equal("https://grpc.biliapi.net", ok.EpHost);
-        Assert.Equal("https://api.snm0516.aisee.tv", ok.TvHost);
+        Assert.Equal("api.bilibili.com", ok.Host);
+        Assert.Equal("grpc.biliapi.net", ok.EpHost);
+        Assert.Equal("api.snm0516.aisee.tv", ok.TvHost);
         Assert.Equal("upos-sz-mirrorcoso1.bilivideo.com", ok.UposHost);
     }
 

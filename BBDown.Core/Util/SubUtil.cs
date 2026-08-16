@@ -283,7 +283,7 @@ public static partial class SubUtil
             }
             return subtitles;
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException or IndexOutOfRangeException or ArgumentException)
         {
             Logger.LogDebug("GetIntlSubtitlesFromApi2 failed: {0}", ex.Message);
             return null;
@@ -508,7 +508,8 @@ public static partial class SubUtil
         var keptLines = normalized
             .Split('\n')
             .Select(l => l.TrimEnd())
-            .Where(l => l.Length > 0);
+            .Where(l => l.Length > 0)
+            .Select(l => l.Contains("-->") ? l.Replace("-->", "->") : l);
 
         return string.Join('\n', keptLines);
     }

@@ -566,6 +566,12 @@ internal static class BBDownDownloadUtil
                 if (authoritativeSize is not { } known || known <= 0 || known == fileSize)
                 {
                     Logger.LogDebug("文件已下载过, 跳过下载");
+                    DeleteResumeManifest(path);
+                    var vclipDir = path + ".vclip";
+                    if (Directory.Exists(vclipDir))
+                    {
+                        try { Directory.Delete(vclipDir, true); } catch { }
+                    }
                     return;
                 }
                 Logger.LogDebug("探测大小({0})与权威大小({1})不符，既有文件不可信，删除后完整重下", fileSize, known);
@@ -747,9 +753,8 @@ internal static class BBDownDownloadUtil
                         }
                         catch (NotSupportedException)
                         {
-                            // 次数与其他分支统一用 maxRetry，原先硬编码的 3 会随配置变化而偏多或偏少
-                            if (++retry == maxRetry) throw new NotSupportedException("服务器可能并不支持多线程下载, 请使用 --multi-thread false 关闭多线程");
-                            await Task.Delay(retry * Config.Current.RetryDelayMs, _);
+                            // 服务器不支持 Range（确定性不可重试）：与单线程路径一致直接抛出，不做无意义退避重试
+                            throw new NotSupportedException("服务器可能并不支持多线程下载, 请使用 --multi-thread false 关闭多线程");
                         }
                         catch (Exception ex) when (ex is ArgumentException or InvalidOperationException)
                         {

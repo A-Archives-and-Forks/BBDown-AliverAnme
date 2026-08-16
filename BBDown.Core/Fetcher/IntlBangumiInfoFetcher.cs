@@ -32,11 +32,15 @@ public partial class IntlBangumiInfoFetcher : IFetcher
             if (web != "")
             {
                 Regex regex = StateRegex();
-                string _json = regex.Match(web).Groups[1].Value;
-                using var _tempJson = JsonDocument.Parse(_json);
-                cover = _tempJson.RootElement.GetPropertySafe("mediaInfo").GetValueAsStringSafe("cover");
-                title = _tempJson.RootElement.GetPropertySafe("mediaInfo").GetValueAsStringSafe("title");
-                desc = _tempJson.RootElement.GetPropertySafe("mediaInfo").GetValueAsStringSafe("evaluate");
+                var match = regex.Match(web);
+                if (match.Success && !string.IsNullOrWhiteSpace(match.Groups[1].Value))
+                {
+                    string _json = match.Groups[1].Value;
+                    using var _tempJson = JsonDocument.Parse(_json);
+                    cover = _tempJson.RootElement.GetPropertySafe("mediaInfo").GetValueAsStringSafe("cover");
+                    title = _tempJson.RootElement.GetPropertySafe("mediaInfo").GetValueAsStringSafe("title");
+                    desc = _tempJson.RootElement.GetPropertySafe("mediaInfo").GetValueAsStringSafe("evaluate");
+                }
             }
         }
 
@@ -75,31 +79,12 @@ public partial class IntlBangumiInfoFetcher : IFetcher
             }
         }
 
-        /*if (pages.Count == 0)
-        {
-            if (web != "")
-            {
-                string epApi = $"https://api.bilibili.com/pgc/web/season/section?season_id={seasonId}";
-                var _web = GetWebSource(epApi);
-                pages = JArray.Parse(JObject.Parse(_web)["result"]["main_section"]["episodes"].ToString());
-            }
-            else if (infoJson["data"]["modules"] != null)
-            {
-                foreach (JObject section in JArray.Parse(infoJson["data"]["modules"].ToString()))
-                {
-                    if (section.ToString().Contains($"ep_id={id}"))
-                    {
-                        pages = JArray.Parse(section["data"]["episodes"].ToString());
-                        break;
-                    }
-                }
-            }
-        }*/
-
         foreach (var page in pages)
         {
-            //跳过预告
-            if (page.TryGetProperty("badge", out JsonElement badge) && badge.ToString() == "预告") continue;
+            string pageId = page.GetValueAsStringSafe("id");
+            // 跳过非用户显式请求的预告（若用户指定了该 epId 则保留，防止 Index 变空导致整季被静默下载）
+            if (page.TryGetProperty("badge", out JsonElement badge) && badge.ToString() == "预告" && (string.IsNullOrEmpty(id) || pageId != id))
+                continue;
             string res = "";
             if (page.TryGetProperty("dimension", out var dim) &&
                 dim.TryGetProperty("width", out var w) &&
@@ -114,7 +99,7 @@ public partial class IntlBangumiInfoFetcher : IFetcher
             Page p = new(i++,
                 page.GetValueAsStringSafe("aid"),
                 page.GetValueAsStringSafe("cid"),
-                page.GetValueAsStringSafe("id"),
+                pageId,
                 _title,
                 0, res,
                 page.GetInt64Safe("pub_time"));
@@ -122,6 +107,10 @@ public partial class IntlBangumiInfoFetcher : IFetcher
             pagesInfo.Add(p);
         }
 
+        if (!string.IsNullOrEmpty(id) && string.IsNullOrEmpty(index))
+            throw new KeyNotFoundException($"未找到指定的剧集分P (ep_id={id})");
+        if (pagesInfo.Count == 0)
+            throw new KeyNotFoundException("未找到剧集分P信息");
 
         var info = new VInfo
         {

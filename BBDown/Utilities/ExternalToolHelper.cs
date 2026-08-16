@@ -23,8 +23,14 @@ public static class ExternalToolHelper
             process.StartInfo.RedirectStandardOutput = true;
             process.StartInfo.CreateNoWindow = true;
             process.Start();
-            string info = process.StandardOutput.ReadToEnd() + Environment.NewLine + process.StandardError.ReadToEnd();
-            process.WaitForExit();
+            var outTask = process.StandardOutput.ReadToEndAsync();
+            var errTask = process.StandardError.ReadToEndAsync();
+            if (!process.WaitForExit(5000))
+            {
+                try { process.Kill(true); } catch { }
+                return false;
+            }
+            string info = outTask.GetAwaiter().GetResult() + Environment.NewLine + errTask.GetAwaiter().GetResult();
             var match = BBDownUtil.LibavutilRegex().Match(info);
             if (!match.Success) return false;
             int major = Convert.ToInt32(match.Groups[1].Value);

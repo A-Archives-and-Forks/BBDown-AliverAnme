@@ -205,9 +205,15 @@ internal partial class Program
         {
             Logger.Log($"{savePath}已存在, 跳过下载...");
             relatedTask?.AddSavePath(savePath);
-            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
+            // 清理当前任务已下载的临时音视频/字幕文件，防止并发败者任务残留泄漏
+            if (!string.IsNullOrEmpty(videoPath) && File.Exists(videoPath)) try { File.Delete(videoPath); } catch { }
+            if (!string.IsNullOrEmpty(audioPath) && File.Exists(audioPath)) try { File.Delete(audioPath); } catch { }
+            foreach (var s in subtitleInfo) if (File.Exists(s.path)) try { File.Delete(s.path); } catch { }
+            foreach (var a in audioMaterial) if (File.Exists(a.path)) try { File.Delete(a.path); } catch { }
+            var aidDir = PathUtil.ResolveWorkPath(p.aid);
+            if (Directory.Exists(aidDir) && !Directory.EnumerateFileSystemEntries(aidDir).Any())
             {
-                Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
+                try { Directory.Delete(aidDir, true); } catch { }
             }
             return MuxOutcome.Skipped;
         }
@@ -249,7 +255,7 @@ internal partial class Program
             }
         }
         Logger.Log("清理临时文件...");
-        await Task.Delay(200, cancellationToken);
+        try { await Task.Delay(200, cancellationToken); } catch (OperationCanceledException) { }
         if (parsedResult.VideoTracks.Any()) File.Delete(videoPath);
         // 仅删除非空音轨路径：flv 分支 audioPath 为空串，File.Delete("") 会抛异常。
         // 原 flv 清理本就只删 videoPath，这里用守卫保持行为一致。
@@ -423,7 +429,8 @@ internal partial class Program
                         // 标记在标题上而非拼接到最终路径：<videoTitle> 是所有产物(视频/封面/弹幕)
                         // 共用的占位符，改这里能一次覆盖 dash 与 flv 两条保存路径，
                         // 也不会破坏用户自定义的 --file-pattern。
-                        title = $"[试看]{title}";
+                        if (!title.StartsWith("[试看]"))
+                            title = $"[试看]{title}";
                     }
                 }
 
@@ -570,7 +577,7 @@ internal partial class Program
                             }
                             if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
                             {
-                                Directory.Delete(PathUtil.ResolveWorkPath(p.aid));
+                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
                             }
                             // DanmakuOnly 但没有任何有效弹幕文件（解析失败/为空/过滤后为空被删除）
                             // → 零产物：返回 false 而非假成功
@@ -784,13 +791,96 @@ internal partial class Program
                     }
                     if (myOption.OnlyShowInfo) return true;
                     savePath = PathUtil.ResolveWorkPath(FormatSavePath(savePathFormat, title, parsedResult.VideoTracks.ElementAtOrDefault(vIndex), null, p, pagesCount, apiType, pubTime));
+
+                    if (downloadDanmaku)
+                    {
+                        var danmakuXmlPath = Path.ChangeExtension(savePath, ".xml");
+                        var danmakuAssPath = Path.ChangeExtension(savePath, ".ass");
+                        Logger.Log("正在下载弹幕Xml文件");
+                        var danmakuUrl = $"https://comment.bilibili.com/{p.cid}.xml";
+                        await BBDownDownloadUtil.DownloadFileAsync(danmakuUrl, danmakuXmlPath, downloadConfig, cancellationToken);
+                        var danmakus = DanmakuUtil.ParseXml(danmakuXmlPath);
+                        if (danmakus == null)
+                        {
+                            Logger.Log("弹幕Xml解析失败, 删除Xml...");
+                            File.Delete(danmakuXmlPath);
+                        }
+                        else if (danmakus.Length == 0)
+                        {
+                            Logger.Log("当前视频没有弹幕, 删除Xml...");
+                            File.Delete(danmakuXmlPath);
+                        }
+                        else if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass))
+                        {
+                            var filtered = DanmakuUtil.Filter(danmakus, myOption.DanmakuFilter, myOption.DanmakuFilterUser);
+                            if (filtered.Length == 0)
+                            {
+                                Logger.Log("过滤后没有剩余弹幕, 跳过Ass保存");
+                            }
+                            else
+                            {
+                                Logger.Log($"正在保存弹幕Ass文件{(filtered.Length < danmakus.Length ? $"(过滤掉 {danmakus.Length - filtered.Length} 条)" : "")}...");
+                                await DanmakuUtil.SaveAsAssAsync(filtered, danmakuAssPath);
+                            }
+                        }
+
+                        // delete xml if possible
+                        if (!downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                        {
+                            File.Delete(danmakuXmlPath);
+                        }
+
+                        if (myOption.DanmakuOnly)
+                        {
+                            bool danmakuProduced = false;
+                            if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                            {
+                                relatedTask?.AddSavePath(danmakuXmlPath);
+                                danmakuProduced = true;
+                            }
+                            if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass) && File.Exists(danmakuAssPath))
+                            {
+                                relatedTask?.AddSavePath(danmakuAssPath);
+                                danmakuProduced = true;
+                            }
+                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
+                            {
+                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
+                            }
+                            if (!danmakuProduced)
+                            {
+                                Logger.LogWarn("DanmakuOnly 模式未生成任何弹幕文件");
+                                return false;
+                            }
+                            return true;
+                        }
+                    }
+
+                    if (myOption.CoverOnly)
+                    {
+                        var coverUrl = pic == "" ? p.cover! : pic;
+                        if (string.IsNullOrEmpty(coverUrl))
+                        {
+                            Logger.LogWarn("CoverOnly 模式无封面资源可下载");
+                            return false;
+                        }
+                        var newCoverPath = Path.ChangeExtension(savePath, Path.GetExtension(coverUrl));
+                        await BBDownDownloadUtil.DownloadFileAsync(coverUrl, newCoverPath, downloadConfig, cancellationToken);
+                        if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
+                        {
+                            try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
+                        }
+                        relatedTask?.AddSavePath(newCoverPath);
+                        return true;
+                    }
+
                     if (File.Exists(savePath) && new FileInfo(savePath).Length != 0)
                     {
                         Logger.Log($"{savePath}已存在, 跳过下载...");
                         relatedTask?.AddSavePath(savePath);
                         if (selectedPagesInfo.Count == 1 && Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
                         {
-                            Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
+                            try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
                         }
                         return true;
                     }

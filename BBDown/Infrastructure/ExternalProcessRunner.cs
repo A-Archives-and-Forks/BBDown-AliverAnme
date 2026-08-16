@@ -53,7 +53,7 @@ public sealed class SystemProcessRunner : IExternalProcessRunner
         p.StartInfo.CreateNoWindow = true;
         p.StartInfo.FileName = spec.FileName;
         foreach (var arg in spec.Arguments) p.StartInfo.ArgumentList.Add(arg);
-        p.StartInfo.RedirectStandardInput = spec.StandardInput != null;
+        p.StartInfo.RedirectStandardInput = true;
         p.StartInfo.RedirectStandardOutput = spec.OnStandardOutput != null;
         p.StartInfo.RedirectStandardError = spec.OnStandardError != null;
         if (spec.OnStandardError != null) p.StartInfo.StandardErrorEncoding = Encoding.UTF8;
@@ -64,7 +64,17 @@ public sealed class SystemProcessRunner : IExternalProcessRunner
         // 双方互相等待（管道已满 → 子进程阻塞 → WaitForExit 永不返回）造成死锁。
         var stdoutTask = spec.OnStandardOutput != null ? ReadLinesThrottled(p.StandardOutput, spec.OnStandardOutput) : null;
         var stderrTask = spec.OnStandardError != null ? ReadLinesThrottled(p.StandardError, spec.OnStandardError) : null;
-        var stdinTask = spec.StandardInput != null ? WriteStdinAsync(p.StandardInput, spec.StandardInput, cancellationToken) : null;
+        Task? stdinTask = null;
+        if (spec.StandardInput != null)
+        {
+            stdinTask = WriteStdinAsync(p.StandardInput, spec.StandardInput, cancellationToken);
+        }
+        else
+        {
+            // 未指定标准输入时立即关闭 stdin 管道向子进程发送 EOF，
+            // 避免 ffmpeg/aria2c 等外部程序因等待终端交互输入而意外挂起阻塞
+            try { p.StandardInput.Close(); } catch { }
+        }
 
         try
         {

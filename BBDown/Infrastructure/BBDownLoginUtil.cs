@@ -102,7 +102,19 @@ internal static class BBDownLoginUtil
                 cancellationToken.ThrowIfCancellationRequested();
                 var (w, setCookies) = await GetLoginStatusAsync(qrcodeKey, cancellationToken);
                 using var pollDoc = JsonDocument.Parse(w);
-                int code = pollDoc.RootElement.GetPropertySafe("data").GetInt32Safe("code");
+                if (pollDoc.RootElement.TryGetProperty("code", out var topCode) && topCode.GetInt64() != 0)
+                {
+                    var msg = pollDoc.RootElement.GetValueAsStringSafe("message");
+                    Logger.LogError($"登录请求失败: {msg} (code={topCode})");
+                    return false;
+                }
+                var dataElem = pollDoc.RootElement.GetPropertySafe("data");
+                if (dataElem.ValueKind == JsonValueKind.Undefined)
+                {
+                    Logger.LogError("登录轮询响应格式异常（缺少 data 节点）");
+                    return false;
+                }
+                int code = dataElem.GetInt32Safe("code");
                 if (code == 86038)
                 {
                     Logger.LogColor("二维码已过期, 请重新执行登录指令.");
@@ -120,7 +132,7 @@ internal static class BBDownLoginUtil
                         flag = !flag;
                     }
                 }
-                else
+                else if (code == 0)
                 {
                     using var successDoc = JsonDocument.Parse(w);
                     string cc = successDoc.RootElement.GetPropertySafe("data").GetStringSafe("url")!;
@@ -157,9 +169,15 @@ internal static class BBDownLoginUtil
                     SetOwnerOnlyPermission(cookiePath);
                     return true;
                 }
+                else
+                {
+                    string msg = dataElem.GetValueAsStringSafe("message");
+                    Logger.LogError($"登录失败: {msg} (code={code})");
+                    return false;
+                }
             }
         }
-        catch (Exception e) when (e is HttpRequestException or JsonException or InvalidOperationException)
+        catch (Exception e) when (e is HttpRequestException or JsonException or InvalidOperationException or KeyNotFoundException)
         {
             Logger.LogError($"WEB 登录失败: {e.Message}");
             Logger.LogError("请检查网络连接；若二维码已过期请重新执行 BBDown login。");
@@ -235,10 +253,15 @@ internal static class BBDownLoginUtil
                 {
                     continue;
                 }
-                else
+                else if (code == "0")
                 {
                     using var successDoc2 = JsonDocument.Parse(web);
-                    string cc = successDoc2.RootElement.GetPropertySafe("data").GetStringSafe("access_token")!;
+                    string cc = successDoc2.RootElement.GetPropertySafe("data").GetStringSafe("access_token") ?? "";
+                    if (string.IsNullOrEmpty(cc))
+                    {
+                        Logger.LogError("TV 登录成功但未取得有效凭证（access_token 缺失），登录结果未保存；请重试或检查网络环境");
+                        return false;
+                    }
                     Logger.Log("登录成功: AccessToken=" + SensitiveDataMasker.MaskValue(cc));
                     //导出cookie
                     var tvTokenPath = Path.Combine(Program.APP_DIR, "BBDownTV.data");
@@ -257,9 +280,15 @@ internal static class BBDownLoginUtil
                     SetOwnerOnlyPermission(tvTokenPath);
                     return true;
                 }
+                else
+                {
+                    string msg = pollDoc2.RootElement.GetValueAsStringSafe("message");
+                    Logger.LogError($"TV 登录失败: {msg} (code={code})");
+                    return false;
+                }
             }
         }
-        catch (Exception e) when (e is HttpRequestException or JsonException or InvalidOperationException)
+        catch (Exception e) when (e is HttpRequestException or JsonException or InvalidOperationException or KeyNotFoundException)
         {
             Logger.LogError($"TV 登录失败: {e.Message}");
             Logger.LogError("请检查网络连接；若二维码已过期请重新执行 BBDown logintv。");

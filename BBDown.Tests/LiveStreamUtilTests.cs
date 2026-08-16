@@ -133,6 +133,39 @@ public class LiveStreamUtilTests
     }
 
     /// <summary>
+    /// 当分段合并输出文件大小显著小于全部输入分段总和（如坏分段导致 ffmpeg concat demuxer 提前退出并生成截断产物），
+    /// ConcatSegmentsAsync 必须判定为失败并返回 false，防止误删可恢复的分段。
+    /// </summary>
+    [Fact]
+    public async Task ConcatSegments_TruncatedOutput_ReturnsFalse()
+    {
+        var fake = new FakeProcessRunner(exitCode: 0, outputContent: "tiny");
+        var original = BBDownMuxer.ProcessRunner;
+        var dir = Path.Combine(Path.GetTempPath(), "live-segs-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        try
+        {
+            BBDownMuxer.ProcessRunner = fake;
+            var seg1 = Path.Combine(dir, "seg-000.flv");
+            var seg2 = Path.Combine(dir, "seg-001.flv");
+            // 创建两个较大的分段（各 100KB）
+            File.WriteAllBytes(seg1, new byte[100 * 1024]);
+            File.WriteAllBytes(seg2, new byte[100 * 1024]);
+            var outPath = Path.Combine(dir, "out.flv");
+
+            // fake 只写了 "tiny" (4 字节)，远小于 200KB 的输入总长
+            var ok = await LiveStreamUtil.ConcatSegmentsAsync([seg1, seg2], outPath, CancellationToken.None);
+
+            Assert.False(ok);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            try { if (Directory.Exists(dir)) Directory.Delete(dir, true); } catch { }
+        }
+    }
+
+    /// <summary>
     /// SelectFlvUrl 的选流纯函数测试（内联 JSON，无网络）：FLV 被优先选中，
     /// availableFormats 收集接口实际提供的全部格式（含被跳过的 ts/fmp4）。
     /// </summary>
@@ -215,10 +248,15 @@ public class LiveStreamUtilTests
     private sealed class FakeProcessRunner : IExternalProcessRunner
     {
         private readonly int _exitCode;
+        private readonly string _outputContent;
         public List<ExternalProcessSpec> Specs { get; } = [];
         public string? CapturedInput { get; private set; }
 
-        public FakeProcessRunner(int exitCode) => _exitCode = exitCode;
+        public FakeProcessRunner(int exitCode, string outputContent = "merged")
+        {
+            _exitCode = exitCode;
+            _outputContent = outputContent;
+        }
 
         public Task<int> RunAsync(ExternalProcessSpec spec, CancellationToken cancellationToken = default)
         {
@@ -231,7 +269,7 @@ public class LiveStreamUtilTests
                 CapturedInput = File.ReadAllText(listArg);
             // 模拟 concat 产出：写出非空产物，满足"产物存在且非空"校验
             var outArg = spec.Arguments[^1];
-            File.WriteAllText(outArg, "merged");
+            File.WriteAllText(outArg, _outputContent);
             cancellationToken.ThrowIfCancellationRequested();
             return Task.FromResult(_exitCode);
         }

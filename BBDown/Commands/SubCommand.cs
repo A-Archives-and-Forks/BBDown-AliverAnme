@@ -186,7 +186,8 @@ public class SubCheckCommand : Command<SubCheckSettings>
                             throw;
                         }
                         catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
-                                                    or InvalidOperationException or IOException or ArgumentException)
+                                                    or InvalidOperationException or IOException or ArgumentException
+                                                    or TimeoutException or TaskCanceledException)
                         {
                             anyAidFailed = true;
                             Logger.LogWarn($"  av{aid} 下载失败（继续下一个）: {ex.Message}");
@@ -202,7 +203,8 @@ public class SubCheckCommand : Command<SubCheckSettings>
                     throw;
                 }
                 catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
-                                            or InvalidOperationException or IOException or ArgumentException)
+                                            or InvalidOperationException or IOException or ArgumentException
+                                            or TimeoutException or TaskCanceledException)
                 {
                     // 单个订阅失败不中止其余订阅，但必须计入失败数：
                     // 全部失败仍返回 0 会让脚本/CI 无法区分"全部成功"与"全部失败"
