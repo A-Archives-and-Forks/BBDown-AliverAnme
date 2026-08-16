@@ -92,8 +92,9 @@ public static partial class BBDownUtil
             return;
         }
 
-        if (!Directory.Exists(Path.GetDirectoryName(outputFilePath)))
-            Directory.CreateDirectory(Path.GetDirectoryName(outputFilePath)!);
+        var outDir = Path.GetDirectoryName(outputFilePath);
+        if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
+            Directory.CreateDirectory(outDir);
 
         try
         {

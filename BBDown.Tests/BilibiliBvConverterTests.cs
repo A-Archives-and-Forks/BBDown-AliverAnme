@@ -35,4 +35,11 @@ public class BilibiliBvConverterTests
     {
         Assert.Throws<ArgumentException>(() => BilibiliBvConverter.Decode("short"));
     }
+
+    [Fact]
+    public void Decode_InvalidChar_ThrowsArgumentException()
+    {
+        // '0', 'l', 'I', 'O' 等字符不在 Base58 字母表中
+        Assert.Throws<ArgumentException>(() => BilibiliBvConverter.Decode("0x411w7KC"));
+    }
 }

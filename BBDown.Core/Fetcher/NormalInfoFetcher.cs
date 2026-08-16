@@ -35,7 +35,7 @@ public partial class NormalInfoFetcher : IFetcher
         var cid = data.GetInt64Safe("cid");
 
         // 互动视频 1:是 0:否
-        var isSteinGate = data.TryGetProperty("rights", out var rights) && rights.TryGetProperty("is_stein_gate", out var sg) ? sg.GetInt16() : (short)0;
+        var isSteinGate = data.TryGetPropertySafe("rights")?.GetInt32Safe("is_stein_gate") ?? 0;
 
         // UP主充电专属视频。未充电时 playurl 依然返回 code=0，
         // 只是把完整流换成试看片段，因此必须靠这里的权限字段判断，

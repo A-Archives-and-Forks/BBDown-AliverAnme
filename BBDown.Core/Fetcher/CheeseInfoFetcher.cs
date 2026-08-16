@@ -14,12 +14,19 @@ public class CheeseInfoFetcher : IFetcher
         string api = $"https://api.bilibili.com/pugv/view/web/season?ep_id={id}";
         string json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
+        int code = infoJson.RootElement.GetInt32Safe("code");
+        if (code != 0)
+        {
+            string msg = infoJson.RootElement.GetValueAsStringSafe("message");
+            throw new InvalidOperationException($"获取课程信息失败 (code={code}): {msg}");
+        }
         var data = infoJson.RootElement.GetPropertySafe("data");
         string cover = data.GetValueAsStringSafe("cover");
         string title = data.GetValueAsStringSafe("title");
         string desc = data.GetValueAsStringSafe("subtitle");
-        string ownerName = data.GetPropertySafe("up_info").GetValueAsStringSafe("uname");
-        string ownerMid = data.GetPropertySafe("up_info").GetValueAsStringSafe("mid");
+        var upInfo = data.TryGetPropertySafe("up_info");
+        string ownerName = upInfo?.GetValueAsStringSafe("uname") ?? "";
+        string ownerMid = upInfo?.GetValueAsStringSafe("mid") ?? "";
         var pages = data.EnumerateArraySafe("episodes");
         List<Page> pagesInfo = new();
         foreach (var page in pages)

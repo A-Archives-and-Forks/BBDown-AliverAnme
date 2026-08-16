@@ -117,7 +117,7 @@ internal partial class Program
             // B站返回非番剧JSON结构（可能是课程），尝试按课程查找
             Logger.LogWarn("未找到此 EP/SS 对应番剧信息, 正在尝试按课程查找。");
 
-            aidOri = aidOri.Replace("ep", "cheese");
+            aidOri = "cheese:" + aidOri[3..];
             Logger.Log("新的 aid: " + aidOri);
 
             if (string.IsNullOrEmpty(aidOri))

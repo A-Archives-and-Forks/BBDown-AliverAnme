@@ -14,6 +14,9 @@ internal partial class Program
         lock (fileLock)
         {
             string filePath = Path.Combine(APP_DIR, "BBDown.archives");
+            var dir = Path.GetDirectoryName(filePath);
+            if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                Directory.CreateDirectory(dir);
             Logger.LogDebug("文件路径：{0}", filePath);
             File.AppendAllText(filePath, $"{aid}|");
         }

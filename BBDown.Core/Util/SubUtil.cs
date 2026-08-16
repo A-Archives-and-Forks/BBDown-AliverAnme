@@ -381,7 +381,9 @@ public static partial class SubUtil
             //grpc调用接口 protobuf
             string api = "https://app.biliapi.net/bilibili.community.service.dm.v1.DM/DmView";
 
-            var data = GetPayload(Convert.ToInt64(aid), Convert.ToInt64(cid));
+            if (!long.TryParse(aid, out var aidLong) || !long.TryParse(cid, out var cidLong))
+                return null;
+            var data = GetPayload(aidLong, cidLong);
 
             var t = AppHelper.ReadMessage(await HTTPUtil.GetPostResponseAsync(api, data, token: token));
             var resp = new MessageParser<DmViewReply>(() => new DmViewReply()).ParseFrom(t);
@@ -402,7 +404,7 @@ public static partial class SubUtil
             return subtitles;
         }
         catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or InvalidProtocolBufferException
-                              or System.Text.Json.JsonException)
+                              or System.Text.Json.JsonException or InvalidDataException)
         {
             // JsonException 覆盖 RiskControlResponseException（接口返回 HTML 而非 grpc 数据）：
             // 字幕是装饰性资源，任何抓取失败都应降级为"无字幕"而非让页面下载失败
@@ -466,14 +468,7 @@ public static partial class SubUtil
         {
             var line = sub[i];
             lines.AppendLine((i + 1).ToString());
-            if (line.TryGetProperty("from", out JsonElement from))
-            {
-                lines.AppendLine($"{FormatTime(from.GetDouble())} --> {FormatTime(line.GetDoubleSafe("to"))}");
-            }
-            else
-            {
-                lines.AppendLine($"{FormatTime(0.0)} --> {FormatTime(line.GetDoubleSafe("to"))}");
-            }
+            lines.AppendLine($"{FormatTime(line.GetDoubleSafe("from"))} --> {FormatTime(line.GetDoubleSafe("to"))}");
             //有的没有内容
             if (line.TryGetProperty("content", out JsonElement content))
                 lines.AppendLine(SanitizeSrtContent(content.ToString()));

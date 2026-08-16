@@ -42,6 +42,10 @@ public class SpaceVideoFetcher : IFetcher
         if (string.IsNullOrWhiteSpace(userName)) userName = $"UP主{id}";
 
         var entries = await FetchAllEntriesAsync(id, userName, cancellationToken);
+        if (entries.Count == 0)
+        {
+            throw new InvalidOperationException($"{userName} 没有投稿视频");
+        }
         Logger.Log($"共 {entries.Count} 个投稿, 正在获取分P信息...");
 
         var (pagesInfo, steinGate) = await ExpandEntriesAsync(entries, userName, cancellationToken);

@@ -92,4 +92,28 @@ public class CombineFilesTests
             try { Directory.Delete(dir, true); } catch (IOException) { }
         }
     }
+
+    [Fact]
+    public async Task CombineMultipleFiles_RelativePath_Succeeds()
+    {
+        var tempName = $"bbdown-test-{Guid.NewGuid():N}";
+        var f1 = tempName + "-1.tmp";
+        var f2 = tempName + "-2.tmp";
+        var outFile = tempName + "-out.tmp";
+        try
+        {
+            await File.WriteAllBytesAsync(f1, new byte[] { 1, 2 });
+            await File.WriteAllBytesAsync(f2, new byte[] { 3, 4 });
+            // 相对路径（无目录前缀）不应抛 ArgumentException: Path cannot be the empty string
+            await BBDownUtil.CombineMultipleFilesIntoSingleFileAsync(new[] { f1, f2 }, outFile);
+            Assert.True(File.Exists(outFile));
+            Assert.Equal(new byte[] { 1, 2, 3, 4 }, await File.ReadAllBytesAsync(outFile));
+        }
+        finally
+        {
+            try { if (File.Exists(f1)) File.Delete(f1); } catch { }
+            try { if (File.Exists(f2)) File.Delete(f2); } catch { }
+            try { if (File.Exists(outFile)) File.Delete(outFile); } catch { }
+        }
+    }
 }

@@ -66,7 +66,9 @@ public static class BilibiliBvConverter
         long avid = 0;
         foreach (byte b in bvid)
         {
-            avid = avid * BASE + REV_ALPHABETA[b];
+            if (!REV_ALPHABETA.TryGetValue(b, out var val))
+                throw new ArgumentException($"BV 包含无效字符: '{(char)b}'", nameof(bvid_str));
+            avid = avid * BASE + val;
         }
 
         return (avid & MASK_CODE) ^ XOR_CODE;

@@ -23,6 +23,9 @@ public static class LiveStreamUtil
         string infoApi = $"https://api.live.bilibili.com/room/v1/Room/get_info?room_id={roomId}";
         string infoJson = await HTTPUtil.GetWebSourceAsync(infoApi, token: token);
         using var infoDoc = JsonDocument.Parse(infoJson);
+        int infoCode = infoDoc.RootElement.GetInt32Safe("code");
+        if (infoCode != 0)
+            throw new InvalidOperationException($"获取直播间信息失败(code={infoCode}): {infoDoc.RootElement.GetValueAsStringSafe("message")}");
         var info = infoDoc.RootElement.GetPropertySafe("data");
         string title = info.GetValueAsStringSafe("title");
         if (title == "") title = $"直播间{roomId}";
@@ -34,6 +37,9 @@ public static class LiveStreamUtil
             $"?room_id={roomId}&protocol=0,1&format=0,1,2&codec=0,1&qn=10000&platform=web";
         string playJson = await HTTPUtil.GetWebSourceAsync(playApi, token: token);
         using var playDoc = JsonDocument.Parse(playJson);
+        int playCode = playDoc.RootElement.GetInt32Safe("code");
+        if (playCode != 0)
+            throw new InvalidOperationException($"获取直播流信息失败(code={playCode}): {playDoc.RootElement.GetValueAsStringSafe("message")}");
         var playData = playDoc.RootElement.GetPropertySafe("data").GetPropertySafe("playurl_info").GetPropertySafe("playurl");
         var url = SelectFlvUrl(playData, out var availableFormats);
         if (url is null)

@@ -24,12 +24,16 @@ internal partial class Program
                 int pDur = pageDur == 0 ? a.dur : pageDur;
                 Logger.LogColor($"{index++}. [{a.codecs}] [{a.bandwidth} kbps] [~{BBDownUtil.FormatFileSize(pDur * a.bandwidth * 1024 / 8)}]", false);
             }
-            Logger.Log($"共计{parsedResult.RoleAudioList.Count}条配音, 每条包含{parsedResult.RoleAudioList[0].audio.Count}条配音流.");
-            index = 0;
-            foreach (var a in parsedResult.RoleAudioList[0].audio)
+            var firstRoleAudio = parsedResult.RoleAudioList[0].audio;
+            if (firstRoleAudio != null && firstRoleAudio.Any())
             {
-                int pDur = pageDur == 0 ? a.dur : pageDur;
-                Logger.LogColor($"{index++}. [{a.codecs}] [{a.bandwidth} kbps] [~{BBDownUtil.FormatFileSize(pDur * a.bandwidth * 1024 / 8)}]", false);
+                Logger.Log($"共计{parsedResult.RoleAudioList.Count}条配音, 每条包含{firstRoleAudio.Count}条配音流.");
+                index = 0;
+                foreach (var a in firstRoleAudio)
+                {
+                    int pDur = pageDur == 0 ? a.dur : pageDur;
+                    Logger.LogColor($"{index++}. [{a.codecs}] [{a.bandwidth} kbps] [~{BBDownUtil.FormatFileSize(pDur * a.bandwidth * 1024 / 8)}]", false);
+                }
             }
         }
         //展示所有的音视频流信息
