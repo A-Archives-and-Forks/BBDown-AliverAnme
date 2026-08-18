@@ -2,6 +2,25 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.14] - 2026-08-18
+
+### 修复与安全性加固
+
+- **serve 三层安全防护**：认证失败按来源 IP 滑动窗口限速（1 分钟 5 次后返回 429）并记录 401 失败日志，令 `X-Serve-Token` 暴力枚举失效；写端点（`/add-task`/`/cancel`/`/remove-finished`）新增 CSRF/跨源防护——校验 `Origin` 必须为回环来源或缺失（非浏览器客户端），`/add-task` 强制 JSON Content-Type（`text/plain` 是 CORS 简单请求载体，可直接跨源发出不触发预检）；任务错误消息经 `/get-tasks` 返回前脱敏绝对路径，防止泄露服务器文件系统布局。
+- **日志与敏感信息脱敏**：`PlayViewReply` 调试日志不再全文落盘——1KB 截断并脱敏媒体 URL 中的 `sign`/`x_sign`/`w_rid` 签名参数（临时签名 CDN 地址落入日志等于外泄下载权）；敏感键新增 `DedeUserID`。
+- **外部工具查找防劫持**：`FindExecutable` 不再搜索当前工作目录（BBDown 常在下载目录运行，目录中先前植入的 `ffmpeg.exe`/`aria2c.exe`/`mp4box.exe` 伪造二进制会被静默执行），改为程序目录优先 + PATH；Unix 上校验执行位。
+- **时钟校准收窄**：仅对 WBI 签名权威主机 `api.bilibili.com`（含子域）校准服务器时钟，其它边缘服务器（番剧/国际版）的 Date 不再写入全局偏移（避免抖动签名基准）；偏移阈值从 ±24h 收紧到 ±1h。
+- **HTTP 重试与超时语义**：登录轮询（GET）加入与常规请求一致的有界重试 + 指数退避（此前零重试，任一次瞬时 5xx/超时直接中断扫码流程）；POST 超时转可读 `TimeoutException`（调用方均为幂等查询，保留 5xx/超时有界重试）；风控 HTML 识别双剥 BOM，堵住裸 `JsonException` 回潮。
+- **取消信号正确传播**：Widevine 许可证请求、混流、通知回调中的 `OperationCanceledException` 不再被 `catch (Exception)` 吞掉——取消后不再误报"解密失败"、不再打印"任务完成"。
+- **混流轨道清理兜底**：已下载的音视频/字幕/封面轨道清理并入 `finally`（`CleanupDownloadedTracks`），混流失败/异常/取消路径不再残留 GB 级临时文件；`Decrypt` 终止进程后等待 stderr 任务，消除 `UnobservedTaskException`。
+- **解析防御性加固**：bilidrm kid 仅接受 32 位 hex（畸形 URI 不再一路带到 mp4decrypt）；flv 最高清晰度重发失败（网络/超时/解析异常）沿用首次已校验响应降级；互动视频 `player.so` 解析降级为可读错误；WBI 密钥材料长度校验（短于 58 字符时降级保持原密钥而非越界崩溃）。
+- **文件名与语言码修复**：文件名尾随点/空格裁剪（Windows 拒绝以点/空格结尾的名称，纯点串兜底产出合法基名）；字幕语言码 BCP-47 大小写规范化（`zh-tw`→`zh-TW`/`yue-hk`→`yue-HK`，修复小写语言码被错误标记为 und）。
+- **混流与进程健壮性**：无主音轨时素材元数据下标起点修复（标题不再错位）；aria2c 进程级 6 小时兜底超时（防僵死永久占并发槽）；未闭合引号不再吞掉整段 `--aria2c-args` 配置；直播分段合成捕获 `Win32Exception`。
+
+### 新增测试
+
+- 全库 515 个测试全部通过：新增文件名尾随点/空格与纯点串净化 8 例、serve 错误消息脱敏 URL/相对路径 2 例；时钟校准（±1h 阈值、非权威主机不覆盖偏移）与 POST 超时重试语义测试更新。
+
 ## [1.6.13] - 2026-08-18
 
 ### 修复与安全性加固
