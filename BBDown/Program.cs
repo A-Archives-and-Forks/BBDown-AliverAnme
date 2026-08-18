@@ -165,6 +165,9 @@ partial class Program
                 }
                 Console.BackgroundColor = ConsoleColor.Red;
                 Console.ForegroundColor = ConsoleColor.White;
+                // 完整异常细节（堆栈/InnerException）写日志文件：即使非 --debug 模式也要落盘，
+                // 否则用户只看到被裁剪的 Message/AOT 资源键，无法定位根因。
+                Logger.LogStack(ex);
                 // 非取消的 TaskCanceledException 是 HttpClient 超时（token 未取消）：
                 // 默认 Message 在裁剪/AOT 发布下只显示资源键"TaskCanceledException_ctor_DefaultMessage"，
                 // 对用户无意义且"升级后重试"解决不了超时，给出可读提示。
@@ -214,13 +217,13 @@ partial class Program
         }).ToArray();
     }
 
-    internal static void StartServer(string? listenUrl, int maxConcurrent = 3, string? serveToken = null, string? notifyWebhook = null, CancellationToken cancellationToken = default)
+    internal static void StartServer(string? listenUrl, int maxConcurrent = 3, string? serveToken = null, string? notifyWebhook = null, CancellationToken cancellationToken = default, bool trustProxy = false)
     {
         var defaultListenUrl = "http://127.0.0.1:23333";
         // serve 为长驻进程：标记模式，此后各任务的 --work-dir 不再写进程 CWD
         IsServeMode = true;
         Logger.LogFilePath = Path.Combine(Directory.GetCurrentDirectory(), "bbdown-api.log");
-        var server = new BBDownApiServer(maxConcurrent, serveToken, notifyWebhook: notifyWebhook);
+        var server = new BBDownApiServer(maxConcurrent, serveToken, notifyWebhook: notifyWebhook, trustProxy: trustProxy);
         server.SetUpServer();
         try
         {

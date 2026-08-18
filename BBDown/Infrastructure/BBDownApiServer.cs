@@ -36,6 +36,8 @@ public partial class BBDownApiServer
     /// 否则 ffmpeg/aria2c 成为孤儿、直播 .part 未改名、已完成任务记录来不及落盘。
     /// </summary>
     private readonly HashSet<Task> _inFlightTasks = [];
+    // 在途任务的 JobId 集合：关停排空超时后枚举具体任务，供运维定位孤儿外部进程
+    private readonly HashSet<string> _inFlightJobIds = [];
     private readonly object _inFlightLock = new();
 
     /// <summary>
@@ -69,6 +71,19 @@ public partial class BBDownApiServer
     internal bool TryAcquireAcceptSlot() => _acceptLimiter.Wait(0);
 
     /// <summary>
+    /// 尝试占用一个并发执行槽位（--max-concurrent 闸门）。供测试直接占用闸门
+    /// 制造"排队等待"场景，验证 /cancel 对排队任务生效（无需真实慢任务）。
+    /// </summary>
+    internal bool TryAcquireConcurrencySlot() => _concurrencyLimiter.Wait(0);
+
+    /// <summary>
+    /// 是否信任直连反代追加的 X-Forwarded-For（--trusted-proxy）：启用后认证失败限速
+    /// 按 XFF 末段计键，反代部署下多个客户端不再共享同一反代 IP。默认 false：不读 XFF，
+    /// 否则任意客户端可直接伪造 XFF 更换限速计键绕过限速。
+    /// </summary>
+    private readonly bool _trustProxy;
+
+    /// <summary>
     /// 服务端固定的任务完成回调地址（serve 启动时经 --notify-webhook 配置）。
     /// 只接受管理员在启动参数里显式配置的地址；客户端请求体中的回调字段一律忽略，
     /// 防止任意客户端让本机服务器向攻击者指定的地址 POST 任务数据（SSRF 横向面）。
@@ -93,7 +108,7 @@ public partial class BBDownApiServer
     // 默认写到进程当前目录；测试可通过构造函数注入临时路径，避免多实例互相污染
     private readonly string _taskFile;
 
-    public BBDownApiServer(int maxConcurrent = 3, string? serveToken = null, string? taskFilePath = null, string? notifyWebhook = null)
+    public BBDownApiServer(int maxConcurrent = 3, string? serveToken = null, string? taskFilePath = null, string? notifyWebhook = null, bool trustProxy = false)
     {
         // 防御：maxConcurrent <= 0 会让 SemaphoreSlim 构造抛 ArgumentOutOfRangeException，
         // serve 作为长驻进程应以可读错误退出而非崩溃
@@ -104,6 +119,7 @@ public partial class BBDownApiServer
         _acceptLimiter = new SemaphoreSlim(acceptCap, acceptCap);
         _serveToken = serveToken;
         _notifyWebhook = notifyWebhook;
+        _trustProxy = trustProxy;
         _taskFile = taskFilePath ?? Path.Combine(Environment.CurrentDirectory, "bbdown-tasks.json");
     }
 
@@ -148,7 +164,7 @@ public partial class BBDownApiServer
             {
                 if (!string.IsNullOrEmpty(_serveToken) && !FixedTimeEquals(context.Request.Headers["X-Serve-Token"], _serveToken!))
                 {
-                    var clientIp = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                    var clientIp = GetClientIp(context);
                     // 每次失败都记录日志：401 此前完全静默，暴力尝试对运维/用户不可见。
                     Logger.LogWarn($"serve 认证失败（401）: {clientIp} {context.Request.Path}");
                     if (IsAuthLockedOut(clientIp))
@@ -226,6 +242,12 @@ public partial class BBDownApiServer
         });
         app.MapPost("/add-task", (MyOptionBindingResult<ServeRequestOptions> bindingResult) =>
         {
+            if (bindingResult.Exception is RequestBodyTooLargeException)
+            {
+                // 请求体超过 64KB 上限：与绑定层注释/实现对齐（此前注释承诺 413、实现与
+                // 测试却是 400，三处不一致）。超大负载与 JSON 语法错误语义不同，用 413 区分。
+                return Results.Problem("请求体过大", statusCode: StatusCodes.Status413PayloadTooLarge, title: "Payload Too Large");
+            }
             if (!bindingResult.IsValid)
             {
                 return Results.BadRequest("输入有误");
@@ -249,17 +271,18 @@ public partial class BBDownApiServer
             // 防止长驻进程被无限堆积的后台任务/配置对象/CTS 拖垮。
             if (!_acceptLimiter.Wait(0))
             {
-                Logger.LogWarn($"任务队列已满，拒绝新任务: {req.Url}");
+                // URL 是客户端可控输入（可含 CRLF）：单行化后再进日志，避免日志注入面
+                Logger.LogWarn($"任务队列已满，拒绝新任务: {SanitizeLogString(req.Url)}");
                 return Results.Problem("任务队列已满，请稍后再试",
                     statusCode: StatusCodes.Status429TooManyRequests, title: "Too Many Requests");
             }
             var task = EnqueueDownloadTask(req);
             var bgTask = RunAcceptedTaskAsync(req, task);
             // 登记在途任务：服务关停时据此等待所有后台任务收尾
-            lock (_inFlightLock) { _inFlightTasks.Add(bgTask); }
+            lock (_inFlightLock) { _inFlightTasks.Add(bgTask); _inFlightJobIds.Add(task.JobId); }
             _ = bgTask.ContinueWith(t =>
             {
-                lock (_inFlightLock) { _inFlightTasks.Remove(t); }
+                lock (_inFlightLock) { _inFlightTasks.Remove(t); _inFlightJobIds.Remove(task.JobId); }
             }, TaskScheduler.Default);
             return Results.Json(new AddTaskAccepted(task.JobId), AppJsonSerializerContext.Default.AddTaskAccepted, statusCode: StatusCodes.Status202Accepted);
         });
@@ -348,7 +371,10 @@ public partial class BBDownApiServer
             {
                 if (!Task.WaitAll(inflight, TimeSpan.FromSeconds(30)))
                 {
-                    Logger.LogWarn("部分在途任务未在 30 秒内完成收尾，已强制退出");
+                    // 升 Error 并枚举具体 JobId：此前仅 Warn 无明细，孤儿 ffmpeg/aria2c 无法事后定位
+                    string[] stuckJobIds;
+                    lock (_inFlightLock) { stuckJobIds = [.. _inFlightJobIds]; }
+                    Logger.LogError($"部分在途任务未在 30 秒内完成收尾，已强制退出（可能遗留孤儿外部进程）: {string.Join(", ", stuckJobIds)}");
                 }
             }
             catch (AggregateException)
@@ -385,6 +411,16 @@ public partial class BBDownApiServer
         return _absolutePathRegex().Replace(message, m => m.Groups["file"].Value);
     }
 
+    /// <summary>
+    /// 客户端可控字符串进日志前的单行化：URL/请求体等可含 CR/LF，
+    /// 直接拼日志会破坏日志结构（日志注入面）。只替换控制字符，不改变可见内容。
+    /// </summary>
+    internal static string SanitizeLogString(string? s)
+    {
+        if (string.IsNullOrEmpty(s)) return "";
+        return s.Replace("\r", "\\r").Replace("\n", "\\n");
+    }
+
     /// <summary>匹配盘符/UNC/Unix 根绝对路径（含尾随文件名或目录段），保留路径最后一段。
     /// 形如 D:\a\b\c.mp4、\\server\share\x、/home/u/x.mp4；交替三种根前缀，
     /// 中间目录段任意、末尾段捕获为 file（含中文/空格等非分隔符字符）。
@@ -394,12 +430,29 @@ public partial class BBDownApiServer
     private static partial System.Text.RegularExpressions.Regex _absolutePathRegex();
 
     /// <summary>
+    /// 认证失败限速的计键：默认用 TCP 远端 IP；配置 --trusted-proxy 后信任
+    /// X-Forwarded-For 的最后一个条目（由直连的可信反代追加，用它代表真实客户端），
+    /// 反代部署下多个客户端不再共享同一反代 IP 而互相拖累限速。
+    /// </summary>
+    private string GetClientIp(Microsoft.AspNetCore.Http.HttpContext context)
+    {
+        if (_trustProxy)
+        {
+            var xff = context.Request.Headers["X-Forwarded-For"].ToString();
+            var last = xff.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).LastOrDefault();
+            if (!string.IsNullOrEmpty(last)) return last;
+        }
+        return context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+    }
+
+    /// <summary>
     /// 认证失败限速判定：1 分钟滑动窗口内失败次数达到阈值返回 true（拒绝服务）。
     /// 每次失败都调用本方法登记；限速状态按来源 IP 隔离，同机合法客户端不受影响。
     /// 窗口过期的空条目会被移除，防止攻击者用大量一次性 IP 轰炸时字典无限增长
     /// （每 IP 一条永不清除的空 list）；字典超过上限时顺带清理全部过期条目。
+    /// internal 供测试直接验证滑动窗口阈值。
     /// </summary>
-    private bool IsAuthLockedOut(string clientIp)
+    internal bool IsAuthLockedOut(string clientIp)
     {
         lock (_authFailuresLock)
         {
@@ -446,8 +499,9 @@ public partial class BBDownApiServer
     /// 浏览器跨源请求一定携带 Origin；DNS rebinding（攻击者域名解析到 127.0.0.1）下
     /// Origin 仍是攻击者域名而非回环来源，在此被拒。非浏览器客户端（curl/HttpClient）
     /// 不携带 Origin 头，字符串为空即放行，保持向后兼容。
+    /// internal 供测试直接验证判定逻辑。
     /// </summary>
-    private static bool IsLoopbackOrigin(string origin)
+    internal static bool IsLoopbackOrigin(string origin)
     {
         if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
         var host = uri.DnsSafeHost;
@@ -488,6 +542,10 @@ public partial class BBDownApiServer
     // 快照生成也在该锁内进行（见 PersistFinishedTasks），锁顺序固定为 _persistLock → _taskLock。
     private static readonly object _persistLock = new();
 
+    // 连续持久化失败计数：磁盘满等持续性故障升级为 LogError（单次瞬时失败 LogWarn 即可）。
+    // 写盘成功时清零。磁盘满时任务记录会静默消失，必须留下可观测痕迹。
+    private static int _persistFailures;
+
     // 保留策略：已完成任务列表最多保留条数 / 最大保留天数。
     // serve 是长驻进程，任务记录无限累积会让 bbdown-tasks.json 无限膨胀。
     private const int MaxFinishedTasks = 1000;
@@ -526,10 +584,18 @@ public partial class BBDownApiServer
                 }
                 File.Move(tmpFile, _taskFile, overwrite: true);
             }
+            // 写盘成功：清零连续失败计数
+            Interlocked.Exchange(ref _persistFailures, 0);
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            Logger.LogDebug("持久化任务记录失败: {0}", ex.Message);
+            // 升 Warn：任务记录落盘失败意味着重启后记录丢失，此前仅 LogDebug（默认抑制）
+            // 会让磁盘满等故障完全无痕。连续失败升级 Error（持续性故障）。
+            int failures = Interlocked.Increment(ref _persistFailures);
+            if (failures >= 3)
+                Logger.LogError($"持久化任务记录连续失败 {failures} 次: {ex.Message}");
+            else
+                Logger.LogWarn($"持久化任务记录失败: {ex.Message}");
         }
     }
 
@@ -568,10 +634,16 @@ public partial class BBDownApiServer
                 TrimFinishedTasksLocked();
             }
             Logger.LogDebug("已恢复 {0} 条历史任务记录", loaded.Count);
+            // 在途任务不持久化：正常关停会在退出前等待在途任务收尾并落盘，
+            // 但进程被杀/断电等异常退出会让上次的排队/下载中任务永久丢失且无提示。
+            // 启动时给出提示，让运维知道哪些记录可能缺失。
+            Logger.LogWarn($"serve 重启：已恢复 {loaded.Count} 条历史任务记录；排队/下载中的在途任务不持久化，异常退出后不会恢复");
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
-            Logger.LogDebug("加载历史任务记录失败: {0}", ex.Message);
+            // 升 Warn：加载失败意味着上次的全部任务记录无法恢复（损坏/权限/磁盘故障），
+            // 此前仅 LogDebug（默认抑制）会让记录静默丢失。
+            Logger.LogWarn($"加载历史任务记录失败（记录可能丢失）: {ex.Message}");
         }
     }
 
@@ -599,6 +671,12 @@ public partial class BBDownApiServer
         // 携带 {"insecure":true} 即可让携带操作者 SESSDATA 的请求跳过 TLS 校验被中间人截获。
         // serve 强制启用 TLS 校验，忽略该字段。
         req.Insecure = false;
+        // ForceHttp 会把媒体 CDN 的 https 改写为明文 http（ReplaceUrl），而下载请求仍携带
+        // 操作者的 SESSDATA Cookie（BBDownDownloadUtil 的 Range/HEAD/GET 均带 Cookie）。
+        // 与 Insecure 同类威胁模型：任意客户端 POST /add-task 携带 {"forceHttp":true}
+        // 即可让携带凭据的媒体流量走明文，被同一链路上的中间人截获整账号凭据。
+        // serve 强制 https，忽略该字段。
+        req.ForceHttp = false;
         // UserAgent 现按异步流隔离（Config.Current.UserAgent，经 SetUpWork 写入）；
         // serve 下仍统一清零：客户端不能控制服务端出站请求的 UA 指纹。
         req.UserAgent = "";
@@ -623,9 +701,19 @@ public partial class BBDownApiServer
         req.CallBackWebHook = "";
 
         // 限制重试参数：客户端传入失控的重试次数或超长延迟会在共享并发槽内阻塞长达数十天，
-        // 占满并发槽并使服务瘫痪。将 API 任务重试次数限制在 [0, 3]，延迟限制在 [0, 5000]ms 内。
-        req.RetryCount = Math.Clamp(req.RetryCount, 0, 3);
+        // 占满并发槽并使服务瘫痪。将 API 任务重试次数限制在 [1, 3]，延迟限制在 [0, 5000]ms 内。
+        // 下限 1：显式传 0 会被 ValidateNumericOptions 的 --retry-count ≥ 1 判为非法任务 Failed，
+        // 与这里 Clamp(0,3) 矛盾（A4）——统一为 [1,3]，0 自动升为 1。
+        req.RetryCount = Math.Clamp(req.RetryCount, 1, 3);
         req.RetryDelay = Math.Clamp(req.RetryDelay, 0, 5000);
+
+        // 慢速 DoS 面：ValidateNumericOptions 的合法上界（MuxerTimeout 35000 分钟≈583h、
+        // DelayPerPage 600s/分P、ThreadSegmentSize 1024MB）允许 API 客户端用合法值占满
+        // 并发槽数小时、填满 accept 队列。serve 的受控环境收紧到实际使用范围：
+        // 混流最长 2 小时、分P 间隔最长 30s、分片最大 64MB。CLI 仍走完整 ValidateNumericOptions。
+        req.MuxerTimeout = Math.Clamp(req.MuxerTimeout, 1, 120);
+        req.DelayPerPage = Math.Clamp(req.DelayPerPage, 0, 30);
+        req.ThreadSegmentSize = Math.Clamp(req.ThreadSegmentSize, 1, 64);
 
         // Debug 字段若受客户端控制，任务失败时会将服务端完整异常堆栈暴露在 /get-tasks API 中。
         req.Debug = false;
@@ -707,7 +795,7 @@ public partial class BBDownApiServer
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
         if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
 
-        bool hostIsLiteralIp = IPAddress.TryParse(uri.Host, out var literalIp) && literalIp is not null;
+        bool hostIsLiteralIp = IPAddress.TryParse(uri.DnsSafeHost, out var literalIp) && literalIp is not null;
 
         if (hostIsLiteralIp)
         {
@@ -735,7 +823,11 @@ public partial class BBDownApiServer
             return true;
         }
 
-        var host = uri.Host;
+        // DnsSafeHost：IPv6 字面量不带方括号（uri.Host 对 [::1] 会带方括号，IPAddress.TryParse
+        // 必然失败 → 落到下方 DNS 分支被当成主机名解析，字面 IP 检查从未真正执行
+        //（测试假阳性）；且 Dns.GetHostAddressesAsync("[::1]") 解析失败会把管理员配置的
+        // 公网 IPv6 webhook 永久判为不合法，与 SendCallbackAsync（已用 DnsSafeHost）矛盾。
+        var host = uri.DnsSafeHost;
         if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return false;
         // 域名回调的 DNS 重绑定缺口：攻击者注册解析到 169.254.169.254 / 内网地址的域名
         // （如 metadata.google.internal），仅比对字符串会放行，任务完成时 HttpClient 才解析 DNS。
@@ -1135,7 +1227,8 @@ public partial class BBDownApiServer
             using var resp = await client.PostAsync(webhook, content);
             if (!resp.IsSuccessStatusCode)
             {
-                Logger.LogDebug($"回调返回 HTTP {(int)resp.StatusCode}: {webhook}");
+                // 升 Warn：回调失败意味着通知静默丢失，此前仅 LogDebug（默认抑制）无痕。
+                Logger.LogWarn($"回调返回 HTTP {(int)resp.StatusCode}: {webhook}");
             }
         }
         // TaskCanceledException 也要接住：回调 HttpClient.Timeout（2 分钟）触发时抛它且
@@ -1143,7 +1236,8 @@ public partial class BBDownApiServer
         // 对一个已成功且已持久化的任务打印误导性的"任务异常终止"。
         catch (Exception e) when (e is HttpRequestException or UriFormatException or InvalidOperationException or SocketException or TaskCanceledException)
         {
-            Logger.LogDebug("回调失败: {0}", e.Message);
+            // 升 Warn：回调失败意味着通知静默丢失（任务本身已成功），需可观测。
+            Logger.LogWarn($"回调失败: {e.Message}");
         }
     }
 
@@ -1320,7 +1414,7 @@ record struct MyOptionBindingResult<T>(T? Result, Exception? Exception)
             // Content-Length 超限直接 413；无 Content-Length（chunked）时读满上限即止。
             if (httpContext.Request.ContentLength is > MaxRequestBodyBytes)
             {
-                return new(default, new InvalidOperationException("请求体过大"));
+                return new(default, new RequestBodyTooLargeException());
             }
             using var ms = new MemoryStream();
             var buffer = new byte[4096];
@@ -1332,7 +1426,7 @@ record struct MyOptionBindingResult<T>(T? Result, Exception? Exception)
                 total += read;
                 if (total > MaxRequestBodyBytes)
                 {
-                    return new(default, new InvalidOperationException("请求体过大"));
+                    return new(default, new RequestBodyTooLargeException());
                 }
                 ms.Write(buffer, 0, read);
             }
@@ -1343,7 +1437,7 @@ record struct MyOptionBindingResult<T>(T? Result, Exception? Exception)
 
             return new((T)item, null);
         }
-        catch (Exception ex) when (ex is JsonException or NotSupportedException or InvalidOperationException)
+        catch (Exception ex) when (ex is RequestBodyTooLargeException or JsonException or NotSupportedException or InvalidOperationException)
         {
             return new(default, ex);
         }
@@ -1351,6 +1445,14 @@ record struct MyOptionBindingResult<T>(T? Result, Exception? Exception)
 
     /// <summary>/add-task 请求体大小上限：合法负载远小于此值，超限即拒。</summary>
     private const long MaxRequestBodyBytes = 64 * 1024;
+}
+
+/// <summary>请求体超过 <see cref="MyOptionBindingResult{T}.MaxRequestBodyBytes"/> 的专用异常：
+/// /add-task 处理器据此返回 413（与普通 JSON 语法错误的 400 区分）。
+/// 定义在顶层：绑定器（MyOptionBindingResult）与处理器（BBDownApiServer）都要引用它。</summary>
+internal sealed class RequestBodyTooLargeException : InvalidOperationException
+{
+    public RequestBodyTooLargeException() : base("请求体过大") { }
 }
 
 [JsonSerializable(typeof(ProblemDetails))]
