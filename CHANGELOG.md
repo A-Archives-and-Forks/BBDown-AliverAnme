@@ -2,6 +2,24 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.16] - 2026-08-19
+
+### 修复
+
+- **带字幕/副音轨视频混流必失败**：`-metadata:s:s:N`/`-metadata:s:a:N`/`-disposition` 等 ffmpeg 输出选项原紧跟在各自 `-i <输入>` 之后被当作输入选项——旧版 ffmpeg 直接报 `Option ... cannot be applied to input url ...srt` 导致带 CC 字幕/多音轨视频合并必失败，新版则静默丢失 stream 元数据（字幕标题等写不进输出流）。现统一收集到 `outputArgs` 在全部 `-i`/`-map` 完成后追加，并新增单元（输出选项必须位于最后 `-i` 之后）与真实 ffmpeg/ffprobe 集成（字幕 language 写入验证）回归测试。
+- **`--comments` 评论永远保存失败**：评论在混流（MuxAV 才创建输出目录）之前保存，目标父目录不存在时 `DirectoryNotFoundException` 被降级吞掉。`SaveToJsonAsync` 保存前自动创建父目录（保存函数自包含），并补父目录缺失场景回归测试。
+
+### 改进
+
+- **`article`/`live` 子命令支持 `--work-dir`**：默认输出路径（专栏 Markdown / 直播录制与 `.segs` 分段）落到指定工作目录；用纯函数 `ResolveWorkDir` 解析（仅展开环境变量+建目录），不切进程 CWD、无全局副作用。
+- **单选分 P 命名修正**：保存路径模板改按【实际下载分 P 数】决策——`-p` 单选 1 集时即使视频总 P>1 也走单 P 模板（`-F` 生效、产物不再带 `[P##]` 前缀）；番剧未完结仍固定按多 P 处理。
+- **弹幕/评论文档与帮助文本**：`--download-danmaku-formats` 注明仅支持 `xml,ass`；`--danmaku-filter` 注明仅作用于 ASS 弹幕（XML 保留原始全量）；`--comments` 注明仅在第 1 个分 P 下载一次（视频级防重复）；README 同步补充。
+- **审查收尾**：抽出 `Program.ResolveWorkDir` 纯函数消除 article/live 的进程 CWD 副作用，并澄清 Workflow 中仅保留 API 形状的冗余赋值。
+
+### 测试增强
+
+- 全库测试 629 例（新增 7 例）：路径模板决策（单/多 P、番剧、-F/-M 组合）、混流出选项位置全场景（主+2 副音轨+封面+2 字幕）、真实 ffmpeg 带字幕混流后字幕 language 经 ffprobe 验证写入、评论父目录缺失自动创建等。
+
 ## [1.6.15] - 2026-08-19
 
 ### 修复与安全性加固
@@ -336,7 +354,8 @@
 
 ---
 
-[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.6.15...HEAD
+[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.6.16...HEAD
+[1.6.16]: https://github.com/AliverAnme/BBDown/compare/v1.6.15...v1.6.16
 [1.6.15]: https://github.com/AliverAnme/BBDown/compare/v1.6.14...v1.6.15
 [1.6.14]: https://github.com/AliverAnme/BBDown/compare/v1.6.13...v1.6.14
 [1.6.13]: https://github.com/AliverAnme/BBDown/compare/v1.6.12...v1.6.13
