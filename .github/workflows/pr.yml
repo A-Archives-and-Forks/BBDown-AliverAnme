@@ -21,7 +21,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
-          cache: true
 
       - name: Restore
         run: dotnet restore BBDown.sln
@@ -43,7 +42,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
-          cache: true
 
       - name: Restore
         run: dotnet restore BBDown.sln
@@ -65,7 +63,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
-          cache: true
 
       - name: Restore
         run: dotnet restore BBDown.sln
@@ -85,7 +82,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
-          cache: true
 
       - name: Install ffmpeg
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -111,7 +107,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
-          cache: true
 
       - name: Restore
         run: dotnet restore BBDown.sln
@@ -145,7 +140,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
-          cache: true
 
       - name: Restore
         run: dotnet restore BBDown/BBDown.csproj -r linux-x64

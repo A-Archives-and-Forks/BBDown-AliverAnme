@@ -25,7 +25,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
-          cache: true
 
       - name: Install ffmpeg (for LocalIntegration gate)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -45,7 +44,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
-          cache: true
 
       - name: Install zip
         run: choco install zip --no-progress --yes
@@ -151,7 +149,6 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
-          cache: true
 
       - name: Publish [osx-x64]
         run: dotnet publish BBDown -r osx-x64 -c Release -o artifact-osx-x64
