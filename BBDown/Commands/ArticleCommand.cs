@@ -38,7 +38,8 @@ public class ArticleCommand : Command<ArticleSettings>
                 var article = await ArticleUtil.FetchAsync(cvId, cancellationToken);
                 // 专栏默认输出目录尊重 --work-dir（与主下载命令一致）；
                 // 显式 --output 为绝对路径时不受影响（Path.Combine 对已根化第二参数直接透传）。
-                string workDir = Program.ChangeWorkingDir(new MyOption { WorkDir = settings.WorkDir });
+                // 用纯函数 ResolveWorkDir：仅解析/建目录，不切进程 CWD（无全局副作用）。
+                string workDir = Program.ResolveWorkDir(settings.WorkDir);
                 string path = settings.Output ?? Path.Combine(workDir, $"{LiveStreamUtil.SanitizeFileName(article.Title)}.md");
                 await ArticleUtil.SaveAsMarkdownAsync(article, path);
                 Logger.Log($"专栏已保存: {path}");

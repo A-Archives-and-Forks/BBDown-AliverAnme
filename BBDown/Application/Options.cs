@@ -280,24 +280,32 @@ internal partial class Program
     /// <param name="myOption"></param>
     internal static string ChangeWorkingDir(MyOption myOption)
     {
-        if (!string.IsNullOrEmpty(myOption.WorkDir))
+        var dir = ResolveWorkDir(myOption.WorkDir);
+        if (dir != "")
         {
-            //解释环境变量
-            myOption.WorkDir = Environment.ExpandEnvironmentVariables(myOption.WorkDir);
-            var dir = Path.GetFullPath(myOption.WorkDir);
-            if (!Directory.Exists(dir))
-            {
-                Directory.CreateDirectory(dir);
-            }
             // CLI 单任务模式仍写进程 CWD：ffmpeg/aria2c 等子进程与外部工具按相对路径
             // 解析时依赖进程 CWD，单任务场景无并发污染问题，保留既有行为。
             // serve 模式绝不写进程 CWD——并发任务各自的 --work-dir 不能互相覆盖进程级状态，
             // 相对路径由 PathUtil.ResolveWorkPath 基于各任务流配置里的 WorkDir 解析。
             if (!IsServeMode) Environment.CurrentDirectory = dir;
             Logger.LogDebug("切换工作目录至：{0}", dir);
-            return dir;
         }
-        return "";
+        return dir;
+    }
+
+    /// <summary>
+    /// 解析工作目录为绝对目录（展开环境变量、必要时创建目录）；未设置返回空串。
+    /// 纯函数：不切换进程 CWD，供 article/live 等不依赖 CWD 的简单命令
+    /// （默认输出路径已用绝对目录拼接，见 ArticleCommand/LiveCommand）把默认
+    /// 输出落到该目录，避免引入进程级全局状态副作用。
+    /// </summary>
+    internal static string ResolveWorkDir(string workDir)
+    {
+        if (string.IsNullOrEmpty(workDir)) return "";
+        workDir = Environment.ExpandEnvironmentVariables(workDir);
+        var dir = Path.GetFullPath(workDir);
+        if (!Directory.Exists(dir)) Directory.CreateDirectory(dir);
+        return dir;
     }
 
     /// <summary>

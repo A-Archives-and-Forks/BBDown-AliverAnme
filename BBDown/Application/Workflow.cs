@@ -41,6 +41,9 @@ internal partial class Program
         BBDownDanmakuFormat[] downloadDanmakuFormats = ParseDownloadDanmakuFormats(myOption);
 
         string input = myOption.Url;
+        // 此处 savePathFormat 仅是透传给 DownloadPagesAsync 的冗余输入——入口内部
+        //（Download.cs 的 ResolveSavePathFormat）会基于 myOption.FilePattern/MultiFilePattern
+        // 与【实际下载的分P数】统一重算（含单选1P走单P模板等语义），本行赋值仅保证 API 形状。
         string savePathFormat = myOption.FilePattern;
         string lang = myOption.Language;
         string aidOri = ""; // 用户输入的原始资源标识（URL/BV/av 等解析前的形态），
