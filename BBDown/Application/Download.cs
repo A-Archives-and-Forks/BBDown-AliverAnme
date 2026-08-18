@@ -347,707 +347,707 @@ internal partial class Program
         int maxRetry = myOption.RetryCount;
         try
         {
-        while (retryCount < maxRetry)
-        {
-            try
+            while (retryCount < maxRetry)
             {
-                Logger.LogDebug("尝试获取章节信息...");
-                p.points = await BBDownUtil.FetchPointsAsync(p.cid, p.aid, cancellationToken);
-
-                // 工作区路径（分P 的 aid 目录）统一基于任务流工作目录解析为绝对路径：
-                // serve 下不写进程 CWD，相对路径必须经 PathUtil.ResolveWorkPath 落到
-                // Config.Current.WorkDir，否则并发任务各自 --work-dir 的文件会互相错位。
-                string videoPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.mp4");
-                string audioPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.m4a");
-                var coverPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.jpg");
-
-                //处理文件夹以.结尾导致的异常情况
-                if (title.EndsWith('.')) title += "_fix";
-                //处理文件夹以.开头导致的异常情况
-                if (title.StartsWith('.')) title = "_" + title;
-
-                //处理封面&&字幕
-                if (!myOption.OnlyShowInfo)
+                try
                 {
-                    var workAidDir = PathUtil.ResolveWorkPath(p.aid);
-                    if (!Directory.Exists(workAidDir))
-                    {
-                        Directory.CreateDirectory(workAidDir);
-                    }
-                    if (!myOption.SkipCover && !myOption.SubOnly && !File.Exists(coverPath) && !myOption.DanmakuOnly && !myOption.CoverOnly)
-                    {
-                        // 封面是装饰性资源：下载失败只降级为警告，不应进入页面重试循环
-                        // 拖垮整批下载（与下方评论/webhook 的"非关键副作用降级"一致）。
-                        try
-                        {
-                            await BBDownDownloadUtil.DownloadFileAsync(pic == "" ? p.cover! : pic, coverPath, new BBDownDownloadUtil.DownloadConfig(), cancellationToken);
-                        }
-                        catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
-                        {
-                            // 真正的取消（token 已取消）必须向上传播中止下载，不能当"封面失败（已跳过）"
-                            // 吞掉后继续执行字幕等无可取消的网络调用。HttpClient 超时抛的
-                            // TaskCanceledException 其 token 未取消，仍按封面降级处理。
-                            if (cancellationToken.IsCancellationRequested) throw;
-                            Logger.LogWarn($"封面下载失败（已跳过）: {ex.Message}");
-                        }
-                    }
+                    Logger.LogDebug("尝试获取章节信息...");
+                    p.points = await BBDownUtil.FetchPointsAsync(p.cid, p.aid, cancellationToken);
 
-                    if (!myOption.SkipSubtitle && !myOption.DanmakuOnly && !myOption.CoverOnly)
+                    // 工作区路径（分P 的 aid 目录）统一基于任务流工作目录解析为绝对路径：
+                    // serve 下不写进程 CWD，相对路径必须经 PathUtil.ResolveWorkPath 落到
+                    // Config.Current.WorkDir，否则并发任务各自 --work-dir 的文件会互相错位。
+                    string videoPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.mp4");
+                    string audioPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.m4a");
+                    var coverPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.jpg");
+
+                    //处理文件夹以.结尾导致的异常情况
+                    if (title.EndsWith('.')) title += "_fix";
+                    //处理文件夹以.开头导致的异常情况
+                    if (title.StartsWith('.')) title = "_" + title;
+
+                    //处理封面&&字幕
+                    if (!myOption.OnlyShowInfo)
                     {
-                        Logger.LogDebug("获取字幕...");
-                        subtitleInfo = await SubUtil.GetSubtitlesAsync(p.aid, p.cid, p.epid, p.index, myOption.UseIntlApi, cancellationToken);
-                        if (myOption.SkipAi && subtitleInfo.Any())
+                        var workAidDir = PathUtil.ResolveWorkPath(p.aid);
+                        if (!Directory.Exists(workAidDir))
                         {
-                            Logger.Log($"跳过下载AI字幕");
-                            subtitleInfo = subtitleInfo.Where(s => !s.lan.StartsWith("ai-")).ToList();
+                            Directory.CreateDirectory(workAidDir);
                         }
-                        var downloadedSubtitles = new List<Subtitle>();
-                        foreach (Subtitle s in subtitleInfo)
+                        if (!myOption.SkipCover && !myOption.SubOnly && !File.Exists(coverPath) && !myOption.DanmakuOnly && !myOption.CoverOnly)
                         {
-                            Logger.Log($"下载字幕 {s.lan} => {SubUtil.GetSubtitleCode(s.lan).Item2}...");
-                            Logger.LogDebug("下载：{0}", s.url);
-                            // 字幕是装饰性资源：任何下载失败（含过期签名 URL 返回 200+HTML
-                            // 风控页）只降级为警告并跳过该条，绝不进入页面级重试或中止整批。
-                            // SubOnly 模式下字幕是唯一产物，失败应抛出交由页面级重试恢复。
-                            if (!await TryDownloadSubtitleAsync(s, cancellationToken, degradeOnFailure: !myOption.SubOnly))
-                                continue;
-                            downloadedSubtitles.Add(s);
-                            if (myOption.SubOnly && File.Exists(s.path) && File.ReadAllText(s.path) != "")
+                            // 封面是装饰性资源：下载失败只降级为警告，不应进入页面重试循环
+                            // 拖垮整批下载（与下方评论/webhook 的"非关键副作用降级"一致）。
+                            try
                             {
-                                var _outSubPath = PathUtil.ResolveWorkPath(FormatSavePath(savePathFormat, title, null, null, p, pagesCount, apiType, pubTime));
-                                var dir = Path.GetDirectoryName(_outSubPath);
-                                if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
-                                    Directory.CreateDirectory(dir);
-                                _outSubPath = Path.ChangeExtension(_outSubPath, $".{s.lan}.srt");
-                                File.Move(s.path, _outSubPath, true);
-                                // 记录最终产物：SubOnly 提前返回不经过下方统一 AddSavePath，
-                                // 若这里不记录，serve API 的成功响应里产物列表会缺字幕文件。
-                                relatedTask?.AddSavePath(_outSubPath);
-                                anyProductProduced = true;
+                                await BBDownDownloadUtil.DownloadFileAsync(pic == "" ? p.cover! : pic, coverPath, new BBDownDownloadUtil.DownloadConfig(), cancellationToken);
                             }
-                        }
-                        // 只把成功落盘的字幕交给混流/清理：失败的字幕不参与，避免 mux 嵌入
-                        // 不存在的文件或按不存在的路径清理。
-                        subtitleInfo = downloadedSubtitles;
-                    }
-
-                    if (myOption.SubOnly)
-                    {
-                        if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0) Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
-                        // SubOnly 但没有任何字幕生成（视频无字幕/全部跳过）→ 零产物成功。
-                        // 必须返回 false，避免 CLI 报成功、serve 标记 Succeeded、SavePaths 为空。
-                        if (!anyProductProduced)
-                        {
-                            Logger.LogWarn("SubOnly 模式未生成任何字幕文件");
-                            return false;
-                        }
-                        return true;
-                    }
-                }
-
-                //调用解析
-                ParsedResult parsedResult = await Parser.ExtractTracksAsync(aidOri, p.aid, p.cid, p.epid, myOption.UseTvApi, myOption.UseIntlApi, myOption.UseAppApi, firstEncoding!, myOption.DecryptDrm, token: cancellationToken);
-                List<AudioMaterial> audioMaterial = [];
-                if (!p.points.Any())
-                {
-                    p.points = parsedResult.ExtraPoints;
-                }
-
-                // 充电专属视频：接口对无权限身份照常返回 code=0 且谎报完整时长，
-                // 只把完整流悄悄换成试看片段。必须在开始下载前拦下，
-                // 否则会产出一个被报告为"下载成功"的残片。
-                var previewVerdict = UpowerGuard.Inspect(
-                    vInfo.IsUpowerExclusive, vInfo.IsUpowerPlay, p.dur, parsedResult.ActualDurationSec);
-                if (previewVerdict.IsPreview)
-                {
-                    Logger.LogWarn("========================================");
-                    Logger.LogWarn("  充电专属视频");
-                    Logger.LogWarn($"  {previewVerdict.Reason}");
-                    if (!myOption.AllowPreview && !myOption.OnlyShowInfo)
-                    {
-                        Logger.LogWarn("  已跳过。如需下载试看片段，请加 --allow-preview");
-                        Logger.LogWarn("========================================");
-                        return false;
-                    }
-                    if (myOption.OnlyShowInfo)
-                    {
-                        // 仅解析模式不落盘，放行但要说清下面列出的流属于试看片段
-                        Logger.LogWarn("  仅解析模式，以下流信息对应的是试看片段");
-                        Logger.LogWarn("========================================");
-                    }
-                    else
-                    {
-                        Logger.LogWarn("  已启用 --allow-preview，将下载试看片段");
-                        Logger.LogWarn("========================================");
-
-                        // 标记在标题上而非拼接到最终路径：<videoTitle> 是所有产物(视频/封面/弹幕)
-                        // 共用的占位符，改这里能一次覆盖 dash 与 flv 两条保存路径，
-                        // 也不会破坏用户自定义的 --file-pattern。
-                        if (!title.StartsWith("[试看]"))
-                            title = $"[试看]{title}";
-                    }
-                }
-
-                if (Config.Current.DebugLog)
-                {
-                    // debug 文件也落在任务工作目录：serve 下各任务的调试输出互不混杂
-                    var debugFile = PathUtil.ResolveWorkPath($"debug_{DateTime.Now:yyyyMMddHHmmssfff}.json");
-                    File.WriteAllText(debugFile, parsedResult.WebJsonString);
-                    // 限制 debug 文件数量，保留最近 20 个
-                    var debugFiles = Directory.GetFiles(PathUtil.ResolveWorkPath("."), "debug_*.json").Order().ToArray();
-                    for (int i = 0; i < debugFiles.Length - 20; i++)
-                        File.Delete(debugFiles[i]);
-                }
-
-                var savePath = "";
-
-                var downloadConfig = new BBDownDownloadUtil.DownloadConfig()
-                {
-                    UseAria2c = myOption.UseAria2c,
-                    Aria2cArgs = myOption.Aria2cArgs,
-                    ForceHttp = myOption.ForceHttp,
-                    MultiThread = myOption.MultiThread,
-                    RelatedTask = relatedTask,
-                };
-
-                //此处代码简直灾难, 后续优化吧
-                if ((parsedResult.VideoTracks.Any() || parsedResult.AudioTracks.Any()) && !parsedResult.Clips.Any())   //dash
-                {
-                    if (parsedResult.VideoTracks.Count == 0)
-                    {
-                        Logger.LogWarn("没有找到符合要求的视频流");
-                        // VideoOnly 但没有任何视频流 → 零产物：返回 false 而非假成功
-                        if (myOption.VideoOnly) return false;
-                    }
-                    if (parsedResult.AudioTracks.Count == 0)
-                    {
-                        Logger.LogWarn("没有找到符合要求的音频流");
-                        // AudioOnly 但没有任何音频流 → 零产物：返回 false 而非假成功
-                        if (myOption.AudioOnly) return false;
-                    }
-
-                    if (myOption.AudioOnly)
-                    {
-                        parsedResult.VideoTracks.Clear();
-                    }
-                    if (myOption.VideoOnly)
-                    {
-                        parsedResult.AudioTracks.Clear();
-                        parsedResult.BackgroundAudioTracks.Clear();
-                        parsedResult.RoleAudioList.Clear();
-                    }
-
-                    //排序
-                    parsedResult.VideoTracks = SortTracks(parsedResult.VideoTracks, dfnPriority, encodingPriority, myOption.VideoAscending);
-                    parsedResult.AudioTracks = SortTracks(parsedResult.AudioTracks, encodingPriority, myOption.AudioAscending);
-                    parsedResult.BackgroundAudioTracks = SortTracks(parsedResult.BackgroundAudioTracks, encodingPriority, myOption.AudioAscending);
-                    foreach (var role in parsedResult.RoleAudioList)
-                    {
-                        role.audio = SortTracks(role.audio, encodingPriority, myOption.AudioAscending);
-                    }
-
-                    //打印轨道信息
-                    if (!myOption.HideStreams)
-                    {
-                        PrintAllTracksInfo(parsedResult, p.dur, myOption.OnlyShowInfo);
-                    }
-
-                    //仅展示 跳过下载
-                    if (myOption.OnlyShowInfo)
-                    {
-                        return true;
-                    }
-
-                    int vIndex = 0; //用户手动选择的视频序号
-                    int aIndex = 0; //用户手动选择的音频序号
-
-                    //选择轨道
-                    if (myOption.Interactive && !selected)
-                    {
-                        SelectTrackManually(parsedResult, ref vIndex, ref aIndex);
-                        selected = true;
-                    }
-
-                    Video? selectedVideo = parsedResult.VideoTracks.ElementAtOrDefault(vIndex);
-                    Audio? selectedAudio = parsedResult.AudioTracks.ElementAtOrDefault(aIndex);
-                    Audio? selectedBackgroundAudio = parsedResult.BackgroundAudioTracks.ElementAtOrDefault(aIndex);
-
-                    Logger.LogDebug("Format Before: " + savePathFormat);
-                    savePath = PathUtil.ResolveWorkPath(FormatSavePath(savePathFormat, title, selectedVideo, selectedAudio, p, pagesCount, apiType, pubTime));
-                    Logger.LogDebug("Format After: " + savePath);
-
-                    if (downloadDanmaku)
-                    {
-                        var danmakuXmlPath = Path.ChangeExtension(savePath, ".xml");
-                        var danmakuAssPath = Path.ChangeExtension(savePath, ".ass");
-                        Logger.Log("正在下载弹幕Xml文件");
-                        var danmakuUrl = $"https://comment.bilibili.com/{p.cid}.xml";
-                        await BBDownDownloadUtil.DownloadFileAsync(danmakuUrl, danmakuXmlPath, downloadConfig, cancellationToken);
-                        var danmakus = DanmakuUtil.ParseXml(danmakuXmlPath);
-                        if (danmakus == null)
-                        {
-                            Logger.Log("弹幕Xml解析失败, 删除Xml...");
-                            File.Delete(danmakuXmlPath);
-                        }
-                        else if (danmakus.Length == 0)
-                        {
-                            Logger.Log("当前视频没有弹幕, 删除Xml...");
-                            File.Delete(danmakuXmlPath);
-                        }
-                        else if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass))
-                        {
-                            var filtered = DanmakuUtil.Filter(danmakus, myOption.DanmakuFilter, myOption.DanmakuFilterUser);
-                            if (filtered.Length == 0)
+                            catch (Exception ex) when (ex is HttpRequestException or IOException or TaskCanceledException)
                             {
-                                Logger.Log("过滤后没有剩余弹幕, 跳过Ass保存");
-                            }
-                            else
-                            {
-                                Logger.Log($"正在保存弹幕Ass文件{(filtered.Length < danmakus.Length ? $"(过滤掉 {danmakus.Length - filtered.Length} 条)" : "")}...");
-                                await DanmakuUtil.SaveAsAssAsync(filtered, danmakuAssPath);
+                                // 真正的取消（token 已取消）必须向上传播中止下载，不能当"封面失败（已跳过）"
+                                // 吞掉后继续执行字幕等无可取消的网络调用。HttpClient 超时抛的
+                                // TaskCanceledException 其 token 未取消，仍按封面降级处理。
+                                if (cancellationToken.IsCancellationRequested) throw;
+                                Logger.LogWarn($"封面下载失败（已跳过）: {ex.Message}");
                             }
                         }
 
-                        // delete xml if possible
-                        if (!downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                        if (!myOption.SkipSubtitle && !myOption.DanmakuOnly && !myOption.CoverOnly)
                         {
-                            File.Delete(danmakuXmlPath);
+                            Logger.LogDebug("获取字幕...");
+                            subtitleInfo = await SubUtil.GetSubtitlesAsync(p.aid, p.cid, p.epid, p.index, myOption.UseIntlApi, cancellationToken);
+                            if (myOption.SkipAi && subtitleInfo.Any())
+                            {
+                                Logger.Log($"跳过下载AI字幕");
+                                subtitleInfo = subtitleInfo.Where(s => !s.lan.StartsWith("ai-")).ToList();
+                            }
+                            var downloadedSubtitles = new List<Subtitle>();
+                            foreach (Subtitle s in subtitleInfo)
+                            {
+                                Logger.Log($"下载字幕 {s.lan} => {SubUtil.GetSubtitleCode(s.lan).Item2}...");
+                                Logger.LogDebug("下载：{0}", s.url);
+                                // 字幕是装饰性资源：任何下载失败（含过期签名 URL 返回 200+HTML
+                                // 风控页）只降级为警告并跳过该条，绝不进入页面级重试或中止整批。
+                                // SubOnly 模式下字幕是唯一产物，失败应抛出交由页面级重试恢复。
+                                if (!await TryDownloadSubtitleAsync(s, cancellationToken, degradeOnFailure: !myOption.SubOnly))
+                                    continue;
+                                downloadedSubtitles.Add(s);
+                                if (myOption.SubOnly && File.Exists(s.path) && File.ReadAllText(s.path) != "")
+                                {
+                                    var _outSubPath = PathUtil.ResolveWorkPath(FormatSavePath(savePathFormat, title, null, null, p, pagesCount, apiType, pubTime));
+                                    var dir = Path.GetDirectoryName(_outSubPath);
+                                    if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+                                        Directory.CreateDirectory(dir);
+                                    _outSubPath = Path.ChangeExtension(_outSubPath, $".{s.lan}.srt");
+                                    File.Move(s.path, _outSubPath, true);
+                                    // 记录最终产物：SubOnly 提前返回不经过下方统一 AddSavePath，
+                                    // 若这里不记录，serve API 的成功响应里产物列表会缺字幕文件。
+                                    relatedTask?.AddSavePath(_outSubPath);
+                                    anyProductProduced = true;
+                                }
+                            }
+                            // 只把成功落盘的字幕交给混流/清理：失败的字幕不参与，避免 mux 嵌入
+                            // 不存在的文件或按不存在的路径清理。
+                            subtitleInfo = downloadedSubtitles;
                         }
 
-                        if (myOption.DanmakuOnly)
+                        if (myOption.SubOnly)
                         {
-                            // 记录最终产物：DanmakuOnly 提前返回不经过下方统一 AddSavePath，
-                            // 若这里不记录，serve API 的成功响应里产物列表会缺弹幕文件。
-                            bool danmakuProduced = false;
-                            if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0) Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
+                            // SubOnly 但没有任何字幕生成（视频无字幕/全部跳过）→ 零产物成功。
+                            // 必须返回 false，避免 CLI 报成功、serve 标记 Succeeded、SavePaths 为空。
+                            if (!anyProductProduced)
                             {
-                                relatedTask?.AddSavePath(danmakuXmlPath);
-                                danmakuProduced = true;
-                            }
-                            if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass) && File.Exists(danmakuAssPath))
-                            {
-                                relatedTask?.AddSavePath(danmakuAssPath);
-                                danmakuProduced = true;
-                            }
-                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
-                            {
-                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
-                            }
-                            // DanmakuOnly 但没有任何有效弹幕文件（解析失败/为空/过滤后为空被删除）
-                            // → 零产物：返回 false 而非假成功
-                            if (!danmakuProduced)
-                            {
-                                Logger.LogWarn("DanmakuOnly 模式未生成任何弹幕文件");
+                                Logger.LogWarn("SubOnly 模式未生成任何字幕文件");
                                 return false;
                             }
                             return true;
                         }
                     }
 
-                    if (myOption.CoverOnly)
+                    //调用解析
+                    ParsedResult parsedResult = await Parser.ExtractTracksAsync(aidOri, p.aid, p.cid, p.epid, myOption.UseTvApi, myOption.UseIntlApi, myOption.UseAppApi, firstEncoding!, myOption.DecryptDrm, token: cancellationToken);
+                    List<AudioMaterial> audioMaterial = [];
+                    if (!p.points.Any())
                     {
-                        // 仅下载封面：封面保存成功后必须立即 return，否则会继续执行下方
-                        // 轨道解析、视频/音频下载与混流——用户只要封面却白白下载完整视频。
-                        var coverUrl = pic == "" ? p.cover! : pic;
-                        // coverUrl 为空时 DownloadFileAsync 直接返回（不生成文件）：
-                        // 此时若仍 AddSavePath 并 return true，SavePaths 指向不存在的文件。
-                        // 无封面资源时明确失败，避免零产物成功。
-                        if (string.IsNullOrEmpty(coverUrl))
+                        p.points = parsedResult.ExtraPoints;
+                    }
+
+                    // 充电专属视频：接口对无权限身份照常返回 code=0 且谎报完整时长，
+                    // 只把完整流悄悄换成试看片段。必须在开始下载前拦下，
+                    // 否则会产出一个被报告为"下载成功"的残片。
+                    var previewVerdict = UpowerGuard.Inspect(
+                        vInfo.IsUpowerExclusive, vInfo.IsUpowerPlay, p.dur, parsedResult.ActualDurationSec);
+                    if (previewVerdict.IsPreview)
+                    {
+                        Logger.LogWarn("========================================");
+                        Logger.LogWarn("  充电专属视频");
+                        Logger.LogWarn($"  {previewVerdict.Reason}");
+                        if (!myOption.AllowPreview && !myOption.OnlyShowInfo)
                         {
-                            Logger.LogWarn("CoverOnly 模式无封面资源可下载");
+                            Logger.LogWarn("  已跳过。如需下载试看片段，请加 --allow-preview");
+                            Logger.LogWarn("========================================");
                             return false;
                         }
-                        var newCoverPath = Path.ChangeExtension(savePath, Path.GetExtension(coverUrl));
-                        await BBDownDownloadUtil.DownloadFileAsync(coverUrl, newCoverPath, downloadConfig, cancellationToken);
-                        if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0) Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
-                        relatedTask?.AddSavePath(newCoverPath);
-                        return true;
-                    }
-
-                    Logger.Log($"已选择的流:");
-                    PrintSelectedTrackInfo(selectedVideo, selectedAudio, p.dur);
-
-                    //用户开启了强制替换
-                    if (myOption.ForceReplaceHost && string.IsNullOrEmpty(myOption.UposHost))
-                    {
-                        myOption.UposHost = BACKUP_HOST;
-                    }
-
-                    //处理PCDN
-                    HandlePcdn(myOption, selectedVideo, selectedAudio);
-
-                    if (!myOption.OnlyShowInfo && File.Exists(savePath) && new FileInfo(savePath).Length != 0)
-                    {
-                        Logger.Log($"{savePath}已存在, 跳过下载...");
-                        relatedTask?.AddSavePath(savePath);
-                        File.Delete(coverPath);
-                        // 清理本次已下载但未被消费的装饰性文件（字幕/章节）：它们下载于
-                        // 跳过判定之前（GetSubtitlesAsync 在提取轨道前执行），若不清理，
-                        // 每次重跑已下载的视频都会残留字幕/章节文件，且 Directory 非空
-                        // 时 aid 目录也删不掉。与 flv 分支的跳过清理行为保持一致。
-                        foreach (var s in subtitleInfo)
-                        {
-                            try { if (File.Exists(s.path)) File.Delete(s.path); }
-                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-                        }
-                        try { if (File.Exists(Path.Combine(PathUtil.ResolveWorkPath(p.aid), "chapters"))) File.Delete(Path.Combine(PathUtil.ResolveWorkPath(p.aid), "chapters")); }
-                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
-                        if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
-                        {
-                            Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
-                        }
-                        return true;
-                    }
-
-                    if (selectedVideo != null)
-                    {
-                        //杜比视界, 若ffmpeg版本小于5.0, 使用mp4box封装
-                        if (selectedVideo.dfn == AppSettings.QualityMap["126"] && !myOption.UseMP4box && !ExternalToolHelper.CheckFFmpegDOVI())
-                        {
-                            Logger.LogWarn($"检测到杜比视界清晰度且您的ffmpeg版本小于5.0,将使用mp4box混流...");
-                            myOption.UseMP4box = true;
-                        }
-                        Logger.Log($"开始下载P{p.index}视频...");
-                        await DownloadTrackAsync(selectedVideo.baseUrl, videoPath, downloadConfig, video: true, cancellationToken);
-                    }
-
-                    if (selectedAudio != null)
-                    {
-                        Logger.Log($"开始下载P{p.index}音频...");
-                        await DownloadTrackAsync(selectedAudio.baseUrl, audioPath, downloadConfig, video: false, cancellationToken);
-                    }
-
-                    if (selectedBackgroundAudio != null)
-                    {
-                        var backgroundPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.{p.cid}.P{p.index}.back_ground.m4a");
-                        Logger.Log($"开始下载P{p.index}背景配音...");
-                        await DownloadTrackAsync(selectedBackgroundAudio.baseUrl, backgroundPath, downloadConfig, video: false, cancellationToken);
-                        audioMaterial.Add(new AudioMaterial("背景音频", "", backgroundPath));
-                    }
-
-                    if (parsedResult.RoleAudioList.Any())
-                    {
-                        foreach (var role in parsedResult.RoleAudioList)
-                        {
-                            // aIndex 只对 AudioTracks.Count 校验过，而每个 role 的 audio 是独立列表
-                            //（通常只有 1-2 个清晰度），主列表的序号可能越界。越界会抛
-                            // ArgumentOutOfRangeException 且不在下载重试的 catch 过滤内，直接中止整批。
-                            int roleIdx = ClampRoleAudioIndex(aIndex, role.audio.Count);
-                            if (roleIdx < 0) continue;
-                            var roleAudio = role.audio[roleIdx];
-                            Logger.Log($"开始下载P{p.index}配音[{role.title}]...");
-                            await DownloadTrackAsync(roleAudio.baseUrl, role.path, downloadConfig, video: false, cancellationToken);
-                            audioMaterial.Add(new AudioMaterial(role));
-                        }
-                    }
-
-                    Logger.Log($"下载P{p.index}完毕");
-
-                    if (myOption.DownloadComments && p.index == 1 && long.TryParse(p.aid, out var commentAid))
-                    {
-                        // 评论是附加功能：任何失败都只降级为警告，绝不能触发页面级重试
-                        // 或中止整批（页面级 try 会把评论异常误判为下载失败而重下已混流的视频）
-                        try
-                        {
-                            var commentsPath = Path.ChangeExtension(savePath, ".comments.json");
-                            Logger.Log("正在下载评论...");
-                            var commentPage = await CommentUtil.FetchAsync(commentAid, token: cancellationToken);
-                            await CommentUtil.SaveToJsonAsync(commentPage.Items, commentsPath);
-                            Logger.Log($"评论已保存: {commentsPath} ({commentPage.Items.Count} 条)");
-                            // 达到分页上限仍有更多评论：明确提示结果不完整，避免用户误以为已抓全
-                            if (commentPage.Truncated)
-                            {
-                                Logger.LogWarn($"评论数量达到抓取上限（{commentPage.Items.Count} 条），可能还有更多评论未导出");
-                            }
-                        }
-                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                        {
-                            // 用户取消：必须向上传播，不能当"评论失败已跳过"吞掉——
-                            // 否则取消信号丢失，后续 SkipMux 等分支仍返回成功。
-                            throw;
-                        }
-                        catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException
-                                                    or IOException or TaskCanceledException or KeyNotFoundException or FormatException)
-                        {
-                            Logger.LogWarn($"评论下载失败（已跳过）: {ex.Message}");
-                        }
-                    }
-
-                    if (parsedResult.IsDrm && myOption.DecryptDrm && (!string.IsNullOrEmpty(parsedResult.KidHex) || !string.IsNullOrEmpty(parsedResult.PsshBase64)))
-                    {
-                        await DecryptDrmAsync(parsedResult, videoPath, audioPath, myOption, cancellationToken);
-                    }
-
-                    if (!parsedResult.VideoTracks.Any()) videoPath = "";
-                    if (!parsedResult.AudioTracks.Any()) audioPath = "";
-                    if (myOption.SkipMux)
-                    {
-                        // 记录原始轨道产物：SkipMux 跳过混流，返回前若不记录 SavePaths，
-                        // serve API 的成功响应里产物列表会缺本次下载的裸音视频流。
-                        if (File.Exists(videoPath)) relatedTask?.AddSavePath(videoPath);
-                        if (File.Exists(audioPath)) relatedTask?.AddSavePath(audioPath);
-                        foreach (var a in audioMaterial) if (File.Exists(a.path)) relatedTask?.AddSavePath(a.path);
-                        return true;
-                    }
-                    Logger.Log($"开始合并音视频{(subtitleInfo.Any() ? "和字幕" : "")}...");
-                    if (myOption.AudioOnly)
-                        // 用 Path.ChangeExtension 而非 savePath[..^4] 魔法切片：虽然后者在
-                        // FormatSavePath 保证 .mp4 后缀下不会截错，但魔法 4 字符切片脆弱且
-                        // 难读；ChangeExtension 按真实扩展名替换，语义清晰更稳健。
-                        savePath = Path.ChangeExtension(savePath, ".m4a");
-
-                    var isHevc = selectedVideo?.codecs == "HEVC";
-                    // 最终路径独占锁：serve 下两个不同 Aid、相同标题的任务会解析出同一个
-                    // savePath（默认单文件模板是 <videoTitle>）。锁内完成"存在性判定 → 混流 →
-                    // 校验 → 清理"：即使两个任务都通过了上面的快速跳过判定并各自下载到临时路径，
-                    // 到锁内这一步时若文件已存在（另一个任务先写完），也会跳过而非覆盖。
-                    var muxOutcome = await BBDownDownloadUtil.RunWithPathLockAsync(savePath,
-                        () => MuxAndFinalizeAsync(myOption.UseMP4box, myOption, p, vInfo, selectedPagesInfo, parsedResult, desc, title, coverPath, lang, subtitleInfo, audioMaterial,
-                            videoPath, audioPath, savePath, isHevc, videoOnly: false, audioOnly: myOption.AudioOnly,
-                            bangumi, fastSkipChecked: true, relatedTask, cancellationToken),
-                        cancellationToken);
-                    if (muxOutcome == MuxOutcome.Failed)
-                    {
-                        Logger.LogError("合并失败"); return false;
-                    }
-                }
-                else if (parsedResult.Clips.Any() && parsedResult.Dfns.Any())   //flv
-                {
-                    if (myOption.DecryptDrm)
-                    {
-                        Logger.LogError("此视频需要大会员登录才能获取完整DRM内容。");
-                        Logger.LogError($"请先运行: BBDown login  或使用 --cookie 参数");
-                        return false;
-                    }
-                    var clips = parsedResult.Clips;
-                    var dfns = parsedResult.Dfns;
-
-                    int vIndex = 0;
-                    if (myOption.Interactive && !selected)
-                    {
-                        int i = 0;
-                        dfns.ForEach(key => Logger.LogColor($"{i++}.{AppSettings.QualityMap[key]}"));
-                        Logger.Log("请选择最想要的清晰度(输入序号): ", false);
-                        Console.ForegroundColor = ConsoleColor.Cyan;
-                        vIndex = ReadIntSafe();
-                        // 下一行直接 dfns[vIndex]；用 > 会放过 vIndex==dfns.Count 而抛
-                        // ArgumentOutOfRangeException（不在重试白名单里，整个下载中止）。必须 >=。
-                        if (vIndex >= dfns.Count || vIndex < 0) vIndex = 0;
-                        Console.ResetColor();
-                        //重新解析
-                        parsedResult = await Parser.ExtractTracksAsync(aidOri, p.aid, p.cid, p.epid, myOption.UseTvApi, myOption.UseIntlApi, myOption.UseAppApi, firstEncoding!, myOption.DecryptDrm, dfns[vIndex], cancellationToken);
-                        if (!p.points.Any()) p.points = parsedResult.ExtraPoints;
-                        selected = true;
-                        vIndex = 0; // 重新解析后第一个轨道即为所选清晰度
-                    }
-                    //排序
-                    parsedResult.VideoTracks = SortTracks(parsedResult.VideoTracks, dfnPriority, encodingPriority, myOption.VideoAscending);
-
-                    Logger.Log($"共计{parsedResult.VideoTracks.Count}条流(共有{clips.Count}个分段).");
-                    int index = 0;
-                    foreach (var v in parsedResult.VideoTracks)
-                    {
-                        var kbps = v.dur > 0 ? v.size / 1024 / v.dur * 8 : 0;
-                        Logger.LogColor($"{index++}. [{v.dfn}] [{v.res}] [{v.codecs}] [{v.fps}] [~{kbps:00} kbps] [{BBDownUtil.FormatFileSize(v.size)}]".Replace("[] ", ""), false);
                         if (myOption.OnlyShowInfo)
                         {
-                            clips.ForEach(Console.WriteLine);
+                            // 仅解析模式不落盘，放行但要说清下面列出的流属于试看片段
+                            Logger.LogWarn("  仅解析模式，以下流信息对应的是试看片段");
+                            Logger.LogWarn("========================================");
+                        }
+                        else
+                        {
+                            Logger.LogWarn("  已启用 --allow-preview，将下载试看片段");
+                            Logger.LogWarn("========================================");
+
+                            // 标记在标题上而非拼接到最终路径：<videoTitle> 是所有产物(视频/封面/弹幕)
+                            // 共用的占位符，改这里能一次覆盖 dash 与 flv 两条保存路径，
+                            // 也不会破坏用户自定义的 --file-pattern。
+                            if (!title.StartsWith("[试看]"))
+                                title = $"[试看]{title}";
                         }
                     }
-                    if (myOption.OnlyShowInfo) return true;
-                    savePath = PathUtil.ResolveWorkPath(FormatSavePath(savePathFormat, title, parsedResult.VideoTracks.ElementAtOrDefault(vIndex), null, p, pagesCount, apiType, pubTime));
 
-                    if (downloadDanmaku)
+                    if (Config.Current.DebugLog)
                     {
-                        var danmakuXmlPath = Path.ChangeExtension(savePath, ".xml");
-                        var danmakuAssPath = Path.ChangeExtension(savePath, ".ass");
-                        Logger.Log("正在下载弹幕Xml文件");
-                        var danmakuUrl = $"https://comment.bilibili.com/{p.cid}.xml";
-                        await BBDownDownloadUtil.DownloadFileAsync(danmakuUrl, danmakuXmlPath, downloadConfig, cancellationToken);
-                        var danmakus = DanmakuUtil.ParseXml(danmakuXmlPath);
-                        if (danmakus == null)
+                        // debug 文件也落在任务工作目录：serve 下各任务的调试输出互不混杂
+                        var debugFile = PathUtil.ResolveWorkPath($"debug_{DateTime.Now:yyyyMMddHHmmssfff}.json");
+                        File.WriteAllText(debugFile, parsedResult.WebJsonString);
+                        // 限制 debug 文件数量，保留最近 20 个
+                        var debugFiles = Directory.GetFiles(PathUtil.ResolveWorkPath("."), "debug_*.json").Order().ToArray();
+                        for (int i = 0; i < debugFiles.Length - 20; i++)
+                            File.Delete(debugFiles[i]);
+                    }
+
+                    var savePath = "";
+
+                    var downloadConfig = new BBDownDownloadUtil.DownloadConfig()
+                    {
+                        UseAria2c = myOption.UseAria2c,
+                        Aria2cArgs = myOption.Aria2cArgs,
+                        ForceHttp = myOption.ForceHttp,
+                        MultiThread = myOption.MultiThread,
+                        RelatedTask = relatedTask,
+                    };
+
+                    //此处代码简直灾难, 后续优化吧
+                    if ((parsedResult.VideoTracks.Any() || parsedResult.AudioTracks.Any()) && !parsedResult.Clips.Any())   //dash
+                    {
+                        if (parsedResult.VideoTracks.Count == 0)
                         {
-                            Logger.Log("弹幕Xml解析失败, 删除Xml...");
-                            File.Delete(danmakuXmlPath);
+                            Logger.LogWarn("没有找到符合要求的视频流");
+                            // VideoOnly 但没有任何视频流 → 零产物：返回 false 而非假成功
+                            if (myOption.VideoOnly) return false;
                         }
-                        else if (danmakus.Length == 0)
+                        if (parsedResult.AudioTracks.Count == 0)
                         {
-                            Logger.Log("当前视频没有弹幕, 删除Xml...");
-                            File.Delete(danmakuXmlPath);
+                            Logger.LogWarn("没有找到符合要求的音频流");
+                            // AudioOnly 但没有任何音频流 → 零产物：返回 false 而非假成功
+                            if (myOption.AudioOnly) return false;
                         }
-                        else if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass))
+
+                        if (myOption.AudioOnly)
                         {
-                            var filtered = DanmakuUtil.Filter(danmakus, myOption.DanmakuFilter, myOption.DanmakuFilterUser);
-                            if (filtered.Length == 0)
+                            parsedResult.VideoTracks.Clear();
+                        }
+                        if (myOption.VideoOnly)
+                        {
+                            parsedResult.AudioTracks.Clear();
+                            parsedResult.BackgroundAudioTracks.Clear();
+                            parsedResult.RoleAudioList.Clear();
+                        }
+
+                        //排序
+                        parsedResult.VideoTracks = SortTracks(parsedResult.VideoTracks, dfnPriority, encodingPriority, myOption.VideoAscending);
+                        parsedResult.AudioTracks = SortTracks(parsedResult.AudioTracks, encodingPriority, myOption.AudioAscending);
+                        parsedResult.BackgroundAudioTracks = SortTracks(parsedResult.BackgroundAudioTracks, encodingPriority, myOption.AudioAscending);
+                        foreach (var role in parsedResult.RoleAudioList)
+                        {
+                            role.audio = SortTracks(role.audio, encodingPriority, myOption.AudioAscending);
+                        }
+
+                        //打印轨道信息
+                        if (!myOption.HideStreams)
+                        {
+                            PrintAllTracksInfo(parsedResult, p.dur, myOption.OnlyShowInfo);
+                        }
+
+                        //仅展示 跳过下载
+                        if (myOption.OnlyShowInfo)
+                        {
+                            return true;
+                        }
+
+                        int vIndex = 0; //用户手动选择的视频序号
+                        int aIndex = 0; //用户手动选择的音频序号
+
+                        //选择轨道
+                        if (myOption.Interactive && !selected)
+                        {
+                            SelectTrackManually(parsedResult, ref vIndex, ref aIndex);
+                            selected = true;
+                        }
+
+                        Video? selectedVideo = parsedResult.VideoTracks.ElementAtOrDefault(vIndex);
+                        Audio? selectedAudio = parsedResult.AudioTracks.ElementAtOrDefault(aIndex);
+                        Audio? selectedBackgroundAudio = parsedResult.BackgroundAudioTracks.ElementAtOrDefault(aIndex);
+
+                        Logger.LogDebug("Format Before: " + savePathFormat);
+                        savePath = PathUtil.ResolveWorkPath(FormatSavePath(savePathFormat, title, selectedVideo, selectedAudio, p, pagesCount, apiType, pubTime));
+                        Logger.LogDebug("Format After: " + savePath);
+
+                        if (downloadDanmaku)
+                        {
+                            var danmakuXmlPath = Path.ChangeExtension(savePath, ".xml");
+                            var danmakuAssPath = Path.ChangeExtension(savePath, ".ass");
+                            Logger.Log("正在下载弹幕Xml文件");
+                            var danmakuUrl = $"https://comment.bilibili.com/{p.cid}.xml";
+                            await BBDownDownloadUtil.DownloadFileAsync(danmakuUrl, danmakuXmlPath, downloadConfig, cancellationToken);
+                            var danmakus = DanmakuUtil.ParseXml(danmakuXmlPath);
+                            if (danmakus == null)
                             {
-                                Logger.Log("过滤后没有剩余弹幕, 跳过Ass保存");
+                                Logger.Log("弹幕Xml解析失败, 删除Xml...");
+                                File.Delete(danmakuXmlPath);
                             }
-                            else
+                            else if (danmakus.Length == 0)
                             {
-                                Logger.Log($"正在保存弹幕Ass文件{(filtered.Length < danmakus.Length ? $"(过滤掉 {danmakus.Length - filtered.Length} 条)" : "")}...");
-                                await DanmakuUtil.SaveAsAssAsync(filtered, danmakuAssPath);
+                                Logger.Log("当前视频没有弹幕, 删除Xml...");
+                                File.Delete(danmakuXmlPath);
+                            }
+                            else if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass))
+                            {
+                                var filtered = DanmakuUtil.Filter(danmakus, myOption.DanmakuFilter, myOption.DanmakuFilterUser);
+                                if (filtered.Length == 0)
+                                {
+                                    Logger.Log("过滤后没有剩余弹幕, 跳过Ass保存");
+                                }
+                                else
+                                {
+                                    Logger.Log($"正在保存弹幕Ass文件{(filtered.Length < danmakus.Length ? $"(过滤掉 {danmakus.Length - filtered.Length} 条)" : "")}...");
+                                    await DanmakuUtil.SaveAsAssAsync(filtered, danmakuAssPath);
+                                }
+                            }
+
+                            // delete xml if possible
+                            if (!downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                            {
+                                File.Delete(danmakuXmlPath);
+                            }
+
+                            if (myOption.DanmakuOnly)
+                            {
+                                // 记录最终产物：DanmakuOnly 提前返回不经过下方统一 AddSavePath，
+                                // 若这里不记录，serve API 的成功响应里产物列表会缺弹幕文件。
+                                bool danmakuProduced = false;
+                                if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                                {
+                                    relatedTask?.AddSavePath(danmakuXmlPath);
+                                    danmakuProduced = true;
+                                }
+                                if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass) && File.Exists(danmakuAssPath))
+                                {
+                                    relatedTask?.AddSavePath(danmakuAssPath);
+                                    danmakuProduced = true;
+                                }
+                                if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
+                                {
+                                    try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
+                                }
+                                // DanmakuOnly 但没有任何有效弹幕文件（解析失败/为空/过滤后为空被删除）
+                                // → 零产物：返回 false 而非假成功
+                                if (!danmakuProduced)
+                                {
+                                    Logger.LogWarn("DanmakuOnly 模式未生成任何弹幕文件");
+                                    return false;
+                                }
+                                return true;
                             }
                         }
 
-                        // delete xml if possible
-                        if (!downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                        if (myOption.CoverOnly)
                         {
-                            File.Delete(danmakuXmlPath);
-                        }
-
-                        if (myOption.DanmakuOnly)
-                        {
-                            bool danmakuProduced = false;
-                            if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                            // 仅下载封面：封面保存成功后必须立即 return，否则会继续执行下方
+                            // 轨道解析、视频/音频下载与混流——用户只要封面却白白下载完整视频。
+                            var coverUrl = pic == "" ? p.cover! : pic;
+                            // coverUrl 为空时 DownloadFileAsync 直接返回（不生成文件）：
+                            // 此时若仍 AddSavePath 并 return true，SavePaths 指向不存在的文件。
+                            // 无封面资源时明确失败，避免零产物成功。
+                            if (string.IsNullOrEmpty(coverUrl))
                             {
-                                relatedTask?.AddSavePath(danmakuXmlPath);
-                                danmakuProduced = true;
-                            }
-                            if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass) && File.Exists(danmakuAssPath))
-                            {
-                                relatedTask?.AddSavePath(danmakuAssPath);
-                                danmakuProduced = true;
-                            }
-                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
-                            {
-                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
-                            }
-                            if (!danmakuProduced)
-                            {
-                                Logger.LogWarn("DanmakuOnly 模式未生成任何弹幕文件");
+                                Logger.LogWarn("CoverOnly 模式无封面资源可下载");
                                 return false;
+                            }
+                            var newCoverPath = Path.ChangeExtension(savePath, Path.GetExtension(coverUrl));
+                            await BBDownDownloadUtil.DownloadFileAsync(coverUrl, newCoverPath, downloadConfig, cancellationToken);
+                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0) Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
+                            relatedTask?.AddSavePath(newCoverPath);
+                            return true;
+                        }
+
+                        Logger.Log($"已选择的流:");
+                        PrintSelectedTrackInfo(selectedVideo, selectedAudio, p.dur);
+
+                        //用户开启了强制替换
+                        if (myOption.ForceReplaceHost && string.IsNullOrEmpty(myOption.UposHost))
+                        {
+                            myOption.UposHost = BACKUP_HOST;
+                        }
+
+                        //处理PCDN
+                        HandlePcdn(myOption, selectedVideo, selectedAudio);
+
+                        if (!myOption.OnlyShowInfo && File.Exists(savePath) && new FileInfo(savePath).Length != 0)
+                        {
+                            Logger.Log($"{savePath}已存在, 跳过下载...");
+                            relatedTask?.AddSavePath(savePath);
+                            File.Delete(coverPath);
+                            // 清理本次已下载但未被消费的装饰性文件（字幕/章节）：它们下载于
+                            // 跳过判定之前（GetSubtitlesAsync 在提取轨道前执行），若不清理，
+                            // 每次重跑已下载的视频都会残留字幕/章节文件，且 Directory 非空
+                            // 时 aid 目录也删不掉。与 flv 分支的跳过清理行为保持一致。
+                            foreach (var s in subtitleInfo)
+                            {
+                                try { if (File.Exists(s.path)) File.Delete(s.path); }
+                                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                            }
+                            try { if (File.Exists(Path.Combine(PathUtil.ResolveWorkPath(p.aid), "chapters"))) File.Delete(Path.Combine(PathUtil.ResolveWorkPath(p.aid), "chapters")); }
+                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
+                            {
+                                Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
                             }
                             return true;
                         }
-                    }
 
-                    if (myOption.CoverOnly)
-                    {
-                        var coverUrl = pic == "" ? p.cover! : pic;
-                        if (string.IsNullOrEmpty(coverUrl))
+                        if (selectedVideo != null)
                         {
-                            Logger.LogWarn("CoverOnly 模式无封面资源可下载");
+                            //杜比视界, 若ffmpeg版本小于5.0, 使用mp4box封装
+                            if (selectedVideo.dfn == AppSettings.QualityMap["126"] && !myOption.UseMP4box && !ExternalToolHelper.CheckFFmpegDOVI())
+                            {
+                                Logger.LogWarn($"检测到杜比视界清晰度且您的ffmpeg版本小于5.0,将使用mp4box混流...");
+                                myOption.UseMP4box = true;
+                            }
+                            Logger.Log($"开始下载P{p.index}视频...");
+                            await DownloadTrackAsync(selectedVideo.baseUrl, videoPath, downloadConfig, video: true, cancellationToken);
+                        }
+
+                        if (selectedAudio != null)
+                        {
+                            Logger.Log($"开始下载P{p.index}音频...");
+                            await DownloadTrackAsync(selectedAudio.baseUrl, audioPath, downloadConfig, video: false, cancellationToken);
+                        }
+
+                        if (selectedBackgroundAudio != null)
+                        {
+                            var backgroundPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.{p.cid}.P{p.index}.back_ground.m4a");
+                            Logger.Log($"开始下载P{p.index}背景配音...");
+                            await DownloadTrackAsync(selectedBackgroundAudio.baseUrl, backgroundPath, downloadConfig, video: false, cancellationToken);
+                            audioMaterial.Add(new AudioMaterial("背景音频", "", backgroundPath));
+                        }
+
+                        if (parsedResult.RoleAudioList.Any())
+                        {
+                            foreach (var role in parsedResult.RoleAudioList)
+                            {
+                                // aIndex 只对 AudioTracks.Count 校验过，而每个 role 的 audio 是独立列表
+                                //（通常只有 1-2 个清晰度），主列表的序号可能越界。越界会抛
+                                // ArgumentOutOfRangeException 且不在下载重试的 catch 过滤内，直接中止整批。
+                                int roleIdx = ClampRoleAudioIndex(aIndex, role.audio.Count);
+                                if (roleIdx < 0) continue;
+                                var roleAudio = role.audio[roleIdx];
+                                Logger.Log($"开始下载P{p.index}配音[{role.title}]...");
+                                await DownloadTrackAsync(roleAudio.baseUrl, role.path, downloadConfig, video: false, cancellationToken);
+                                audioMaterial.Add(new AudioMaterial(role));
+                            }
+                        }
+
+                        Logger.Log($"下载P{p.index}完毕");
+
+                        if (myOption.DownloadComments && p.index == 1 && long.TryParse(p.aid, out var commentAid))
+                        {
+                            // 评论是附加功能：任何失败都只降级为警告，绝不能触发页面级重试
+                            // 或中止整批（页面级 try 会把评论异常误判为下载失败而重下已混流的视频）
+                            try
+                            {
+                                var commentsPath = Path.ChangeExtension(savePath, ".comments.json");
+                                Logger.Log("正在下载评论...");
+                                var commentPage = await CommentUtil.FetchAsync(commentAid, token: cancellationToken);
+                                await CommentUtil.SaveToJsonAsync(commentPage.Items, commentsPath);
+                                Logger.Log($"评论已保存: {commentsPath} ({commentPage.Items.Count} 条)");
+                                // 达到分页上限仍有更多评论：明确提示结果不完整，避免用户误以为已抓全
+                                if (commentPage.Truncated)
+                                {
+                                    Logger.LogWarn($"评论数量达到抓取上限（{commentPage.Items.Count} 条），可能还有更多评论未导出");
+                                }
+                            }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                            {
+                                // 用户取消：必须向上传播，不能当"评论失败已跳过"吞掉——
+                                // 否则取消信号丢失，后续 SkipMux 等分支仍返回成功。
+                                throw;
+                            }
+                            catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException
+                                                        or IOException or TaskCanceledException or KeyNotFoundException or FormatException)
+                            {
+                                Logger.LogWarn($"评论下载失败（已跳过）: {ex.Message}");
+                            }
+                        }
+
+                        if (parsedResult.IsDrm && myOption.DecryptDrm && (!string.IsNullOrEmpty(parsedResult.KidHex) || !string.IsNullOrEmpty(parsedResult.PsshBase64)))
+                        {
+                            await DecryptDrmAsync(parsedResult, videoPath, audioPath, myOption, cancellationToken);
+                        }
+
+                        if (!parsedResult.VideoTracks.Any()) videoPath = "";
+                        if (!parsedResult.AudioTracks.Any()) audioPath = "";
+                        if (myOption.SkipMux)
+                        {
+                            // 记录原始轨道产物：SkipMux 跳过混流，返回前若不记录 SavePaths，
+                            // serve API 的成功响应里产物列表会缺本次下载的裸音视频流。
+                            if (File.Exists(videoPath)) relatedTask?.AddSavePath(videoPath);
+                            if (File.Exists(audioPath)) relatedTask?.AddSavePath(audioPath);
+                            foreach (var a in audioMaterial) if (File.Exists(a.path)) relatedTask?.AddSavePath(a.path);
+                            return true;
+                        }
+                        Logger.Log($"开始合并音视频{(subtitleInfo.Any() ? "和字幕" : "")}...");
+                        if (myOption.AudioOnly)
+                            // 用 Path.ChangeExtension 而非 savePath[..^4] 魔法切片：虽然后者在
+                            // FormatSavePath 保证 .mp4 后缀下不会截错，但魔法 4 字符切片脆弱且
+                            // 难读；ChangeExtension 按真实扩展名替换，语义清晰更稳健。
+                            savePath = Path.ChangeExtension(savePath, ".m4a");
+
+                        var isHevc = selectedVideo?.codecs == "HEVC";
+                        // 最终路径独占锁：serve 下两个不同 Aid、相同标题的任务会解析出同一个
+                        // savePath（默认单文件模板是 <videoTitle>）。锁内完成"存在性判定 → 混流 →
+                        // 校验 → 清理"：即使两个任务都通过了上面的快速跳过判定并各自下载到临时路径，
+                        // 到锁内这一步时若文件已存在（另一个任务先写完），也会跳过而非覆盖。
+                        var muxOutcome = await BBDownDownloadUtil.RunWithPathLockAsync(savePath,
+                            () => MuxAndFinalizeAsync(myOption.UseMP4box, myOption, p, vInfo, selectedPagesInfo, parsedResult, desc, title, coverPath, lang, subtitleInfo, audioMaterial,
+                                videoPath, audioPath, savePath, isHevc, videoOnly: false, audioOnly: myOption.AudioOnly,
+                                bangumi, fastSkipChecked: true, relatedTask, cancellationToken),
+                            cancellationToken);
+                        if (muxOutcome == MuxOutcome.Failed)
+                        {
+                            Logger.LogError("合并失败"); return false;
+                        }
+                    }
+                    else if (parsedResult.Clips.Any() && parsedResult.Dfns.Any())   //flv
+                    {
+                        if (myOption.DecryptDrm)
+                        {
+                            Logger.LogError("此视频需要大会员登录才能获取完整DRM内容。");
+                            Logger.LogError($"请先运行: BBDown login  或使用 --cookie 参数");
                             return false;
                         }
-                        var newCoverPath = Path.ChangeExtension(savePath, Path.GetExtension(coverUrl));
-                        await BBDownDownloadUtil.DownloadFileAsync(coverUrl, newCoverPath, downloadConfig, cancellationToken);
-                        if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
-                        {
-                            try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
-                        }
-                        relatedTask?.AddSavePath(newCoverPath);
-                        return true;
-                    }
+                        var clips = parsedResult.Clips;
+                        var dfns = parsedResult.Dfns;
 
-                    if (File.Exists(savePath) && new FileInfo(savePath).Length != 0)
-                    {
-                        Logger.Log($"{savePath}已存在, 跳过下载...");
-                        relatedTask?.AddSavePath(savePath);
-                        if (selectedPagesInfo.Count == 1 && Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
+                        int vIndex = 0;
+                        if (myOption.Interactive && !selected)
                         {
-                            try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
+                            int i = 0;
+                            dfns.ForEach(key => Logger.LogColor($"{i++}.{AppSettings.QualityMap[key]}"));
+                            Logger.Log("请选择最想要的清晰度(输入序号): ", false);
+                            Console.ForegroundColor = ConsoleColor.Cyan;
+                            vIndex = ReadIntSafe();
+                            // 下一行直接 dfns[vIndex]；用 > 会放过 vIndex==dfns.Count 而抛
+                            // ArgumentOutOfRangeException（不在重试白名单里，整个下载中止）。必须 >=。
+                            if (vIndex >= dfns.Count || vIndex < 0) vIndex = 0;
+                            Console.ResetColor();
+                            //重新解析
+                            parsedResult = await Parser.ExtractTracksAsync(aidOri, p.aid, p.cid, p.epid, myOption.UseTvApi, myOption.UseIntlApi, myOption.UseAppApi, firstEncoding!, myOption.DecryptDrm, dfns[vIndex], cancellationToken);
+                            if (!p.points.Any()) p.points = parsedResult.ExtraPoints;
+                            selected = true;
+                            vIndex = 0; // 重新解析后第一个轨道即为所选清晰度
                         }
-                        return true;
-                    }
-                    var pad = string.Empty.PadRight(clips.Count.ToString().Length, '0');
-                    var segFiles = new List<string>();
-                    for (int i = 0; i < clips.Count; i++)
-                    {
-                        var link = clips[i];
-                        videoPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.{i.ToString(pad)}.mp4");
-                        Logger.Log($"开始下载P{p.index}视频, 片段({(i + 1).ToString(pad)}/{clips.Count})...");
-                        await DownloadTrackAsync(link, videoPath, downloadConfig, video: true, token: cancellationToken);
-                        segFiles.Add(videoPath);
-                    }
-                    Logger.Log($"下载P{p.index}完毕");
-                    Logger.Log("开始合并分段...");
-                    // 传入本次下载的精确分段列表，而非扫描整个目录（GetFiles(".mp4") 会连同
-                    // 同 aid 其它分P 的成品一起捞进来，多P FLV 视频会被拼串味）
-                    videoPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.mp4");
-                    await BBDownMuxer.MergeFLV(segFiles.ToArray(), videoPath, cancellationToken);
-                    if (myOption.SkipMux)
-                    {
-                        // 记录原始轨道产物：SkipMux 跳过混流，返回前若不记录 SavePaths，
-                        // serve API 的成功响应里产物列表会缺本次下载的合并视频流。
-                        if (File.Exists(videoPath)) relatedTask?.AddSavePath(videoPath);
-                        return true;
-                    }
-                    Logger.Log($"开始混流视频{(subtitleInfo.Any() ? "和字幕" : "")}...");
-                    if (myOption.AudioOnly)
-                        // 与 dash 分支一致：用 Path.ChangeExtension 替换真实扩展名
-                        savePath = Path.ChangeExtension(savePath, ".m4a");
-                    // 与 dash 分支一致：对最终 savePath 加独占锁，锁内完成"存在性判定 → 混流 →
-                    // 校验 → 清理"，防止 serve 同标题任务并发覆盖
-                    var muxOutcome = await BBDownDownloadUtil.RunWithPathLockAsync(savePath,
-                        () => MuxAndFinalizeAsync(useMp4box: false, myOption, p, vInfo, selectedPagesInfo, parsedResult, desc, title, coverPath, lang, subtitleInfo, audioMaterial,
-                            videoPath, "", savePath, isHevc: false, videoOnly: myOption.VideoOnly, audioOnly: myOption.AudioOnly,
-                            bangumi, fastSkipChecked: true, relatedTask, cancellationToken),
-                        cancellationToken);
-                    if (muxOutcome == MuxOutcome.Failed)
-                    {
-                        Logger.LogError("合并失败"); return false;
-                    }
-                }
-                else
-                {
-                    // 无可用轨道（既非 DASH 也非 FLV）→ 解析失败。必须显式返回 false：
-                    // 此前记录错误后仍落到下方 return true，CLI 报成功、Serve 标记 Succeeded、
-                    // 还可能写入下载存档，且 SavePath 指向不存在的文件。
-                    if (myOption.DecryptDrm)
-                    {
-                        Logger.LogError("此视频需要大会员登录才能获取完整DRM内容。");
-                        Logger.LogError("请先运行: BBDown login  或使用 --cookie 参数");
+                        //排序
+                        parsedResult.VideoTracks = SortTracks(parsedResult.VideoTracks, dfnPriority, encodingPriority, myOption.VideoAscending);
+
+                        Logger.Log($"共计{parsedResult.VideoTracks.Count}条流(共有{clips.Count}个分段).");
+                        int index = 0;
+                        foreach (var v in parsedResult.VideoTracks)
+                        {
+                            var kbps = v.dur > 0 ? v.size / 1024 / v.dur * 8 : 0;
+                            Logger.LogColor($"{index++}. [{v.dfn}] [{v.res}] [{v.codecs}] [{v.fps}] [~{kbps:00} kbps] [{BBDownUtil.FormatFileSize(v.size)}]".Replace("[] ", ""), false);
+                            if (myOption.OnlyShowInfo)
+                            {
+                                clips.ForEach(Console.WriteLine);
+                            }
+                        }
+                        if (myOption.OnlyShowInfo) return true;
+                        savePath = PathUtil.ResolveWorkPath(FormatSavePath(savePathFormat, title, parsedResult.VideoTracks.ElementAtOrDefault(vIndex), null, p, pagesCount, apiType, pubTime));
+
+                        if (downloadDanmaku)
+                        {
+                            var danmakuXmlPath = Path.ChangeExtension(savePath, ".xml");
+                            var danmakuAssPath = Path.ChangeExtension(savePath, ".ass");
+                            Logger.Log("正在下载弹幕Xml文件");
+                            var danmakuUrl = $"https://comment.bilibili.com/{p.cid}.xml";
+                            await BBDownDownloadUtil.DownloadFileAsync(danmakuUrl, danmakuXmlPath, downloadConfig, cancellationToken);
+                            var danmakus = DanmakuUtil.ParseXml(danmakuXmlPath);
+                            if (danmakus == null)
+                            {
+                                Logger.Log("弹幕Xml解析失败, 删除Xml...");
+                                File.Delete(danmakuXmlPath);
+                            }
+                            else if (danmakus.Length == 0)
+                            {
+                                Logger.Log("当前视频没有弹幕, 删除Xml...");
+                                File.Delete(danmakuXmlPath);
+                            }
+                            else if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass))
+                            {
+                                var filtered = DanmakuUtil.Filter(danmakus, myOption.DanmakuFilter, myOption.DanmakuFilterUser);
+                                if (filtered.Length == 0)
+                                {
+                                    Logger.Log("过滤后没有剩余弹幕, 跳过Ass保存");
+                                }
+                                else
+                                {
+                                    Logger.Log($"正在保存弹幕Ass文件{(filtered.Length < danmakus.Length ? $"(过滤掉 {danmakus.Length - filtered.Length} 条)" : "")}...");
+                                    await DanmakuUtil.SaveAsAssAsync(filtered, danmakuAssPath);
+                                }
+                            }
+
+                            // delete xml if possible
+                            if (!downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                            {
+                                File.Delete(danmakuXmlPath);
+                            }
+
+                            if (myOption.DanmakuOnly)
+                            {
+                                bool danmakuProduced = false;
+                                if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Xml) && File.Exists(danmakuXmlPath))
+                                {
+                                    relatedTask?.AddSavePath(danmakuXmlPath);
+                                    danmakuProduced = true;
+                                }
+                                if (downloadDanmakuFormats.Contains(BBDownDanmakuFormat.Ass) && File.Exists(danmakuAssPath))
+                                {
+                                    relatedTask?.AddSavePath(danmakuAssPath);
+                                    danmakuProduced = true;
+                                }
+                                if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
+                                {
+                                    try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
+                                }
+                                if (!danmakuProduced)
+                                {
+                                    Logger.LogWarn("DanmakuOnly 模式未生成任何弹幕文件");
+                                    return false;
+                                }
+                                return true;
+                            }
+                        }
+
+                        if (myOption.CoverOnly)
+                        {
+                            var coverUrl = pic == "" ? p.cover! : pic;
+                            if (string.IsNullOrEmpty(coverUrl))
+                            {
+                                Logger.LogWarn("CoverOnly 模式无封面资源可下载");
+                                return false;
+                            }
+                            var newCoverPath = Path.ChangeExtension(savePath, Path.GetExtension(coverUrl));
+                            await BBDownDownloadUtil.DownloadFileAsync(coverUrl, newCoverPath, downloadConfig, cancellationToken);
+                            if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
+                            {
+                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
+                            }
+                            relatedTask?.AddSavePath(newCoverPath);
+                            return true;
+                        }
+
+                        if (File.Exists(savePath) && new FileInfo(savePath).Length != 0)
+                        {
+                            Logger.Log($"{savePath}已存在, 跳过下载...");
+                            relatedTask?.AddSavePath(savePath);
+                            if (selectedPagesInfo.Count == 1 && Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
+                            {
+                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
+                            }
+                            return true;
+                        }
+                        var pad = string.Empty.PadRight(clips.Count.ToString().Length, '0');
+                        var segFiles = new List<string>();
+                        for (int i = 0; i < clips.Count; i++)
+                        {
+                            var link = clips[i];
+                            videoPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.{i.ToString(pad)}.mp4");
+                            Logger.Log($"开始下载P{p.index}视频, 片段({(i + 1).ToString(pad)}/{clips.Count})...");
+                            await DownloadTrackAsync(link, videoPath, downloadConfig, video: true, token: cancellationToken);
+                            segFiles.Add(videoPath);
+                        }
+                        Logger.Log($"下载P{p.index}完毕");
+                        Logger.Log("开始合并分段...");
+                        // 传入本次下载的精确分段列表，而非扫描整个目录（GetFiles(".mp4") 会连同
+                        // 同 aid 其它分P 的成品一起捞进来，多P FLV 视频会被拼串味）
+                        videoPath = PathUtil.ResolveWorkPath($"{p.aid}/{p.aid}.P{p.index}.{p.cid}.mp4");
+                        await BBDownMuxer.MergeFLV(segFiles.ToArray(), videoPath, cancellationToken);
+                        if (myOption.SkipMux)
+                        {
+                            // 记录原始轨道产物：SkipMux 跳过混流，返回前若不记录 SavePaths，
+                            // serve API 的成功响应里产物列表会缺本次下载的合并视频流。
+                            if (File.Exists(videoPath)) relatedTask?.AddSavePath(videoPath);
+                            return true;
+                        }
+                        Logger.Log($"开始混流视频{(subtitleInfo.Any() ? "和字幕" : "")}...");
+                        if (myOption.AudioOnly)
+                            // 与 dash 分支一致：用 Path.ChangeExtension 替换真实扩展名
+                            savePath = Path.ChangeExtension(savePath, ".m4a");
+                        // 与 dash 分支一致：对最终 savePath 加独占锁，锁内完成"存在性判定 → 混流 →
+                        // 校验 → 清理"，防止 serve 同标题任务并发覆盖
+                        var muxOutcome = await BBDownDownloadUtil.RunWithPathLockAsync(savePath,
+                            () => MuxAndFinalizeAsync(useMp4box: false, myOption, p, vInfo, selectedPagesInfo, parsedResult, desc, title, coverPath, lang, subtitleInfo, audioMaterial,
+                                videoPath, "", savePath, isHevc: false, videoOnly: myOption.VideoOnly, audioOnly: myOption.AudioOnly,
+                                bangumi, fastSkipChecked: true, relatedTask, cancellationToken),
+                            cancellationToken);
+                        if (muxOutcome == MuxOutcome.Failed)
+                        {
+                            Logger.LogError("合并失败"); return false;
+                        }
                     }
                     else
                     {
-                        Logger.LogError("解析此分P失败(建议--debug查看详细信息)");
+                        // 无可用轨道（既非 DASH 也非 FLV）→ 解析失败。必须显式返回 false：
+                        // 此前记录错误后仍落到下方 return true，CLI 报成功、Serve 标记 Succeeded、
+                        // 还可能写入下载存档，且 SavePath 指向不存在的文件。
+                        if (myOption.DecryptDrm)
+                        {
+                            Logger.LogError("此视频需要大会员登录才能获取完整DRM内容。");
+                            Logger.LogError("请先运行: BBDown login  或使用 --cookie 参数");
+                        }
+                        else
+                        {
+                            Logger.LogError("解析此分P失败(建议--debug查看详细信息)");
+                        }
+                        if (parsedResult.WebJsonString.Length < 100)
+                        {
+                            Logger.LogError(parsedResult.WebJsonString);
+                        }
+                        // 完整播放 JSON 含带签名的媒体地址（deadline/sign 等参数），全文落盘
+                        // 会把可用的临时签名 URL 写进日志文件。与 Parser 的 debug 摘要一致，
+                        // 只记录长度 + 前 1KB 摘要，避免签名 URL 泄漏。
+                        var webJson = parsedResult.WebJsonString;
+                        // 截断实参含子串分配，DebugLog 关闭时跳过求值
+                        if (Config.Current.DebugLog)
+                            Logger.LogDebug("WebJson {0} chars: {1}",
+                                webJson.Length,
+                                webJson.Length > 1024 ? webJson[..1024] + "…" : webJson);
+                        return false;
                     }
-                    if (parsedResult.WebJsonString.Length < 100)
-                    {
-                        Logger.LogError(parsedResult.WebJsonString);
-                    }
-                    // 完整播放 JSON 含带签名的媒体地址（deadline/sign 等参数），全文落盘
-                    // 会把可用的临时签名 URL 写进日志文件。与 Parser 的 debug 摘要一致，
-                    // 只记录长度 + 前 1KB 摘要，避免签名 URL 泄漏。
-                    var webJson = parsedResult.WebJsonString;
-                    // 截断实参含子串分配，DebugLog 关闭时跳过求值
-                    if (Config.Current.DebugLog)
-                        Logger.LogDebug("WebJson {0} chars: {1}",
-                            webJson.Length,
-                            webJson.Length > 1024 ? webJson[..1024] + "…" : webJson);
-                    return false;
-                }
 
-                if (!string.IsNullOrWhiteSpace(savePath))
-                {
-                    relatedTask?.AddSavePath(savePath);
+                    if (!string.IsNullOrWhiteSpace(savePath))
+                    {
+                        relatedTask?.AddSavePath(savePath);
+                    }
+                    return true; // success, exit retry loop
                 }
-                return true; // success, exit retry loop
-            }
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException
-                              || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
-            {
-                // 风控页（200+HTML 的 RiskControlResponseException，继承 JsonException）也参与
-                // 页面级重试：B 站 windmill/风控页常为瞬时故障（数秒到一分钟内自动解除），
-                // 重试可在解除后恢复，且次数受 --retry-count 约束。装饰性资源（字幕/封面/
-                // 评论）的抓取失败已在各自调用点降级为警告，不会进入此 catch 触发整页重下。
-                // 超时（HttpClient 超时抛的 TaskCanceledException 其 token 未取消）同样参与重试；
-                // 真正的用户取消（token 已取消）不重试，直接向上传播。
-                retryCount++;
-                if (retryCount >= maxRetry)
+                catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException
+                                  || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
                 {
-                    Logger.LogError($"下载尝试 {retryCount} 次后仍失败，最后错误: [{ex.GetType().Name}] {ex.Message}");
-                    throw;
+                    // 风控页（200+HTML 的 RiskControlResponseException，继承 JsonException）也参与
+                    // 页面级重试：B 站 windmill/风控页常为瞬时故障（数秒到一分钟内自动解除），
+                    // 重试可在解除后恢复，且次数受 --retry-count 约束。装饰性资源（字幕/封面/
+                    // 评论）的抓取失败已在各自调用点降级为警告，不会进入此 catch 触发整页重下。
+                    // 超时（HttpClient 超时抛的 TaskCanceledException 其 token 未取消）同样参与重试；
+                    // 真正的用户取消（token 已取消）不重试，直接向上传播。
+                    retryCount++;
+                    if (retryCount >= maxRetry)
+                    {
+                        Logger.LogError($"下载尝试 {retryCount} 次后仍失败，最后错误: [{ex.GetType().Name}] {ex.Message}");
+                        throw;
+                    }
+                    // 与轨道级重试一致：退避基数 retryCount * RetryDelayMs 线性放大
+                    //（默认 3000ms → 首次失败 3s、二次 6s...），符合 --retry-delay 的"基础毫秒数"语义
+                    int backoffMs = retryCount * myOption.RetryDelay;
+                    Logger.LogError($"[{ex.GetType().Name}] {ex.Message}");
+                    Logger.LogWarn($"下载出现异常, {backoffMs / 1000.0:0.#} 秒后将进行自动重试...");
+                    await Task.Delay(backoffMs, cancellationToken);
                 }
-                // 与轨道级重试一致：退避基数 retryCount * RetryDelayMs 线性放大
-                //（默认 3000ms → 首次失败 3s、二次 6s...），符合 --retry-delay 的"基础毫秒数"语义
-                int backoffMs = retryCount * myOption.RetryDelay;
-                Logger.LogError($"[{ex.GetType().Name}] {ex.Message}");
-                Logger.LogWarn($"下载出现异常, {backoffMs / 1000.0:0.#} 秒后将进行自动重试...");
-                await Task.Delay(backoffMs, cancellationToken);
             }
-        }
-        return false;
+            return false;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -1110,9 +1110,11 @@ internal partial class Program
             await SubUtil.SaveSubtitleAsync(s.url, s.path, token);
             return true;
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or TaskCanceledException or InvalidOperationException)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or TaskCanceledException or InvalidOperationException or TimeoutException)
         {
             // HttpClient 超时抛的 TaskCanceledException 其 token 未取消，仍按字幕降级处理；
+            // HTTPUtil 重试耗尽后抛的 TimeoutException（内部包裹 OCE）同属瞬时故障：字幕是装饰性
+            // 资源，持续超时也应降级为"无字幕"而非穿透到页面级重试击沉主下载（E1）。
             // 真正的取消必须向上传播中止下载，不能吞掉后继续执行无可取消的网络调用。
             if (token.IsCancellationRequested) throw;
             if (!degradeOnFailure) throw;

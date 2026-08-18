@@ -36,16 +36,9 @@ internal partial class Program
         {
             selectedPages = new List<string>();
 
-            //选择最新分P
-            string lastPage = pagesInfo.Count.ToString();
-            foreach (string key in new[] { "LAST", "NEW", "LATEST" })
-            {
-                selectPage = selectPage.Replace(key, lastPage);
-            }
-
             try
             {
-                selectedPages = ParsePageSelection(selectPage);
+                selectedPages = ParsePageSelection(ExpandPageAliases(selectPage, pagesInfo.Count));
             }
             catch (ArgumentException e)
             {
@@ -58,6 +51,24 @@ internal partial class Program
         }
 
         return selectedPages;
+    }
+
+    /// <summary>
+    /// 把分P 选择表达式中的"最新分P"别名（LAST/NEW/LATEST）展开为实际页数。
+    /// 别名必须是<strong>完整段</strong>全词匹配，不能做子串替换："LAST" 是 "LATEST" 的
+    /// 前缀，先替换会把 LATEST 变成 "5EST"（LATEST 中的 LAST 被替换成页数），
+    /// 导致 -p LATEST 报"所选分P不存在: 5EST"；-p 3,LATEST 中 5EST 非数字被
+    /// ParsePageSelection 静默放行、上层按不存在的分P 无声丢弃，只下 P3 不报错
+    /// （静默少下）。internal 供测试直接验证别名展开。
+    /// </summary>
+    internal static string ExpandPageAliases(string selectPage, int pageCount)
+    {
+        string lastPage = pageCount.ToString();
+        return string.Join(',', selectPage.Split(',').Select(segment =>
+        {
+            var trimmed = segment.Trim().ToUpperInvariant();
+            return trimmed is "LAST" or "NEW" or "LATEST" ? lastPage : segment;
+        }));
     }
 
     /// <summary>分P 选择表达式允许展开出的最大条目数，防止 <c>-p 1-99999999</c> 撑爆内存。</summary>
@@ -81,6 +92,11 @@ internal partial class Program
             var dash = segment.IndexOf('-', 1);
             if (dash < 0)
             {
+                // 无连字符的段必须是数字：非数字段（拼写错误、别名展开残留等）若被静默
+                // 放行，上层 Where 过滤时会被无声丢弃——-p 3,5EST 只下 P3 不报错
+                // （静默少下）。这里显式抛错，让调用方以错误退出码暴露问题。
+                if (!int.TryParse(segment, out _))
+                    throw new ArgumentException($"无法识别的分P \"{segment}\"");
                 pages.Add(segment);
                 continue;
             }
