@@ -361,6 +361,128 @@ public class MuxerArgsTests
         }
     }
 
+    /// <summary>
+    /// Bug A 回归（单元层）：带主音轨 + 2 副音轨 + 封面 + 2 字幕的完整场景下，
+    /// 所有 -metadata:s:* 与 -disposition 输出选项必须位于最后一个 -i 之后（输出选项区）。
+    /// 旧实现把 -metadata:s:a:N/-metadata:s:s:N/-disposition 紧跟各自 -i 输入，
+    /// ffmpeg 会将其当作输入选项——旧版报 cannot be applied to input url、
+    /// 新版静默丢掉 stream 元数据（字幕标题/语言丢失）。
+    /// </summary>
+    [Fact]
+    public async Task MuxAV_StreamMetadataOptions_AllAppearAfterAllInputs()
+    {
+        var fake = new FakeProcessRunner(exitCode: 0);
+        var original = BBDownMuxer.ProcessRunner;
+        var tempDir = NewTempDir();
+        try
+        {
+            BBDownMuxer.ProcessRunner = fake;
+
+            var videoPath = Path.Combine(tempDir, "video.mp4");
+            var audioPath = Path.Combine(tempDir, "audio.m4a");
+            var sub1 = Path.Combine(tempDir, "sub1.srt");
+            var sub2 = Path.Combine(tempDir, "sub2.srt");
+            var pic = Path.Combine(tempDir, "cover.jpg");
+            var bgPath = Path.Combine(tempDir, "bg.m4a");
+            var rolePath = Path.Combine(tempDir, "role.m4a");
+            File.WriteAllText(videoPath, "v");
+            File.WriteAllText(audioPath, "a");
+            File.WriteAllText(sub1, "1\n00:00:00,000 --> 00:00:01,000\nhello");
+            File.WriteAllText(sub2, "1\n00:00:00,000 --> 00:00:01,000\nworld");
+            File.WriteAllText(pic, "jpg");
+            File.WriteAllText(bgPath, "b");
+            File.WriteAllText(rolePath, "r");
+
+            var outPath = Path.Combine(tempDir, "out.mp4");
+            var subs = new List<Subtitle>
+            {
+                new() { lan = "zh-Hans", url = "x", path = sub1 },
+                new() { lan = "en", url = "y", path = sub2 },
+            };
+            var audioMaterial = new List<AudioMaterial>
+            {
+                new("背景音频", "", bgPath),
+                new("配音", "", rolePath),
+            };
+
+            await BBDownMuxer.MuxAV(false, "BVtest", videoPath, audioPath, audioMaterial, outPath,
+                pic: pic, subs: subs);
+
+            var args = fake.Specs.Single(s => s.FileName == "ffmpeg").Arguments;
+            int lastInputArgIndex = -1;
+            for (int i = 0; i < args.Count; i++)
+                if (args[i] == "-i") lastInputArgIndex = i;
+            Assert.True(lastInputArgIndex >= 0, "应存在至少一个 -i 输入");
+
+            for (int i = 0; i < args.Count; i++)
+            {
+                var a = args[i];
+                if (!a.StartsWith("-metadata:s:") && !a.StartsWith("-disposition")) continue;
+                Assert.True(i > lastInputArgIndex,
+                    $"输出选项 {a} 必须位于所有 -i 之后（位置 {i} vs 最后 -i {lastInputArgIndex}）\nargs={string.Join(" ", args)}");
+            }
+
+            // 顺带验证副音轨/字幕流元数据内容仍保留（避免修复时丢语义）
+            Assert.Contains(args, a => a == "title=原音频");
+            Assert.Contains(args, a => a == $"-metadata:s:a:1");
+            Assert.Contains(args, a => a == $"-metadata:s:a:2");
+            Assert.Contains(args, a => a == $"-metadata:s:s:0");
+            Assert.Contains(args, a => a == $"-metadata:s:s:1");
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            CleanupDir(tempDir);
+        }
+    }
+
+    /// <summary>
+    /// 真实 ffmpeg 集成回归（Bug A 数据面验证）：带字幕混流后，输出字幕流必须携带
+    /// language 元数据。修复前 -metadata:s:s:0 紧跟 -i sub.srt 被 ffmpeg 当输入选项
+    /// 处理——旧版本直接报 cannot be applied to input url 混流失败。
+    /// 修复后选项落在输出选项区，字幕语言标签正确写入并可被 ffprobe 读取。
+    /// 注意：mov_text 字幕轨道不支持 stream 级 title 标签（ffmpeg 平台限制），
+    /// 因此这里只断言 language；title 丢失与本次 Bug A 无关。
+    /// </summary>
+    [Fact]
+    [Trait("Category", "LocalIntegration")]
+    public async Task MuxAV_RealFfmpeg_WritesSubtitleMetadataToOutputStream()
+    {
+        if (!TryLocateFfmpeg(out var ffmpeg)) return;
+        if (!TryLocateFfprobe(out var ffprobe)) return;
+
+        var tempDir = NewTempDir();
+        try
+        {
+            var videoPath = Path.Combine(tempDir, "src-video.mp4");
+            var audioPath = Path.Combine(tempDir, "src-audio.m4a");
+            var sub = Path.Combine(tempDir, "sub.srt");
+            var outPath = Path.Combine(tempDir, "out.mp4");
+
+            var videoCode = await RunFfmpeg(ffmpeg, "-y", "-f", "lavfi", "-i", "testsrc=duration=1:size=128x96:rate=10",
+                "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p", videoPath);
+            Assert.Equal(0, videoCode);
+            var audioCode = await RunFfmpeg(ffmpeg, "-y", "-f", "lavfi", "-i", "sine=frequency=440:duration=1",
+                "-c:a", "aac", audioPath);
+            Assert.Equal(0, audioCode);
+
+            File.WriteAllText(sub, "1\n00:00:00,000 --> 00:00:01,000\nhello");
+            var subs = new List<Subtitle> { new() { lan = "en", url = "x", path = sub } };
+
+            var code = await BBDownMuxer.MuxAV(false, "BVtest", videoPath, audioPath, [], outPath, subs: subs);
+            Assert.Equal(0, code);
+            Assert.True(File.Exists(outPath) && new FileInfo(outPath).Length > 0, "混流产物应存在且非空");
+
+            var probe = await RunToolCapture(ffprobe, "-v", "error", "-select_streams", "s:0",
+                "-show_entries", "stream_tags=language", "-of", "default=noprint_wrappers=1", outPath);
+            Assert.Contains("language=eng", probe); // Bug A 修复后字幕语言应写入输出字幕流
+        }
+        finally
+        {
+            CleanupDir(tempDir);
+        }
+    }
+
     /// <summary>在 PATH 中查找 ffmpeg 可执行文件。</summary>
     private static bool TryLocateFfmpeg(out string path)
     {
@@ -404,6 +526,42 @@ public class MuxerArgsTests
         using var p = Process.Start(psi)!;
         await p.WaitForExitAsync();
         return p.ExitCode;
+    }
+
+    /// <summary>在 PATH 中查找 ffprobe 可执行文件。</summary>
+    private static bool TryLocateFfprobe(out string path)
+    {
+        var candidates = new[] { "ffprobe", "ffprobe.exe" };
+        foreach (var name in candidates)
+        {
+            var full = FindOnPath(name);
+            if (full != null)
+            {
+                path = full;
+                return true;
+            }
+        }
+        path = "ffprobe";
+        return false;
+    }
+
+    /// <summary>启动 ffprobe 等只读工具并捕获 stdout+stderr 文本串。</summary>
+    private static async Task<string> RunToolCapture(string tool, params string[] args)
+    {
+        var psi = new ProcessStartInfo
+        {
+            FileName = tool,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+        };
+        foreach (var a in args) psi.ArgumentList.Add(a);
+        using var p = Process.Start(psi)!;
+        var stdout = await p.StandardOutput.ReadToEndAsync();
+        var stderr = await p.StandardError.ReadToEndAsync();
+        await p.WaitForExitAsync();
+        return stdout + stderr;
     }
 
     /// <summary>统计 [start, end) 范围内 -i 出现的次数（用于推算 meta 输入下标）。</summary>

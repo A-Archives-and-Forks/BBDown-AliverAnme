@@ -198,6 +198,12 @@ static partial class BBDownMuxer
             Directory.CreateDirectory(outDir);
         //----分析并生成参数
         var args = new List<string>();
+        // 输出流选项（-metadata:* / -disposition:*）统一收集到 outputArgs，绝不紧跟 -i 输入：
+        // ffmpeg 中紧跟 -i <输入> 的选项会被当作输入选项——旧版本直接报
+        // "Option ... cannot be applied to input url ...srt" 导致带字幕/副音轨混流失败；
+        // 新版虽静默接受但元数据不作用到输出流（stream title 丢失）。
+        // 全部 -i 与 -map 完成后统一追加，让这些选项落在输出选项区。
+        var outputArgs = new List<string>();
         int inputCount = 0;
         foreach (string path in new[] { videoPath, audioPath })
         {
@@ -221,8 +227,9 @@ static partial class BBDownMuxer
             // 拆成 "-metadata" + "s:a:0" 会把 s:a:0 当成非法 key=value、后续参数被误当输入文件。
             if (!string.IsNullOrEmpty(audioPath))
             {
-                args.Add("-metadata:s:a:0");
-                args.Add("title=原音频");
+                // 输出选项统一收集到 outputArgs（紧跟 -i 会被 ffmpeg 当输入选项处理）
+                outputArgs.Add("-metadata:s:a:0");
+                outputArgs.Add("title=原音频");
             }
             foreach (var audio in audioMaterial)
             {
@@ -232,14 +239,14 @@ static partial class BBDownMuxer
                 args.Add(audio.path);
                 if (!string.IsNullOrWhiteSpace(audio.title))
                 {
-                    args.Add($"-metadata:s:a:{audioCount}");
+                    outputArgs.Add($"-metadata:s:a:{audioCount}");
                     // argv 逐项直传，值按字面写入，不再 EscapeString
-                    args.Add($"title={audio.title}");
+                    outputArgs.Add($"title={audio.title}");
                 }
                 if (!string.IsNullOrWhiteSpace(audio.personName))
                 {
-                    args.Add($"-metadata:s:a:{audioCount}");
-                    args.Add($"artist={audio.personName}");
+                    outputArgs.Add($"-metadata:s:a:{audioCount}");
+                    outputArgs.Add($"artist={audio.personName}");
                 }
             }
         }
@@ -265,10 +272,12 @@ static partial class BBDownMuxer
                     args.Add("-i");
                     args.Add(subs[i].path);
                     var (subLangCode, subLangName) = SubUtil.GetSubtitleCode(subs[i].lan);
-                    args.Add($"-metadata:s:s:{subtitleStreamIndex}");
-                    args.Add($"title={subLangName}");
-                    args.Add($"-metadata:s:s:{subtitleStreamIndex}");
-                    args.Add($"language={subLangCode}");
+                    // 输出选项统一收集到 outputArgs：旧版 ffmpeg 对
+                    // "-i sub.srt -metadata:s:s:0" 报 cannot be applied to input url
+                    outputArgs.Add($"-metadata:s:s:{subtitleStreamIndex}");
+                    outputArgs.Add($"title={subLangName}");
+                    outputArgs.Add($"-metadata:s:s:{subtitleStreamIndex}");
+                    outputArgs.Add($"language={subLangCode}");
                     subtitleStreamIndex++;
                 }
             }
@@ -277,8 +286,9 @@ static partial class BBDownMuxer
         if (!string.IsNullOrEmpty(pic))
         {
             // disposition 的 stream specifier 同样须粘连：-disposition:v:0 attached_pic
-            args.Add($"-disposition:v:{(audioOnly ? "0" : "1")}");
-            args.Add("attached_pic");
+            // 输出选项统一收集到 outputArgs，紧跟 -i 会被 ffmpeg 当输入选项处理
+            outputArgs.Add($"-disposition:v:{(audioOnly ? "0" : "1")}");
+            outputArgs.Add("attached_pic");
         }
 
         if (points != null && points.Any())
@@ -304,6 +314,9 @@ static partial class BBDownMuxer
             args.Add("-map");
             args.Add(i.ToString());
         }
+        // 输出流选项（-metadata:* / -disposition:*）在全部 -i 与 -map 完成后追加，
+        // 确保被 ffmpeg 解析为输出选项而非输入选项。
+        args.AddRange(outputArgs);
 
         //----分析完毕
         args.Add("-loglevel");

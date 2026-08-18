@@ -66,8 +66,18 @@ public static class CommentUtil
     public record CommentPage(List<CommentItem> Items, bool Truncated);
 
     /// <summary>导出评论为带缩进的 JSON 文件（保留中文原文，AOT 裁剪安全）。</summary>
+    /// <remarks>
+    /// 输出目录可能尚不存在：评论在混流（MuxAV 内才创建输出目录）之前保存，
+    /// 目标父目录尚未创建时 File.WriteAllBytesAsync 抛 DirectoryNotFoundException，
+    /// 调用方会把异常降级为警告导致评论静默丢失。这里先确保父目录存在，
+    /// 保存函数自包含、调用方无需记忆建目录。
+    /// </remarks>
     public static async Task SaveToJsonAsync(List<CommentItem> comments, string path)
     {
+        var dir = Path.GetDirectoryName(path);
+        if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
+            Directory.CreateDirectory(dir);
+
         var payload = comments.Select(c => new CommentExport(
             c.User,
             DateTimeOffset.FromUnixTimeSeconds(c.Time).LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"),

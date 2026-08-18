@@ -26,4 +26,29 @@ public class CommentUtilTests
             if (File.Exists(path)) File.Delete(path);
         }
     }
+
+    /// <summary>
+    /// 评论保存目录自包含回归：评论在混流（MuxAV 才创建输出目录）之前保存，
+    /// 目标父目录尚未创建时 SaveToJsonAsync 必须自行创建目录，
+    /// 否则 DirectoryNotFoundException 被调用方降级为警告导致评论静默丢失（Bug B）。
+    /// </summary>
+    [Fact]
+    public async Task SaveToJsonAsync_CreatesMissingParentDirectory()
+    {
+        var tempRoot = Path.Combine(Path.GetTempPath(), $"bbdown-cmt-dir-{Guid.NewGuid():N}");
+        var path = Path.Combine(tempRoot, "nested", "out", "comments.json");
+        try
+        {
+            var comments = new List<CommentItem>
+            {
+                new("UP主", 1700000000, 7, "内容"),
+            };
+            await CommentUtil.SaveToJsonAsync(comments, path);
+            Assert.True(File.Exists(path), "父目录不存在时也应成功保存评论文件");
+        }
+        finally
+        {
+            if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true);
+        }
+    }
 }
