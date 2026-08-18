@@ -18,6 +18,7 @@ public class HttpUtilRetryTests
     public async Task GetWebSource_RetriesOn500_ThenSucceeds()
     {
         using var server = new ScriptedServer((500, "boom"), (200, """{"code":0}"""));
+        var original = Config.Current; // G8：捕获前值，finally 恢复——硬编码恢复默认值会覆盖别类基线
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10 });
@@ -27,7 +28,7 @@ public class HttpUtilRetryTests
         }
         finally
         {
-            Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 3000 });
+            Config.ApplyToCurrentAsyncFlow(original);
         }
     }
 
@@ -35,6 +36,7 @@ public class HttpUtilRetryTests
     public async Task GetWebSource_500ExhaustsRetries_Throws()
     {
         using var server = new ScriptedServer((500, "e1"), (500, "e2"), (500, "e3"));
+        var original = Config.Current; // G8
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10 });
@@ -44,7 +46,7 @@ public class HttpUtilRetryTests
         }
         finally
         {
-            Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 3000 });
+            Config.ApplyToCurrentAsyncFlow(original);
         }
     }
 
@@ -54,6 +56,7 @@ public class HttpUtilRetryTests
         // API 层重试有界（min(MaxRetryCount,3)）：--retry-count 可到 100，但 API 层最多 3 次尝试，
         // 避免与页面级重试乘积放大请求数/总等待，也避免总退避超过 WBI 签名 wts 的时效窗口
         using var server = new ScriptedServer((500, "e1"), (500, "e2"), (500, "e3"));
+        var original = Config.Current; // G8
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 10, RetryDelayMs = 10 });
@@ -63,7 +66,7 @@ public class HttpUtilRetryTests
         }
         finally
         {
-            Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 3000 });
+            Config.ApplyToCurrentAsyncFlow(original);
         }
     }
 
@@ -72,6 +75,7 @@ public class HttpUtilRetryTests
     {
         // 4xx（风控/参数/鉴权错）重试只会加重风控状态：必须一次即抛、不重试
         using var server = new ScriptedServer((404, "not found"));
+        var original = Config.Current; // G8
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10 });
@@ -82,8 +86,35 @@ public class HttpUtilRetryTests
         }
         finally
         {
-            Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 3000 });
+            Config.ApplyToCurrentAsyncFlow(original);
         }
+    }
+
+    [Fact]
+    public async Task GetWebSource_ConnectionRefused_IsRetried()
+    {
+        // G8：契约声明的“传输层失败（连接 refused/reset）”分支此前无用例。
+        // 连接被拒时 HttpRequestException.StatusCode 为 null，必须命中重试谓词
+        // （statusCode is null）参与有界重试，而不是首次即抛。
+        // 用 RetryDelayMs=200 并通过“退避耗时下限”证明重试发生：3 次尝试间有
+        // 2 次退避（≥400ms）。单次连接被拒仅需几 ms——若未重试总耗时远小于退避和。
+        // 下限断言对 CI 慢环境安全（只会更慢不会假失败）。
+        var port = TestPort.Allocate(); // 分配后立即释放：无监听 → 连接被拒
+        var original = Config.Current; // G8
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 200 });
+            await Assert.ThrowsAsync<HttpRequestException>(() =>
+                HTTPUtil.GetWebSourceAsync($"http://127.0.0.1:{port}/api", token: CancellationToken.None));
+        }
+        finally
+        {
+            Config.ApplyToCurrentAsyncFlow(original);
+        }
+        sw.Stop();
+        Assert.True(sw.ElapsedMilliseconds >= 400,
+            $"连接被回应有界重试 3 次（2 次退避 ≥400ms），实际耗时 {sw.ElapsedMilliseconds}ms");
     }
 
     [Fact]
@@ -91,6 +122,7 @@ public class HttpUtilRetryTests
     {
         // B 站风控/登录墙以 200 返回 HTML：必须明确报"疑似风控页"，且不按 5xx 重试
         using var server = new ScriptedServer((200, "<html><body>风险验证</body></html>"));
+        var original = Config.Current; // G8
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10 });
@@ -100,7 +132,7 @@ public class HttpUtilRetryTests
         }
         finally
         {
-            Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 3000 });
+            Config.ApplyToCurrentAsyncFlow(original);
         }
     }
 
@@ -109,6 +141,7 @@ public class HttpUtilRetryTests
     {
         // 部分 WAF/风控页在 '<html' 前带换行/空白：识别必须先 TrimStart，否则裸 JsonException 回潮
         using var server = new ScriptedServer((200, "\n  <html><body>风险验证</body></html>"));
+        var original = Config.Current; // G8
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10 });
@@ -117,7 +150,7 @@ public class HttpUtilRetryTests
         }
         finally
         {
-            Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 3000 });
+            Config.ApplyToCurrentAsyncFlow(original);
         }
     }
 
@@ -136,6 +169,7 @@ public class HttpUtilRetryTests
     {
         // grpc 帧首字节是压缩标志（0/1），首字节 '<' 说明拿到 HTML 错误/风控页
         using var server = new ScriptedServer((200, "<html>error page</html>"));
+        var original = Config.Current; // G8
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10 });
@@ -144,7 +178,7 @@ public class HttpUtilRetryTests
         }
         finally
         {
-            Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 3000 });
+            Config.ApplyToCurrentAsyncFlow(original);
         }
     }
 
@@ -154,6 +188,7 @@ public class HttpUtilRetryTests
         // F5：超时（用户 token 未取消的 OperationCanceledException）是最常见的瞬时传输层故障，
         // 必须与 5xx 同权参与 API 层有界重试，而不是首次即失败。重试耗尽后转为 TimeoutException 抛出。
         using var server = new StallingServer();
+        var original = Config.Current; // G8
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10, ApiTimeoutMs = 100 });
@@ -163,7 +198,7 @@ public class HttpUtilRetryTests
         }
         finally
         {
-            Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 3000, ApiTimeoutMs = 120000 });
+            Config.ApplyToCurrentAsyncFlow(original);
         }
     }
 
@@ -175,6 +210,7 @@ public class HttpUtilRetryTests
         // 故障，与 GET 同权参与有界重试。真正的非幂等请求（Widevine 许可证）走
         // VerifiedAppHttpClient 直连，不经过本函数的重试逻辑。
         using var server = new StallingServer();
+        var original = Config.Current; // G8
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10, ApiTimeoutMs = 100 });
@@ -184,7 +220,7 @@ public class HttpUtilRetryTests
         }
         finally
         {
-            Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 3000, ApiTimeoutMs = 120000 });
+            Config.ApplyToCurrentAsyncFlow(original);
         }
     }
 

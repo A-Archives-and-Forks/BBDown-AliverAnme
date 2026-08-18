@@ -176,6 +176,39 @@ public class ServeApiSecurityTests
     }
 
     [Fact]
+    public void SanitizeUntrustedOptions_ClampsNumerics()
+    {
+        // F9：数值钳制是慢速 DoS 防线——客户端可传失控重试次数/超长延迟/超大分片并用
+        // “合法值”占满共享并发槽数小时。此前的 Sanitize 仅测字段清零，重试参数 clamp
+        // （RetryCount→[1,3]、RetryDelay→[0,5000]、MuxerTimeout→[1,120]、
+        // DelayPerPage→[0,30]、ThreadSegmentSize→[1,64]）零测试，删掉防线也全绿。
+        var req = new ServeRequestOptions
+        {
+            RetryCount = 999,
+            RetryDelay = 999999,
+            MuxerTimeout = 9999,
+            DelayPerPage = 999,
+            ThreadSegmentSize = 9999,
+        };
+        BBDownApiServer.SanitizeUntrustedOptions(req);
+        Assert.Equal(3, req.RetryCount);
+        Assert.Equal(5000, req.RetryDelay);
+        Assert.Equal(120, req.MuxerTimeout);
+        Assert.Equal(30, req.DelayPerPage);
+        Assert.Equal(64, req.ThreadSegmentSize);
+
+        // 下限：RetryCount 钳到 1（显式 0 会被 ValidateNumericOptions 判非法任务，
+        // 与 Clamp(0,3) 矛盾——A4 统一下限为 1）；0 延迟合法（不等待直接重试）
+        var zero = new ServeRequestOptions { RetryCount = 0, RetryDelay = 0, MuxerTimeout = 0, DelayPerPage = 0, ThreadSegmentSize = 0 };
+        BBDownApiServer.SanitizeUntrustedOptions(zero);
+        Assert.Equal(1, zero.RetryCount);
+        Assert.Equal(0, zero.RetryDelay);
+        Assert.Equal(1, zero.MuxerTimeout);
+        Assert.Equal(0, zero.DelayPerPage);
+        Assert.Equal(1, zero.ThreadSegmentSize);
+    }
+
+    [Fact]
     public void SanitizeUntrustedOptions_EmptyHost_FallsBackToOfficial()
     {
         // host 为空/null 时也必须回落官方默认，否则番剧/TV/intl URL 拼成 https:///... 抛 UriFormatException

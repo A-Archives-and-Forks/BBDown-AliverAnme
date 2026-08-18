@@ -955,24 +955,34 @@ public class DownloadPipelineTests
         Directory.CreateDirectory(dir);
         try
         {
-            var start = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
+            // 记录每个任务的实际执行区间，断言两区间重叠（并行）——替代墙钟上限断言
+            // （elapsed < 180ms）：CI 调度抖动会放大总耗时造成间歇假失败（G5），
+            // 而区间重叠只依赖两任务相对时序，与绝对耗时无关，稳定得多。
+            var startedAt = new long[2];
+            var finishedAt = new long[2];
+            long now() => DateTimeOffset.UtcNow.ToUnixTimeMilliseconds();
             var tasks = new[]
             {
                 BBDownDownloadUtil.RunWithPathLockAsync(Path.Combine(dir, "a.mp4"), async () =>
                 {
+                    startedAt[0] = now();
                     await Task.Delay(100);
+                    finishedAt[0] = now();
                     return true;
                 }),
                 BBDownDownloadUtil.RunWithPathLockAsync(Path.Combine(dir, "b.mp4"), async () =>
                 {
+                    startedAt[1] = now();
                     await Task.Delay(100);
+                    finishedAt[1] = now();
                     return true;
                 }),
             };
             await Task.WhenAll(tasks);
-            var elapsed = DateTimeOffset.UtcNow.ToUnixTimeMilliseconds() - start;
-            // 不同路径不互斥：两任务应并行完成（显著小于 200ms 串行时间）
-            Assert.True(elapsed < 180, $"不同路径应并行执行，实际耗时 {elapsed}ms");
+            // 不同路径不互斥：两任务的执行区间必须重叠（a 开始后 b 才结束，反之亦然）。
+            // 若锁错误地互斥了两个路径，区间将严格串行、永不重叠。
+            Assert.True(startedAt[0] <= finishedAt[1] && startedAt[1] <= finishedAt[0],
+                $"不同路径应并行执行（区间重叠），实际 a=[{startedAt[0]}..{finishedAt[0]}] b=[{startedAt[1]}..{finishedAt[1]}]");
             Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
         }
         finally

@@ -25,14 +25,14 @@
 
 | 项 | 级别 | 位置 | 处理 |
 |----|------|------|------|
-| G1 | Critical | .github/workflows/pr.yml | xunit.runner.json 加 `"forbidOnly": true`，防止 Only 残留让 CI 只跑子集全绿 |
-| G5 | Medium | DownloadPipelineTests.cs:848 | 墙钟断言 `elapsed < 180` 改区间重叠断言，消除 CI 调度抖动假失败 |
-| G6 | Medium | RedirectHopValidationTests.cs:25,147 | 固定端口段 24000-26000 改 TestPort.Allocate() 动态端口 |
-| G8 | Medium | HttpUtilRetryTests.cs 7 处 finally | 硬编码恢复默认 Config 值改捕获前值恢复；补"传输层失败（连接 refused/reset）"用例 |
-| G9 | Low | RedirectHopValidationTests.cs:120 | 重定向环上限断言改服务端计数断言 `requests ≤ maxHops+1` |
-| G10 | Low | ServeApiHttpTests.cs:21,415 | 固定端口 58681 改动态端口；4s 轮询耗尽后断言带上下文 |
-| F9 | Medium | ServeApiSecurityTests | 补 SanitizeUntrustedOptions 重试参数 clamp（RetryCount→3 / RetryDelay→5000）3 个断言 |
-| F11 | Suggestion | ServeApiHttpTests.cs:1-40 | 补 [CollectionDefinition] + 更新注释（_taskFile 静态污染已不存在，程序集级串行后风险已消） |
+| G1 | Critical | .github/workflows/pr.yml | ✅ 已落地（替代方案）：审查原建议 `xunit.runner.json 加 forbidOnly` 是 Playwright（JS `test.only`）概念，**xunit v2/v3 均无 forbidOnly/`[Only]`**（已查源码 ConfigReader_Json 与官方配置文档确认）。xunit 中“测试子集全绿”的等价残留是 `[Fact(Skip=...)]` 跳过不跑。已用 `xunit.runner.json` 的 `failSkips: true`（v2.5+，项目 v2.9.3 可用）把任何 Skip 当作硬失败；项目当前 0 个 Skip 零副作用，且已实测验证（注入临时 Skip 被报 FAIL） |
+| G5 | Medium | DownloadPipelineTests.cs:848 | ✅ 墙钟断言改区间重叠断言（a 区间 ∩ b 区间必须重叠）——CI 调度抖动只影响总耗时不再误报 |
+| G6 | Medium | RedirectHopValidationTests.cs:25,147 | ✅ 两处固定端口段（24000-26000/25000段）改 TestPort.Allocate() 动态端口 |
+| G8 | Medium | HttpUtilRetryTests.cs 7 处 finally | ✅ 9 个测试全部改为捕获前值恢复（`var original = Config.Current` + finally 恢复）；补连接被拒用例（StatusCode=null 命中重试谓词，退避耗时下限证明重试发生） |
+| G9 | Low | RedirectHopValidationTests.cs:120 | ✅ LocalRedirectServer 加 RequestCount 计数；断言请求数 ≤ maxHops+1（强证据：仅断言终值无法区分“截断返回”与“侥幸返回”） |
+| G10 | Low | ServeApiHttpTests.cs:21,415 | ✅ BaseUrl 改动态端口（TestPort.Allocate 静态字段）；WaitForFinishedCountAsync 轮询耗尽抛带上下文 TimeoutException；Cancel 持久化断言带任务文件名/存在性上下文 |
+| F9 | Medium | ServeApiSecurityTests | ✅ 新增 SanitizeUntrustedOptions_ClampsNumerics：上界（3/5000/120/30/64）+ 下界（RetryCount→1、MuxerTimeout→1、ThreadSegmentSize→1）共 10 断言 |
+| F11 | Suggestion | ServeApiHttpTests.cs:1-40 | ✅ 补 [CollectionDefinition("ServeApiCollection")]；更新类注释（_taskFile 已实例字段注入，不再静态污染） |
 
 ## 第 2 轮：功能/韧性测试补齐
 

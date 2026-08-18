@@ -6,19 +6,34 @@ using System.Text.Json;
 namespace BBDown.Tests;
 
 /// <summary>
+/// 串行化 <see cref="ServeApiHttpTests"/> 的集合定义（F11）：此前只有
+/// [Collection("ServeApiCollection")] 引用而无对应 CollectionDefinition，
+/// 集合语义无法被框架验证。BBDownApiServer 实例是长驻资源且共享静态配置，
+/// 集合串行化保证测试间不争用端口/任务文件。
+/// </summary>
+[CollectionDefinition("ServeApiCollection")]
+public class ServeApiCollection
+{
+}
+
+/// <summary>
 /// serve HTTP 端点级测试：真正启动 BBDownApiServer 并用 HttpClient 走完整请求。
 /// 与 ServeApiSecurityTests（只测静态纯函数）互补，覆盖 401 中间件、CORS、任务
 /// 提交/查询/删除语义。
 /// </summary>
 /// <remarks>
-/// BBDownApiServer 会把已完成任务持久化到 CWD 的 bbdown-tasks.json（静态 _taskFile），
-/// 且运行中的 http server 是长驻资源——多个测试类并行各起一个实例会互相污染该文件。
-/// 这里用一个集合串行化本类测试，避免与其它并行测试类竞争。
+/// BBDownApiServer 会把已完成任务持久化到任务文件（已改为实例字段 + 构造函数注入，
+/// 每个实例用独立临时文件，不再有静态 _taskFile 污染）；运行中的 http server 是
+/// 长驻资源——多个测试类并行各起一个实例会争用端口/资源。这里用集合串行化本类测试，
+/// 避免与其它并行测试类竞争（F11：补 [CollectionDefinition] 使集合声明闭合；
+/// 此前只有 [Collection] 引用而无定义，编译器/工具无法验证集合存在）。
 /// </remarks>
 [Collection("ServeApiCollection")]
 public class ServeApiHttpTests
 {
-    private const string BaseUrl = "http://127.0.0.1:58681";
+    // G10：固定端口 58681 改动态分配——固定端口在 CI 并行/端口冲突时 Kestrel 启动直接失败；
+    // 静态字段只在进程内分配一次，集合内各实例共享同一 BaseUrl（与固定端口语义一致）。
+    private static readonly string BaseUrl = $"http://127.0.0.1:{TestPort.Allocate()}";
 
     /// <summary>
     /// 每次启动一个干净的 server 实例（不携带 token），并保证它已停止监听后才释放。
@@ -46,7 +61,7 @@ public class ServeApiHttpTests
             _runTask = Task.Run(() => Server.Run(BaseUrl, _cts.Token));
             // 等待服务器就绪（Kestrel 开始监听）后再发请求：WebApplication 启动在
             // CI 首次运行/慢环境下明显慢于本地，若不等待，所有请求都会撞上
-            // Connection refused（127.0.0.1:58681）竞态。
+            // Connection refused（{BaseUrl}）竞态。
             // 若服务器启动即失败（_runTask 已 faulted），立刻暴露根因而非干等超时。
             if (!Server.Ready.Task.Wait(TimeSpan.FromSeconds(10)))
             {
@@ -410,7 +425,11 @@ public class ServeApiHttpTests
             }
             if (persisted is null) await Task.Delay(100);
         }
-        Assert.NotNull(persisted);
+        // G10：轮询耗尽断言带上下文——此前 Assert.NotNull 失败时无任何信息，
+        // 无法判断是“没写盘”还是“写盘内容不对”。
+        Assert.True(persisted is not null,
+            $"任务 {accepted.TaskId} 未在 4s 内持久化；任务文件 {(File.Exists(server.TaskFile) ? "存在" : "不存在")} " +
+            $"({server.TaskFile})");
         Assert.Equal(DownloadTaskStatus.Cancelled, persisted.Status);
     }
 
@@ -571,7 +590,13 @@ public class ServeApiHttpTests
             if (list.Count >= count) return list;
             await Task.Delay(100);
         }
-        return await GetFinishedTasksAsync(client);
+        // G10：4s 轮询耗尽后抛带上下文异常，替代静默返回不满 count 的列表——
+        // 此前调用方断言失败（如 Assert.Single 报“序列为空”）无任何任务状态可查，
+        // 无法区分“任务没完成”与“接口异常”。
+        var final = await GetFinishedTasksAsync(client);
+        throw new TimeoutException(
+            $"等待完成任务超时（4s 轮询耗尽）：期望 ≥{count} 条，实际 {final.Count} 条；" +
+            $"最近状态: {string.Join(", ", final.Take(10).Select(t => $"{t.JobId}:{t.Status}"))}");
     }
 
     private static Task<List<DownloadTask>> WaitForFinishedTasksAsync(HttpClient client)

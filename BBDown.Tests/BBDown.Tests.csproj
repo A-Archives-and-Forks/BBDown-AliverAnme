@@ -19,6 +19,15 @@
   </ItemGroup>
 
   <ItemGroup>
+    <!-- failSkips: true（G1）——把任何 Skip 测试当作失败。审查原建议 forbidOnly 是
+         Playwright（JS test.only）概念，xunit v2/v3 均不存在；xunit 里“测试子集全绿”
+         的等价残留是 Skip（跳过不跑），failSkips 把它转为硬失败。本项目 0 个 Skip，
+         开启零副作用，且防止未来误加 Skip 让 CI 静默少跑。官方文档以 Content Include
+         复制到输出目录（None Update 对不含项无效）。 -->
+    <Content Include="xunit.runner.json" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\BBDown\BBDown.csproj" />
     <ProjectReference Include="..\BBDown.Core\BBDown.Core.csproj" />
   </ItemGroup>

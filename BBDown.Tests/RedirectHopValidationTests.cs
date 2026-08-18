@@ -18,11 +18,18 @@ public class RedirectHopValidationTests
 
         public int Port { get; }
 
+        // 服务端实际处理的请求总数（含初始请求与每一跳）：G9 用它对重定向环断言
+        // “请求数 ≤ maxHops+1”，比只断言终值 ∈ {/a,/b} 强（后者无法证明环被截断）。
+        private int _requestCount;
+        public int RequestCount => Volatile.Read(ref _requestCount);
+
         public LocalRedirectServer(
             Dictionary<string, (int Status, string Location)> routes,
             int terminalStatus = 200)
         {
-            var port = 24000 + (Environment.ProcessId % 2000) + (routes.Count % 100);
+            // 动态分配空闲回环端口：固定端口段（24000-26000）在 CI 并行/端口冲突时
+            // HttpListener.Start 直接失败（G6），与其余测试类一致用 TestPort.Allocate()。
+            var port = TestPort.Allocate();
             _listener.Prefixes.Add($"http://127.0.0.1:{port}/");
             _listener.Start();
             Port = port;
@@ -35,6 +42,7 @@ public class RedirectHopValidationTests
                         var ctx = await _listener.GetContextAsync();
                         try
                         {
+                            Interlocked.Increment(ref _requestCount);
                             var path = ctx.Request.Url!.AbsolutePath;
                             if (routes.TryGetValue(path, out var route))
                             {
@@ -116,6 +124,10 @@ public class RedirectHopValidationTests
 
         // 到达跳数上限后返回（不悬挂），结果落在环中的某一跳
         Assert.Contains(result, new[] { $"{baseUrl}/a", $"{baseUrl}/b" });
+        // G9：服务端计数断言——环必须被 maxHops 截断，总请求数 ≤ 初始 1 次 + maxHops 跳。
+        // 仅断言终值 ∈ {/a,/b} 无法区分“截断后返回”与“侥幸返回”，计数是唯一强证据。
+        Assert.True(server.RequestCount <= 5 + 1,
+            $"重定向环应被 maxHops=5 截断（请求数 ≤ 6），实际请求 {server.RequestCount} 次");
     }
 
     [Fact]
@@ -144,7 +156,8 @@ public class RedirectHopValidationTests
         public LocalHeadRejectingServer(int getStatus)
         {
             _getStatus = getStatus;
-            Port = 25000 + (Environment.ProcessId % 500);
+            // G6：固定端口段改动态分配（同 LocalRedirectServer）
+            Port = TestPort.Allocate();
             _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
             _listener.Start();
             _loop = Task.Run(async () =>
