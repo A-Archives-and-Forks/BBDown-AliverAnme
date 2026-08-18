@@ -75,6 +75,9 @@ internal static class WidevineCrypto
             a[i] ^= b[i];
     }
 
+    // codeql[cs/ecb-encryption] 单块（16 字节）ECB 是协议要求的原语：CMAC 子密钥生成/主体
+    // （NIST SP 800-38B）与零 IV 单块解密（CBC 退化为单块 AES）均固定单块操作，
+    // 不存在多块 ECB 的模式泄露问题。勿改为 CBC/CTR。
     public static byte[] AesEcbEncrypt(byte[] data, byte[] key)
     {
         if (data.Length != 16)
@@ -109,6 +112,8 @@ internal static class WidevineCrypto
         return dec.TransformFinalBlock(data, 0, data.Length);
     }
 
+    // codeql[cs/ecb-encryption] 同上：仅用于零 IV 单块内容密钥解密（见 WidevineCdm.cs
+    // isZeroIv 分支），单块 AES 与 CBC 等价，无模式泄露。
     public static byte[] AesEcbDecrypt(byte[] data, byte[] key)
     {
         using var aes = Aes.Create();
