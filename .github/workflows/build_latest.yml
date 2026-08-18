@@ -30,6 +30,7 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+          cache: true
 
       - name: Install ffmpeg (for LocalIntegration gate)
         run: sudo apt-get update && sudo apt-get install -y ffmpeg
@@ -50,6 +51,7 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+          cache: true
 
       - name: Install zip
         run: choco install zip --no-progress --yes
@@ -149,7 +151,7 @@ jobs:
           path: BBDown_${{ needs.set-date.outputs.date }}_linux-x64.zip
           retention-days: 7
 
-      - name: Upload Artifact[linux-arm64]
+      - name: Upload Artifact [linux-arm64]
         uses: actions/upload-artifact@v5
         with:
           name: BBDown_linux-arm64
@@ -167,6 +169,7 @@ jobs:
         uses: actions/setup-dotnet@v4
         with:
           dotnet-version: ${{ env.DOTNET_SDK_VERSION }}
+          cache: true
 
       - name: Publish [osx]
         run: |

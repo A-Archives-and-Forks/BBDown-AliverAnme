@@ -6,6 +6,13 @@
 
 # BBDown
 
+![CI](https://github.com/aliveranme/BBDown/actions/workflows/build_latest.yml/badge.svg)
+![CI PR](https://github.com/aliveranme/BBDown/actions/workflows/pr.yml/badge.svg)
+![CodeQL](https://github.com/aliveranme/BBDown/actions/workflows/codeql.yml/badge.svg)
+![Release](https://img.shields.io/github/v/release/aliveranme/BBDown)
+![Downloads](https://img.shields.io/github/downloads/aliveranme/BBDown/total)
+![License](https://img.shields.io/github/license/aliveranme/BBDown)
+
 命令行式哔哩哔哩下载器 · Bilibili Downloader
 
 一条命令完成链接解析、多线程下载与音视频混流，支持 8K / HDR / 杜比视界 / 杜比全景声，以及原生 C# 实现的 Widevine DRM 解密。
