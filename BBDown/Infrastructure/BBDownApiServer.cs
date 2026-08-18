@@ -62,6 +62,22 @@ public partial class BBDownApiServer
     private readonly SemaphoreSlim _acceptLimiter;
     private const int MaxQueuedPerConcurrent = 8;
 
+    /// <summary>
+    /// HTTP 查询端点并发上限（D8）：/get-tasks 族每个请求都需在锁内对全部任务做
+    /// 深拷贝快照（Snapshot()），带 token 客户端无限制并发查询会放大 CPU/GC。
+    /// 信号量上限 8：允许本地管理脚本正常多次查询，同时掐住无限并发。
+    /// 非阻塞获取：拿不到槽位立即 429（短事务，客户端可重试），不排队堆积——
+    /// 与认证限速、接受队列的 429 语义一致，避免“慢客户端占满查询槽”。
+    /// </summary>
+    private readonly SemaphoreSlim _queryLimiter;
+    private const int MaxConcurrentQueryHandlers = 8;
+
+    /// <summary>当前空闲的 HTTP 查询槽位（供测试断言限流行为）。</summary>
+    internal int AvailableQuerySlots => _queryLimiter.CurrentCount;
+
+    /// <summary>尝试占用一个查询槽位。供测试直接占用槽位验证 429 限流路径。</summary>
+    internal bool TryAcquireQuerySlot() => _queryLimiter.Wait(0);
+
     /// <summary>当前空闲的接受队列槽位（供测试断言限流行为）。</summary>
     internal int AvailableAcceptSlots => _acceptLimiter.CurrentCount;
 
@@ -113,6 +129,7 @@ public partial class BBDownApiServer
         // 防御：maxConcurrent <= 0 会让 SemaphoreSlim 构造抛 ArgumentOutOfRangeException，
         // serve 作为长驻进程应以可读错误退出而非崩溃
         _concurrencyLimiter = new SemaphoreSlim(Math.Max(1, maxConcurrent), Math.Max(1, maxConcurrent));
+        _queryLimiter = new SemaphoreSlim(MaxConcurrentQueryHandlers, MaxConcurrentQueryHandlers);
         // 接受队列：并发执行 + 排队等待，上限 = maxConcurrent + maxConcurrent*8（可排队等待的数量）。
         // 上限不随请求数增长，serve 长驻进程的任务/CTS 堆积被限制在一个固定数量级内。
         int acceptCap = Math.Max(1, maxConcurrent) * (1 + MaxQueuedPerConcurrent);
@@ -198,6 +215,26 @@ public partial class BBDownApiServer
             await next();
         });
         var taskStatusApi = app.MapGroup("/get-tasks");
+        // D8：查询端点并发上限。快照深拷贝是查询端点的真正成本（GetFinishedTasks 每请求
+        // 深拷贝 running+finished 全部任务），无限并发会放大 CPU/GC。槽位不足返回 429。
+        taskStatusApi.AddEndpointFilter(async (ctx, next) =>
+        {
+            if (!_queryLimiter.Wait(0))
+            {
+                return Results.Problem(
+                    "查询过于频繁，请稍后再试",
+                    statusCode: StatusCodes.Status429TooManyRequests,
+                    title: "Too Many Queries");
+            }
+            try
+            {
+                return await next(ctx);
+            }
+            finally
+            {
+                _queryLimiter.Release();
+            }
+        });
         taskStatusApi.MapGet("/", handler: () =>
         {
             // Results.Json 的序列化发生在锁外（响应流式化阶段），必须在此快照集合，

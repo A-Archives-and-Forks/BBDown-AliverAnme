@@ -555,6 +555,30 @@ public class ServeApiHttpTests
     }
 
     [Fact]
+    public async Task GetTasks_QuerySlotsExhausted_Returns429()
+    {
+        // D8：/get-tasks 族查询端点并发上限——快照深拷贝是查询成本，带 token 客户端
+        // 无限并发查询会放大 CPU/GC。正常查询 200；占满 8 个查询槽（模拟并发中）后，
+        // 下一个请求必须 429 而非继续深拷贝。
+        using var server = new RunningServer();
+        // 正常时可用（未限流）
+        using (var normal = await server.Client.GetAsync("/get-tasks"))
+            Assert.Equal(HttpStatusCode.OK, normal.StatusCode);
+
+        // 占满全部查询槽
+        for (int i = 0; i < 8; i++)
+        {
+            Assert.True(server.Server.TryAcquireQuerySlot(), $"第 {i} 次占用查询槽应成功");
+        }
+        Assert.Equal(0, server.Server.AvailableQuerySlots);
+
+        // 槽满 → 429（列表 + 子路径都受限）
+        using var blocked = await server.Client.GetAsync("/get-tasks");
+        Assert.Equal(HttpStatusCode.TooManyRequests, blocked.StatusCode);
+        Assert.Equal(HttpStatusCode.TooManyRequests, (await server.Client.GetAsync("/get-tasks/running")).StatusCode);
+    }
+
+    [Fact]
     public async Task LoadFinishedTasks_RecoversTasksOnRestart()
     {
         var taskFile = Path.Combine(Path.GetTempPath(), $"bbdown-tasks-{Guid.NewGuid():N}.json");
