@@ -68,13 +68,15 @@ public class PageSelectionTests
         Assert.Equal(new[] { "1", "2", "3", "9" }, Program.ParsePageSelection(" 1 - 3 , 9 "));
     }
 
-    [Fact]
-    public void LeadingDash_IsNotTreatedAsRange()
+    [Theory]
+    [InlineData("-5")]
+    [InlineData("0")]
+    [InlineData("-1-5")]
+    [InlineData("0-5")]
+    public void NonPositiveSegment_Throws(string input)
     {
-        // "-5" 不应被误判成范围（负号不是范围分隔符）：它作为字面段返回，
-        // 因数字上合法（int.Parse 成功）不在这里抛错；上层 Where 过滤后
-        // 空列表会触发显式的"所选分P不存在"报错中止（非静默少下）。
-        Assert.Equal(new[] { "-5" }, Program.ParsePageSelection("-5"));
+        // 负数与 0 不是合法的分P编号：提前报错拦截，防止静默少下
+        Assert.Throws<ArgumentException>(() => Program.ParsePageSelection(input));
     }
 
     [Theory]

@@ -244,12 +244,34 @@ public class SpaceVideoFetcher : IFetcher
                 item.GetInt64Safe("created")));
         }
 
-        var pageProp = data.TryGetPropertySafe("page");
-        var totalCount = pageProp?.GetInt32Safe("count", -1) ?? -1;
+        if (!data.TryGetProperty("page", out var pageProp) || pageProp.ValueKind != JsonValueKind.Object)
+        {
+            throw new InvalidOperationException("获取 UP 主投稿列表失败: 响应中缺少 page 节点");
+        }
+        if (!pageProp.TryGetProperty("count", out var countElem))
+        {
+            throw new InvalidOperationException("获取 UP 主投稿列表失败: 响应 page 中缺少 count 字段");
+        }
+
+        int totalCount;
+        if (countElem.ValueKind == JsonValueKind.Number && countElem.TryGetInt32(out var n))
+        {
+            totalCount = n;
+        }
+        else if (countElem.ValueKind == JsonValueKind.String && int.TryParse(countElem.GetString(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var sn))
+        {
+            totalCount = sn;
+        }
+        else
+        {
+            throw new InvalidOperationException($"获取 UP 主投稿列表失败: page.count 字段格式非法或数值溢出: '{countElem.ToString()}'");
+        }
+
         if (totalCount < 0)
         {
-            throw new InvalidOperationException("获取 UP 主投稿列表失败: 响应中缺少有效的 page.count 字段");
+            throw new InvalidOperationException($"获取 UP 主投稿列表失败: page.count 不能为负数: {totalCount}");
         }
+
         return (entries, totalCount);
     }
 

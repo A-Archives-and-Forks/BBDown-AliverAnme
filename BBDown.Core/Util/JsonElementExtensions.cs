@@ -21,7 +21,7 @@ public static class JsonElementExtensions
             return defaultValue;
         if (prop.ValueKind == JsonValueKind.Number && prop.TryGetInt32(out var v))
             return v;
-        if (prop.ValueKind == JsonValueKind.String && int.TryParse(prop.GetString(), out var sv))
+        if (prop.ValueKind == JsonValueKind.String && int.TryParse(prop.GetString(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var sv))
             return sv;
         return defaultValue;
     }
@@ -34,7 +34,7 @@ public static class JsonElementExtensions
             return defaultValue;
         if (prop.ValueKind == JsonValueKind.Number && prop.TryGetInt64(out var v))
             return v;
-        if (prop.ValueKind == JsonValueKind.String && long.TryParse(prop.GetString(), out var sv))
+        if (prop.ValueKind == JsonValueKind.String && long.TryParse(prop.GetString(), System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var sv))
             return sv;
         return defaultValue;
     }

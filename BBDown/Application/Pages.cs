@@ -106,10 +106,9 @@ internal partial class Program
             var dash = segment.IndexOf('-', 1);
             if (dash < 0)
             {
-                // 无连字符的段必须是数字：非数字段（拼写错误、别名展开残留等）若被静默
-                // 放行，上层 Where 过滤时会被无声丢弃——-p 3,5EST 只下 P3 不报错
-                // （静默少下）。这里显式抛错，让调用方以错误退出码暴露问题。
-                if (!int.TryParse(segment, out _))
+                // 无连字符的段必须是正整数：非数字段或 <= 0 的负数字面量（如 -5、0）若被放行，
+                // 上层 Where 过滤时永远匹配不上真实分P，会产生静默少下的非预期行为。这里显式抛错。
+                if (!int.TryParse(segment, out var singlePage) || singlePage <= 0)
                     throw new ArgumentException($"无法识别的分P \"{segment}\"");
                 pages.Add(segment);
                 continue;
@@ -117,7 +116,7 @@ internal partial class Program
 
             var startText = segment[..dash];
             var endText = segment[(dash + 1)..];
-            if (!int.TryParse(startText, out var start) || !int.TryParse(endText, out var end))
+            if (!int.TryParse(startText, out var start) || !int.TryParse(endText, out var end) || start <= 0 || end <= 0)
             {
                 throw new ArgumentException($"无法识别的分P范围 \"{segment}\"");
             }

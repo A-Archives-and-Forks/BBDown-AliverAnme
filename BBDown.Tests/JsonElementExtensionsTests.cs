@@ -93,4 +93,22 @@ public class JsonElementExtensionsTests
     {
         Assert.Equal(expected, Parse(json).GetDoubleSafe("val"), precision: 2);
     }
+
+    [Fact]
+    public void StringNumberParsing_IsCultureInvariant()
+    {
+        var originalCulture = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+            var e = Parse("""{"i": "12345", "l": "9876543210", "d": "12.34"}""");
+            Assert.Equal(12345, e.GetInt32Safe("i"));
+            Assert.Equal(9876543210L, e.GetInt64Safe("l"));
+            Assert.Equal(12.34, e.GetDoubleSafe("d"), precision: 2);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = originalCulture;
+        }
+    }
 }
