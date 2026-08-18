@@ -99,12 +99,12 @@
 | H4 | High | BBDownDownloadUtil.cs:227,611 | Core 170/200 行嵌套 6-7 层：预检决策方法 + DownloadClipWithRetryAsync；6 个"检查 .tmp/.aria2"块收敛 |
 | H5 | High | 多处 | 重复簇抽 6 个辅助方法（任务收尾四元组 ×4、IsLoopback 判定、SSRF 字面 IP ×2、DNS+逐地址校验 ×3、头块 ×3、权威大小复核 ×3、clip 路径推导 ×4） |
 | H6 | Medium | LiveStreamUtil.cs:75,222,286 | 异常消息文本契约改 LiveRoomClosedException 专用异常 |
-| H7 | Medium | 多处 | 死代码逐条删除（未用 using ×4、空 WriteLine ×2、孤立 doc、死参数 GetAllClips、CommandLineSplitter 同行为分支） |
+| H7 | Medium | 多处 | ✅ 死代码逐条删除（BBDownUtil.GetFiles、UrlResolver.MdRegex、GetAvIdAsync 无 token 重载、空 WriteLine ×2、NormalizeLockKey 上方孤立 doc 归位到 AcquireDownloadLock；CommandLineSplitter 保留——其位与为非短路是有意语义已加注释） |
 | H8 | Medium | 多处 | 误导性命名：ReadLinesThrottled、_savePathLock、MyOptionBindingResult<T>、QualityName 档位映射顺序、nowId |
 | H9 | Medium | 多处 | 魔法数字集中常量（关停 30s/回调 2min/1048576/复核 15s/分片并发 8/退避 3000*2^n/完整性 0.8/FLV 常量 13 个） |
 | H10 | Medium | SubscriptionStore.cs:110-149,205 | 同一历史文件两套异常语义：抽 ReadHistoryLocked() 单入口 |
-| H12 | Low | 多处 | bool & bool、拼写 recevied ×2、ProgressBar 命名、空 XML doc、SetUpServer 命名 |
-| H13 | Low | LiveStreamUtil.cs:57,235 | ResolveAsync 5 元组改 LiveStreamInfo record |
+| H12 | Low | 多处 | ✅ recevied 拼写修正、bool & bool 加非短路注释、SetUpServer→SetupServer 改名（1 定义+4 调用） |
+| H13 | Low | LiveStreamUtil.cs:57,235 | ✅ ResolveAsync 5 元组 → sealed record LiveStreamInfo；LiveCommand/LiveStreamUtil 内部/测试三处消费改按名访问 |
 
 ## 第 6 轮：I 组可读性重构（应用层 + Core 结构）
 
@@ -125,10 +125,10 @@
 | I14 | Medium | AppHelper.cs:448 vs Entity.cs:203 | 同名 AudioMaterial 冲突：DTO 改名 AppRoleAudioDto |
 | I15 | Medium | Display.cs | XML 文档挂错方法归位；.Replace("[] ", "") hack ×4；带宽估算公式 ×6 抽 EstimatedBytes；bool video 参数 |
 | I16 | Medium | BBDownConfigParser.cs:83-209 | MergeWithConfig 130 行 4 次手工扫参收敛 SkipOptionValue + 静态缓存 BuildAliasMap |
-| I17 | Low | 5 处 | 死代码删除（BBDownLoginUtil 注释 Log、BBDownUtil.GetFiles、UrlResolver.MdRegex、GetAvIdAsync 无 token 重载、Pages.cs:170-174 悬空 XML 注释） |
-| I18 | Low | 多处 | 魔法数具名（debug 保留 20、WebJson 摘要 1024、Task.Delay(200)、DrmTechType==2、QR GetGraphic(7) ×2、86400.0） |
-| I19 | Low | 3 处 | 注释残余："与 B3 的 ClassifyCancellation 一致"、Parser 硬编码行号、Download.cs:23-24 连续 ThrowIfCancellationRequested ×2 |
-| I20 | Low | 多处 | 命名/文档歧义：aidOri、--bandwith-ascending 拼写、--skip-ai 指代、Page.bvid getter fallback |
+| I17 | Low | 5 处 | ✅ 死代码全部删除（BBDownLoginUtil 注释 Log、BBDownUtil.GetFiles、UrlResolver.MdRegex、GetAvIdAsync 无 token 重载、Pages.cs 末尾悬空 XML 注释） |
+| I18 | Low | 多处 | ✅ 魔法数具名（日志 JSON 摘要 1024→LogJsonSummaryMaxChars ×3、Task.Delay(200)→FileHandleReleaseDelayMs、DrmTechType==2/QR GetGraphic(7)×2/86400 加注释或常量） |
+| I19 | Low | 3 处 | ✅ 注释残余清理（外部编号引用改自描述、Parser 硬编码行号去掉、连续 ThrowIfCancellationRequested 去重） |
+| I20 | Low | 多处 | ✅ 命名/文档歧义（aidOri 注释说明、--skip-ai 描述明确、Page.bvid fallback 加语义注释；--bandwith-ascending 拼写/语法兼容保留） |
 
 ## 第 7 轮：CI 跟踪项
 
