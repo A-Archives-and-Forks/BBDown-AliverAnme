@@ -300,32 +300,27 @@ public class LiveStreamUtilTests
     /// <summary>
     /// 网络黑洞（连接既不 RST 也不 EOF、只是不再有数据）必须被读停滞看门狗发现，
     /// 而不是永久卡死；看门狗触发后自动重连续录。
+    /// 超时阈值 per-call 注入（不修改全局静态 ReadStallTimeout，避免并行竞态）。
     /// </summary>
     [Fact]
     public async Task DownloadToFile_StalledConnection_WatchdogReconnects()
     {
-        var originalStall = LiveStreamUtil.ReadStallTimeout;
-        LiveStreamUtil.ReadStallTimeout = TimeSpan.FromMilliseconds(300);
-        try
-        {
-            using var server = new FakeLiveServer();
-            server.StreamModes.Enqueue(FakeLiveServer.StreamMode.Stall); // 写 1 块后静默停滞
-            server.StreamModes.Enqueue(FakeLiveServer.StreamMode.Normal);
-            server.OfflineAfterStreams = 2;
+        using var server = new FakeLiveServer();
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.Stall); // 写 1 块后静默停滞
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.Normal);
+        server.OfflineAfterStreams = 2;
 
-            var (result, outPath, dir) = await RunWithServerAsync(server, null, (cts, task) => task);
+        var (result, outPath, dir) = await RunWithServerAsync(server, null, (cts, task) => task,
+            readStallTimeout: TimeSpan.FromMilliseconds(300));
 
-            Assert.Equal(LiveStreamUtil.LiveRecordResult.Success, result);
-            Assert.Equal(2, server.StreamRequestCount); // 停滞被看门狗识破并重连
-            var saved = await File.ReadAllBytesAsync(outPath);
-            long expected = (1L + server.StreamChunkCount) * server.StreamChunkBytes;
-            Assert.Equal(expected, saved.Length);
-            try { Directory.Delete(dir, true); } catch { }
-        }
-        finally
-        {
-            LiveStreamUtil.ReadStallTimeout = originalStall;
-        }
+        Assert.Equal(LiveStreamUtil.LiveRecordResult.Success, result);
+        // 停滞必须被看门狗识破并重连：断言 >=2（首次连接 + 至少一次重连）。
+        // 不用精确 ==2：慢环境下首段可能因调度抖动被看门狗提前触发一次额外重连。
+        Assert.True(server.StreamRequestCount >= 2, $"预期至少重连一次，实际请求数: {server.StreamRequestCount}");
+        var saved = await File.ReadAllBytesAsync(outPath);
+        long expected = (1L + server.StreamChunkCount) * server.StreamChunkBytes;
+        Assert.Equal(expected, saved.Length);
+        try { Directory.Delete(dir, true); } catch { }
     }
 
     /// <summary>
@@ -436,7 +431,8 @@ public class LiveStreamUtilTests
     /// </summary>
     private static async Task<(LiveStreamUtil.LiveRecordResult Result, string OutPath, string Dir)> RunWithServerAsync(
         FakeLiveServer server, TaskCompletionSource? progressTcs,
-        Func<CancellationTokenSource, Task<LiveStreamUtil.LiveRecordResult>, Task<LiveStreamUtil.LiveRecordResult>> body)
+        Func<CancellationTokenSource, Task<LiveStreamUtil.LiveRecordResult>, Task<LiveStreamUtil.LiveRecordResult>> body,
+        TimeSpan? readStallTimeout = null)
     {
         var originalHost = LiveStreamUtil.LiveApiHost;
         var originalRunner = BBDownMuxer.ProcessRunner;
@@ -451,7 +447,7 @@ public class LiveStreamUtilTests
             BBDownMuxer.FFMPEG = "ffmpeg";
 
             using var cts = new CancellationTokenSource();
-            var task = LiveStreamUtil.DownloadToFileAsync("12345", outPath, _ => progressTcs?.TrySetResult(), cts.Token);
+            var task = LiveStreamUtil.DownloadToFileAsync("12345", outPath, _ => progressTcs?.TrySetResult(), cts.Token, readStallTimeout);
             var result = await body(cts, task).WaitAsync(TimeSpan.FromSeconds(30));
             return (result, outPath, dir);
         }

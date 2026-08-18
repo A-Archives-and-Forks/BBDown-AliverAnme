@@ -73,6 +73,54 @@ public class ServeApiSecurityTests
     }
 
     [Fact]
+    public async Task IsSafeCallbackUrl_Ipv6Literal_DoesNotHitDnsResolver()
+    {
+        // 哨兵：抛非 SocketException 异常。若代码把 IPv6 字面量当主机名走了 DNS 分支，
+        // 异常不会被 catch (SocketException) 接住而直接逃逸使测试失败——
+        // 证明字面 IP 分支（DnsSafeHost 无方括号）真的被执行，而非 DNS 假阳性。
+        Task<IPAddress[]> Sentinel(string _) => throw new InvalidOperationException("DNS 分支不应被调用");
+
+        // 回环/链路本地 IPv6 字面量：必须被字面 IP 检查拒绝，而不是靠 DNS 解析失败兜底
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://[::1]/cb", Sentinel));
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://[fe80::1]/cb", Sentinel));
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://[::ffff:127.0.0.1]/cb", Sentinel));
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://[::]/cb", Sentinel));
+        // 公网 IPv6 字面量（管理员显式配置的 webhook）：合法且不解析 DNS——
+        // 修复前它会被 Dns.GetHostAddressesAsync("[2001:db8::1]") 解析失败永久判为不合法
+        Assert.True(await BBDownApiServer.IsSafeCallbackUrlAsync("http://[2001:db8::1]/cb", Sentinel));
+    }
+
+    [Fact]
+    public void IsLoopbackOrigin_AcceptsOnlyLoopbackSources()
+    {
+        // 回环来源（含 IPv6 字面量，DnsSafeHost 无方括号）：放行
+        Assert.True(BBDownApiServer.IsLoopbackOrigin("http://127.0.0.1:23333"));
+        Assert.True(BBDownApiServer.IsLoopbackOrigin("http://localhost:8080"));
+        Assert.True(BBDownApiServer.IsLoopbackOrigin("http://[::1]:23333"));
+        // 非回环/攻击者来源：拒绝（DNS rebinding 下 Origin 是攻击者域名）
+        Assert.False(BBDownApiServer.IsLoopbackOrigin("https://evil.example"));
+        Assert.False(BBDownApiServer.IsLoopbackOrigin("http://192.168.1.10:9000"));
+        Assert.False(BBDownApiServer.IsLoopbackOrigin("not a url"));
+        Assert.False(BBDownApiServer.IsLoopbackOrigin(""));
+    }
+
+    [Fact]
+    public void IsAuthLockedOut_SlidingWindow_ThresholdReached()
+    {
+        // 1 分钟窗口内失败次数达到阈值后必须锁死（令暴力枚举失效）；
+        // 窗口按来源 IP 隔离，不同 IP 互不影响。
+        var server = new BBDownApiServer();
+        for (int i = 0; i < 5; i++)
+        {
+            Assert.False(server.IsAuthLockedOut("10.0.0.1"), $"第 {i + 1} 次失败不应锁死");
+        }
+        Assert.True(server.IsAuthLockedOut("10.0.0.1"), "第 6 次失败必须锁死");
+        Assert.True(server.IsAuthLockedOut("10.0.0.1"), "锁死后持续拒绝");
+        // 其它来源 IP 不受影响（同机合法客户端/攻击者换 IP 各自独立计数）
+        Assert.False(server.IsAuthLockedOut("10.0.0.2"));
+    }
+
+    [Fact]
     public void SanitizeUntrustedOptions_ClearsExecutionFields()
     {
         var req = new ServeRequestOptions
@@ -96,6 +144,9 @@ public class ServeApiSecurityTests
             // Insecure 会全局关闭 TLS 校验：serve 下必须忽略，否则任意客户端可让携带
             // 操作者 SESSDATA 的请求跳过证书校验被 MITM 截获
             Insecure = true,
+            // ForceHttp 会把媒体 CDN 的 https 改写成明文 http（ReplaceUrl），而下载请求
+            // 仍携带操作者 SESSDATA Cookie：与 Insecure 同类威胁，serve 下必须忽略
+            ForceHttp = true,
             // FilePattern/MultiFilePattern 会被当作保存路径模板，字面量中的 ".." 段原样保留
             // （路径穿越面），serve 下必须回落默认模板
             FilePattern = "../../../evil/out.mp4",
@@ -117,6 +168,7 @@ public class ServeApiSecurityTests
         Assert.Equal("", req.NotifyWebhook);
         Assert.Equal("", req.CallBackWebHook);
         Assert.False(req.Insecure);
+        Assert.False(req.ForceHttp);
         Assert.Equal("", req.FilePattern);
         Assert.Equal("", req.MultiFilePattern);
         Assert.Equal("", req.DrmKeyHex);

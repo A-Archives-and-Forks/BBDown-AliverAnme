@@ -71,7 +71,44 @@ public class PageSelectionTests
     [Fact]
     public void LeadingDash_IsNotTreatedAsRange()
     {
-        // "-5" 应当作为一个（后续会被过滤掉的）字面项，而不是空起点的范围
+        // "-5" 不应被误判成范围（负号不是范围分隔符）：它作为字面段返回，
+        // 因数字上合法（int.Parse 成功）不在这里抛错；上层 Where 过滤后
+        // 空列表会触发显式的"所选分P不存在"报错中止（非静默少下）。
         Assert.Equal(new[] { "-5" }, Program.ParsePageSelection("-5"));
+    }
+
+    [Theory]
+    [InlineData("3,abc")]
+    [InlineData("abc")]
+    [InlineData("1,2,x")]
+    public void NonNumericSegment_Throws(string input)
+    {
+        // 非数字段（拼写错误/别名展开残留）若被静默放行，上层会当作不存在的分P
+        // 无声丢弃——-p 3,5EST 只下 P3 不报错。解析层必须显式抛错。
+        Assert.Throws<ArgumentException>(() => Program.ParsePageSelection(input));
+    }
+
+    [Theory]
+    [InlineData("LATEST", 5, "5")]
+    [InlineData("LAST", 5, "5")]
+    [InlineData("NEW", 5, "5")]
+    [InlineData("1,LATEST", 5, "1,5")]
+    [InlineData("LATEST,3", 5, "5,3")]
+    [InlineData("1-2,LATEST", 5, "1-2,5")]
+    [InlineData(" latest ", 5, "5")]   // 大小写与空白容忍
+    [InlineData("1,LATEST,3", 2, "1,2,3")]
+    public void ExpandPageAliases_WholeSegmentMatching(string input, int pageCount, string expected)
+    {
+        // 别名必须全词匹配："LAST" 是 "LATEST" 的前缀，子串替换会把 LATEST
+        // 变成 "5EST"（旧实现的 bug）。展开结果应保留其余段原样。
+        Assert.Equal(expected, Program.ExpandPageAliases(input, pageCount));
+    }
+
+    [Fact]
+    public void ExpandPageAliases_NonAliasSegments_Untouched()
+    {
+        // 含别名字样的普通段不能被误替换（如分P 恰好叫 "LAST" 之外的内容）
+        Assert.Equal("3,LASTING,2", Program.ExpandPageAliases("3,LASTING,2", 7));
+        Assert.Equal("8,PLASTER", Program.ExpandPageAliases("8,PLASTER", 9));
     }
 }

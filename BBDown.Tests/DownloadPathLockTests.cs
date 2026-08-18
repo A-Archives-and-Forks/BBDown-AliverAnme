@@ -3,7 +3,12 @@ namespace BBDown.Tests;
 /// <summary>
 /// 覆盖下载路径锁的生命周期。serve 模式是长驻进程，
 /// 锁表一旦只增不减就是持续增长的内存占用。
+/// 本类通过 <see cref="BBDownDownloadUtil.ActivePathLockCount"/> 断言进程级静态
+/// 锁字典会清理（空闲应为 0）——必须与 DownloadPipelineTests 同处
+/// <see cref="PathLockCollection"/> 串行执行，否则并行测试类登记路径锁会让计数非 0，
+/// 断言误失败。
 /// </summary>
+[Collection("PathLockCollection")]
 public class DownloadPathLockTests
 {
     [Fact]

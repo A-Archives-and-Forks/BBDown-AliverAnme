@@ -650,6 +650,110 @@ public class DownloadPipelineTests
     }
 
     /// <summary>返回错误 Content-Range 起始偏移的本地服务：验证下载必须拒绝而非接受错位区间。</summary>
+    /// <summary>
+    /// 模拟 CDN 黑洞/半死 TCP：HEAD 正常返回 Content-Length，GET 声明完整长度
+    /// 但只写一小段后保持连接打开不再发数据——读停滞看门狗必须识破而不是永久挂起。
+    /// </summary>
+    private sealed class StallingServer : IDisposable
+    {
+        private readonly HttpListener _listener = new();
+        private readonly CancellationTokenSource _cts = new();
+        private readonly byte[] _payload;
+        private readonly Task _loop;
+        public int Port { get; }
+
+        public StallingServer(int size)
+        {
+            _payload = new byte[size];
+            new Random(11).NextBytes(_payload);
+            Port = TestPort.Allocate();
+            _listener.Prefixes.Add($"http://127.0.0.1:{Port}/");
+            _listener.Start();
+            _loop = Task.Run(async () =>
+            {
+                try
+                {
+                    while (!_cts.IsCancellationRequested)
+                    {
+                        var ctx = await _listener.GetContextAsync();
+                        try
+                        {
+                            var resp = ctx.Response;
+                            if (ctx.Request.HttpMethod == "HEAD")
+                            {
+                                resp.StatusCode = 200;
+                                resp.ContentLength64 = _payload.Length;
+                                resp.Close();
+                                continue;
+                            }
+                            // GET：声明完整长度，只写 1KB 后停滞（连接保持打开不 EOF）——
+                            // 模拟 CDN 发完响应头后停发数据。客户端看门狗超时后中止连接，
+                            // 此处 WriteAsync/Close 抛异常被忽略。
+                            resp.StatusCode = 200;
+                            resp.ContentLength64 = _payload.Length;
+                            await resp.OutputStream.WriteAsync(_payload.AsMemory(0, 1024), _cts.Token);
+                            await resp.OutputStream.FlushAsync(_cts.Token);
+                            try { await Task.Delay(Timeout.Infinite, _cts.Token); }
+                            catch (OperationCanceledException) { /* 服务停止 */ }
+                        }
+                        catch { /* 客户端中止：忽略 */ }
+                    }
+                }
+                catch (HttpListenerException) { /* 服务停止 */ }
+            });
+        }
+
+        public void Dispose()
+        {
+            _cts.Cancel();
+            try { _listener.Stop(); } catch { }
+            _listener.Close();
+            try { _loop.Wait(TimeSpan.FromSeconds(2)); } catch { }
+            _cts.Dispose();
+        }
+    }
+
+    /// <summary>
+    /// VOD 媒体流读停滞看门狗：ResponseHeadersRead 之后 HttpClient.Timeout 不约束响应体
+    /// 读取，无看门狗时黑洞连接会让 ReadAsync 永久挂起（serve 模式钉死并发槽）。
+    /// 看门狗超时抛可重试 IOException，重试预算耗尽后向上传播。
+    /// </summary>
+    [Fact]
+    public async Task DownloadFile_StalledBody_WatchdogThrowsRetryableIOException()
+    {
+        var originalStall = BBDownDownloadUtil.MediaReadStallTimeout;
+        var originalRetry = Config.Current.MaxRetryCount;
+        var originalDelay = Config.Current.RetryDelayMs;
+        BBDownDownloadUtil.MediaReadStallTimeout = TimeSpan.FromMilliseconds(300);
+        // 缩短重试预算与退避：看门狗抛 IOException 走重试链，预算耗尽后异常向上传播——
+        // 测试只关心看门狗触发，不必等待完整默认重试序列
+        Config.Apply(Config.Current with { MaxRetryCount = 1, RetryDelayMs = 10 });
+        try
+        {
+            using var server = new StallingServer(64 * 1024);
+            var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+            Directory.CreateDirectory(dir);
+            var target = Path.Combine(dir, "stalled.mp4");
+            try
+            {
+                var ex = await Assert.ThrowsAsync<IOException>(() =>
+                    BBDownDownloadUtil.DownloadFileAsync(
+                        $"http://127.0.0.1:{server.Port}/file", target,
+                        new BBDownDownloadUtil.DownloadConfig(), CancellationToken.None));
+                Assert.Contains("停滞", ex.Message);
+            }
+            finally
+            {
+                Directory.Delete(dir, true);
+            }
+        }
+        finally
+        {
+            BBDownDownloadUtil.MediaReadStallTimeout = originalStall;
+            Config.Apply(Config.Current with { MaxRetryCount = originalRetry, RetryDelayMs = originalDelay });
+        }
+    }
+
     private sealed class MisleadingRangeServer : IDisposable
     {
         private readonly HttpListener _listener = new();

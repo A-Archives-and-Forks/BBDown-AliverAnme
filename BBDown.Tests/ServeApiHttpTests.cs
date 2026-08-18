@@ -99,14 +99,15 @@ public class ServeApiHttpTests
     }
 
     [Fact]
-    public async Task AddTask_OversizedBody_Returns400()
+    public async Task AddTask_OversizedBody_Returns413()
     {
         using var server = new RunningServer();
-        // 请求体超过 64KB 上限 → 绑定层返回 400，拒绝解析超大负载
+        // 请求体超过 64KB 上限 → 返回 413（F8 契约对齐：超大负载与 JSON 语法错误语义不同，
+        // 用 413 区分；此前注释承诺 413、实现与测试却是 400，三处不一致）
         var oversized = new { Url = "zz-not-a-real-url", Padding = new string('x', 128 * 1024) };
         using var content = JsonContent.Create(oversized);
         using var resp = await server.Client.PostAsync("/add-task", content);
-        Assert.Equal(HttpStatusCode.BadRequest, resp.StatusCode);
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, resp.StatusCode);
     }
 
     [Fact]
@@ -267,6 +268,150 @@ public class ServeApiHttpTests
         Assert.Equal(HttpStatusCode.OK, resp.StatusCode);
         Assert.False(resp.Headers.Contains("Access-Control-Allow-Origin"),
             "不再启用任意来源 CORS，响应不应包含 Access-Control-Allow-Origin 头");
+    }
+
+    [Fact]
+    public async Task Cors_NonLoopbackOrigin_WriteApi_403()
+    {
+        // CSRF 防护：浏览器跨源请求携带 Origin，非回环来源（攻击者网页/DNS rebinding）
+        // 的写端点请求必须 403。删掉这条防线 501 个测试仍全绿，属于零覆盖契约。
+        using var server = new RunningServer();
+
+        // 非回环 Origin → 写端点全部 403（/add-task、/cancel、/remove-finished）
+        using (var addReq = new HttpRequestMessage(HttpMethod.Post, "/add-task"))
+        {
+            addReq.Headers.TryAddWithoutValidation("Origin", "https://evil.example");
+            addReq.Content = JsonContent.Create(new { Url = "zz-not-a-real-url" });
+            using var resp = await server.Client.SendAsync(addReq);
+            Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        }
+        using (var cancelReq = new HttpRequestMessage(HttpMethod.Post, "/cancel/whatever"))
+        {
+            cancelReq.Headers.TryAddWithoutValidation("Origin", "https://evil.example");
+            using var resp = await server.Client.SendAsync(cancelReq);
+            Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        }
+        using (var delReq = new HttpRequestMessage(HttpMethod.Delete, "/remove-finished/"))
+        {
+            delReq.Headers.TryAddWithoutValidation("Origin", "https://evil.example");
+            using var resp = await server.Client.SendAsync(delReq);
+            Assert.Equal(HttpStatusCode.Forbidden, resp.StatusCode);
+        }
+
+        // 回环 Origin（本地页面/管理脚本）不受影响
+        using (var okReq = new HttpRequestMessage(HttpMethod.Post, "/add-task"))
+        {
+            okReq.Headers.TryAddWithoutValidation("Origin", "http://127.0.0.1:23333");
+            okReq.Content = JsonContent.Create(new { Url = "zz-not-a-real-url" });
+            using var resp = await server.Client.SendAsync(okReq);
+            Assert.Equal(HttpStatusCode.Accepted, resp.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task AddTask_TextPlainContentType_415()
+    {
+        // text/plain 是 CORS 简单请求的合法 Content-Type（不发预检），正是攻击者网页
+        // 驱动本机 serve 提交任务的载体：/add-task 必须拒绝非 JSON Content-Type。
+        using var server = new RunningServer();
+        using var content = new StringContent("{\"Url\":\"zz-not-a-real-url\"}", System.Text.Encoding.UTF8, "text/plain");
+        using var resp = await server.Client.PostAsync("/add-task", content);
+        Assert.Equal(HttpStatusCode.UnsupportedMediaType, resp.StatusCode);
+
+        // application/json 正常受理（415 只拦非 JSON 载体）
+        using (var ok = await server.Client.PostAsync("/add-task", JsonContent.Create(new { Url = "zz-not-a-real-url" })))
+        {
+            Assert.Equal(HttpStatusCode.Accepted, ok.StatusCode);
+        }
+    }
+
+    [Fact]
+    public async Task TokenAuth_RepeatedFailures_RateLimited429()
+    {
+        // 认证失败限速：1 分钟窗口内失败达到阈值后必须 429，令 X-Serve-Token
+        // 暴力枚举失效。连续 6 次错误 token：前 5 次 401，第 6 次 429。
+        using var server = new RunningServer(withToken: true);
+        server.Client.DefaultRequestHeaders.Add("X-Serve-Token", "wrong-token");
+        for (int i = 1; i <= 5; i++)
+        {
+            using var resp = await server.Client.GetAsync("/get-tasks/");
+            Assert.Equal(HttpStatusCode.Unauthorized, resp.StatusCode);
+        }
+        using (var locked = await server.Client.GetAsync("/get-tasks/"))
+        {
+            Assert.Equal(HttpStatusCode.TooManyRequests, locked.StatusCode);
+        }
+    }
+
+    [Fact]
+    public void NonLoopbackListen_WithoutToken_Throws()
+    {
+        // 默认安全边界：非回环监听（0.0.0.0/具体网卡 IP）会把端点暴露到局域网/公网，
+        // 未配置 --serve-token 时必须拒绝启动——删掉这条防线测试仍全绿。
+        var server = new BBDownApiServer();
+        server.SetUpServer();
+        Assert.Throws<InvalidOperationException>(() => server.Run("http://0.0.0.0:12345"));
+        Assert.Throws<InvalidOperationException>(() => server.Run("http://192.168.1.10:12345"));
+        // 回环监听不带 token 是受信任本地边界，保持兼容（不抛）——但 Run 会阻塞，
+        // 这里用回环地址 + 预取消 token 验证启动路径可进入（不抛非法配置异常）
+        var cts = new CancellationTokenSource();
+        cts.Cancel();
+        try
+        {
+            server.Run("http://127.0.0.1:58699", cts.Token);
+        }
+        catch (InvalidOperationException)
+        {
+            Assert.Fail("回环监听不带 token 不应被拒");
+        }
+        catch (OperationCanceledException)
+        {
+            // 预取消：RunAsync 立即退出，符合预期
+        }
+    }
+
+    [Fact]
+    public async Task Cancel_RealQueuedTask_ProducesCancelledAndPersisted()
+    {
+        // /cancel 快乐路径：真实任务（排队等待并发闸门）被取消后必须标记 Cancelled、
+        // 移入 finished 并持久化——此前该路径零覆盖。
+        using var server = new RunningServer(maxConcurrent: 1);
+        // 占用唯一并发执行槽：让后续任务停在"排队等待闸门"状态，
+        // 无需真实慢任务/网络依赖即可验证排队取消路径。
+        Assert.True(server.Server.TryAcquireConcurrencySlot(), "应能占用并发闸门");
+
+        using var content = JsonContent.Create(new { Url = "zz-not-a-real-url" });
+        using var resp = await server.Client.PostAsync("/add-task", content);
+        Assert.Equal(HttpStatusCode.Accepted, resp.StatusCode);
+        var accepted = JsonSerializer.Deserialize(await resp.Content.ReadAsStringAsync(),
+            AppJsonSerializerContext.Default.AddTaskAccepted);
+        Assert.NotNull(accepted);
+
+        // 任务已入队（Queued，正在等待闸门），取消它
+        using var cancel = await server.Client.PostAsync($"/cancel/{accepted.TaskId}", null);
+        Assert.Equal(HttpStatusCode.OK, cancel.StatusCode);
+
+        // 取消后应落盘为 Cancelled（轮询等待后台收尾）
+        var finished = await WaitForFinishedTasksAsync(server.Client);
+        var task = Assert.Single(finished);
+        Assert.Equal(DownloadTaskStatus.Cancelled, task.Status);
+        Assert.Equal(accepted.TaskId, task.JobId);
+
+        // 持久化文件里也是 Cancelled（重启可恢复）。/get-tasks 可见任务早于
+        // PersistFinishedTasks 写盘完成（二者之间存在短暂窗口），轮询等待落盘。
+        DownloadTask? persisted = null;
+        for (int i = 0; i < 40 && persisted is null; i++)
+        {
+            if (File.Exists(server.TaskFile))
+            {
+                var json = await File.ReadAllTextAsync(server.TaskFile);
+                var loaded = JsonSerializer.Deserialize(json, AppJsonSerializerContext.Default.ListDownloadTask);
+                persisted = loaded?.FirstOrDefault(t => t.JobId == accepted.TaskId);
+            }
+            if (persisted is null) await Task.Delay(100);
+        }
+        Assert.NotNull(persisted);
+        Assert.Equal(DownloadTaskStatus.Cancelled, persisted.Status);
     }
 
     [Fact]
