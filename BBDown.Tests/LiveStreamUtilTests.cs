@@ -340,6 +340,50 @@ public class LiveStreamUtilTests
         try { Directory.Delete(dir, true); } catch { }
     }
 
+    [Fact]
+    public async Task ResolveAsync_NonNumericRoomId_ThrowsArgumentException()
+    {
+        // F10 未覆盖分支：非数字 roomId 必须在发出任何网络请求前被拒绝（本地校验），
+        // 而不是让 API 请求带非法 id。ResolveAsync 是 async——异常包装在返回的 Task 中。
+        var ex = await Assert.ThrowsAsync<ArgumentException>(() =>
+            LiveStreamUtil.ResolveAsync("abc-123", CancellationToken.None));
+        Assert.Contains("必须是数字", ex.Message, StringComparison.Ordinal);
+    }
+
+    /// <summary>
+    /// 零字节段：连接建立后立即 EOF。直播仍在时，空 seg 文件必须被删除（不残留空文件），
+    /// 且按退避逻辑重连续录；最终产物只含正常段内容（F10 未覆盖分支）。
+    /// </summary>
+    [Fact]
+    public async Task DownloadToFile_ZeroByteEof_DeletesEmptySegmentThenRecordsValidData()
+    {
+        using var server = new FakeLiveServer();
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.ZeroByte); // 首段零字节 EOF
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.Normal);   // 退避后重连续录
+        server.OfflineAfterStreams = 2;                                 // 录到有效段后下播
+
+        var (result, outPath, dir) = await RunWithServerAsync(server, null, (cts, task) => task);
+
+        Assert.Equal(LiveStreamUtil.LiveRecordResult.Success, result);
+        // 首段（零字节）应被删除，不应残留空 seg 文件
+        var segsDir = outPath + ".segs";
+        if (Directory.Exists(segsDir))
+        {
+            var leftover = Directory.EnumerateFiles(segsDir, "*", SearchOption.AllDirectories)
+                .Where(f => !f.EndsWith(".flv", StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            Assert.True(leftover.Length == 0, $"零字节 seg 不应残留: {string.Join(", ", leftover)}");
+        }
+        // 只重连了一次（零字节→正常段）
+        Assert.Equal(2, server.StreamRequestCount);
+        // 最终产物只含正常段内容（每段 ChunkCount 块 × ChunkBytes）
+        var saved = await File.ReadAllBytesAsync(outPath);
+        long expected = (long)server.StreamChunkCount * server.StreamChunkBytes;
+        Assert.Equal(expected, saved.Length);
+        Assert.NotEmpty(saved);
+        try { Directory.Delete(dir, true); } catch { }
+    }
+
     /// <summary>
     /// 画质请求必须带 qn=30000（最高档，按账号权限回落），而不是低档位——
     /// 配合登录凭据（BBDown.data）才能拿到账号可看的最高画质。
@@ -679,6 +723,8 @@ public class LiveStreamUtilTests
             AbortMidStream,
             /// <summary>写 1 块数据后静默挂起（模拟网络黑洞/读停滞）。</summary>
             Stall,
+            /// <summary>连接建立后立即 EOF、不写任何字节（模拟 CDN 到期/零字节段）。</summary>
+            ZeroByte,
         }
 
         private readonly HttpListener _listener = new();
@@ -764,6 +810,12 @@ public class LiveStreamUtilTests
                                 await Task.Delay(10, _cts.Token);
                             }
                             resp.Abort(); // 中途掐断：客户端读流报连接中断
+                            break;
+                        case StreamMode.ZeroByte:
+                            // 零字节 EOF：连接建立后立即结束，不写任何字节。
+                            // 客户端应删除空 seg 文件并在直播仍在时退避重连，不能把
+                            // “空段”当有效内容并入（F10 未覆盖分支）。
+                            resp.Close();
                             break;
                         case StreamMode.Stall:
                             await WriteChunkAsync(resp, StreamChunkBytes);

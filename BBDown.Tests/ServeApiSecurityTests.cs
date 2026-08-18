@@ -45,6 +45,27 @@ public class ServeApiSecurityTests
         => Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync(url));
 
     [Fact]
+    public async Task IsSafeCallbackUrl_CgnatAndUla_Rejected()
+    {
+        // F12：CGNAT（100.64.0.0/10）与 IPv6 ULA（fc00::/7）分支此前无直接测试。
+        // IsBlockedAddress 由 IsSafeCallbackUrlAsync 的“域名 DNS 解析分支”调用：
+        // 域名重绑定解析到这些段即拒绝（公网域名指向运营商级 NAT / ULA 是 SSRF 面）。
+        // 字面 IP 分支有意放行（字面 IP 无 DNS 重绑定风险，局域网是 serve 正常用法）。
+        Func<string, Task<IPAddress[]>> Resolve(IPAddress ip)
+            => _ => Task.FromResult(new IPAddress[] { ip });
+
+        // CGNAT 边界：100.64.0.0/10 = 100.64.0.0 - 100.127.255.255
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://rebind.test/cb", Resolve(IPAddress.Parse("100.64.0.1"))));
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://rebind.test/cb", Resolve(IPAddress.Parse("100.127.255.254"))));
+        // IPv6 ULA（fc00::/7 = fc00:: - fdff:...）
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://rebind.test/cb", Resolve(IPAddress.Parse("fc00::1"))));
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://rebind.test/cb", Resolve(IPAddress.Parse("fdff::1"))));
+        // 边界外的 100.63.0.1 / 100.128.0.1 不在拒绝段：公网可达地址放行（不为敏感段）
+        Assert.True(await BBDownApiServer.IsSafeCallbackUrlAsync("http://rebind.test/cb", Resolve(IPAddress.Parse("100.63.0.1"))));
+        Assert.True(await BBDownApiServer.IsSafeCallbackUrlAsync("http://rebind.test/cb", Resolve(IPAddress.Parse("100.128.0.1"))));
+    }
+
+    [Fact]
     public async Task IsSafeCallbackUrl_DnsRebindingDomain_Rejected()
     {
         // 攻击者注册一个解析到云元数据地址的域名：字符串比对会放行，

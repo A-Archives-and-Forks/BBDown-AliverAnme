@@ -38,11 +38,11 @@
 
 | 项 | 级别 | 位置 | 处理 |
 |----|------|------|------|
-| F6 | Medium | ExternalProcessRunnerTests.cs:50,68 | "KillsProcessTree" 补子进程消亡证据（哨兵端口/文件续写停止），防退化为只杀根进程仍绿 |
-| F7 | Medium | ExternalProcessRunnerTests.cs:160-201 | MergeFLV 假 runner 测试改 Assert.ThrowsAsync 确定性断言 + 源分段保留断言 |
-| G7 | Medium | DownloadPipelineTests.cs:133-161 | 补 3-clips 用例：多 clip 命名/排序/按序拼接（错位/乱序/漏段）字节级验证 |
-| F10 | Suggestion | LiveStreamUtil.cs | 补 3 个未覆盖分支：零字节 EOF 仍在直播→删除+3s 退避、LiveStreamWriteException 终止、非数字 roomId→ArgumentException |
-| F12 | Suggestion | 多处 | LocalIntegration 缺 ffmpeg return 改 Skip；IsBlockedAddress CGNAT/ULA 分支直测；ProgressBar Dispose 结算；SubscriptionStore 重复 Add/不存在 Remove/同 aid 幂等 |
+| F6 | Medium | ExternalProcessRunnerTests.cs:50,68 | ✅ “KillsProcessTree” 两个测试升级为进程树哨兵验证：根进程派生持续写哨兵文件的子进程，超时/取消后验证哨兵文件停止增长（整棵进程树被杀）——替换此前只断言异常类型、杀根不杀子也通过的零证据断言；Unix 用 sh 后台子 shell / Windows 用 cmd+ping 重定向 |
+| F7 | Medium | ExternalProcessRunnerTests.cs:160-201 | ✅ MergeFLV 假 runner 测试从“try/catch 吞异常”（抛/不抛都通过）改为确定性断言：Assert.ThrowsAsync<InvalidOperationException> + 消息含“保留源分段” + 假 runner 确实被调 + 源分段保留 |
+| G7 | Medium | DownloadPipelineTests.cs:133-161 | ✅ 新增 3-clips SHA-256 用例：2.5MB 载荷/1MB 分片 → 服务端 Record RangeHeaders（3 段互补不重叠覆盖 [0,size)）+ 产物逐字节哈希一致 + 分片清理 + 锁释放 |
+| F10 | Suggestion | LiveStreamUtil.cs | ✅ 补 2 个可稳定分支：非数字 roomId→ArgumentException（ResolveAsync 不发起网络请求）；零字节 EOF→删除空 seg + 退避重连续录（新 StreamMode.ZeroByte）。⚠️ LiveStreamWriteException 分支需要磁盘故障/只读文件系统，跨平台测试不可靠触发，保留人工验证 |
+| F12 | Suggestion | 多处 | ✅ IsBlockedAddress CGNAT/ULA 经 IsSafeCallbackUrl 域名 DNS 分支直测（6 断言）；ProgressBar Dispose 结算新增 Test 文件（2 测试）；SubscriptionStore 幂等新增 5 测试（重复 Add/不存在 Remove/同 aid 去重/最近优先）。⚠️ LocalIntegration 缺 ffmpeg return 改 Skip 在 **xunit v2 无法实现**：`Assert.Skip` 动态跳过仅 v3 支持；静态 `[Fact(Skip)]` 编译期写死不能表达运行时缺 ffmpeg，且与 G1 的 `failSkips:true` 冲突（Skip 会变失败）——保留 return，待 v3 迁移时改为 Assert.Skip |
 
 ## 第 3 轮：B3 独立安全审查（上次 risk-core 超时未完成）
 

@@ -120,4 +120,60 @@ public class SubscriptionStoreTests : IDisposable
         Assert.Contains(".corrupt-", ex.Message);
         Assert.False(File.Exists(HistoryFile));
     }
+
+    [Fact]
+    public void Add_DuplicateTarget_IsIdempotent()
+    {
+        // F12：重复 Add 同一 target 不得重复登记——否则 sub list 出现重复项、
+        // remove 一次删不干净。
+        SubscriptionStore.Add("mid:1", "UP");
+        SubscriptionStore.Add("mid:1", "UP");
+        SubscriptionStore.Add("mid:1", "UP");
+        Assert.Single(SubscriptionStore.Load());
+    }
+
+    [Fact]
+    public void Remove_NonexistentTarget_DoesNotThrow()
+    {
+        // F12：Remove 不存在的订阅不得抛异常/留空残余（幂等）
+        SubscriptionStore.Remove("mid:404");
+        Assert.Empty(SubscriptionStore.Load());
+    }
+
+    [Fact]
+    public void Remove_ExistentTarget_RemovesOnlyThat()
+    {
+        // F12：Remove 只删除目标，不影响其它订阅
+        SubscriptionStore.Add("mid:1", "UP1");
+        SubscriptionStore.Add("mid:2", "UP2");
+        SubscriptionStore.Remove("mid:1");
+        var subs = SubscriptionStore.Load();
+        Assert.Single(subs);
+        Assert.Equal("mid:2", subs[0].Target);
+    }
+
+    [Fact]
+    public void RecordDownloaded_SameAid_IsIdempotent()
+    {
+        // F12：同 aid 重复 RecordDownloaded 不得历史膨胀/重复——否则每次 sub check
+        // 都会把已下载的内容当作新增重新下载一遍。
+        SubscriptionStore.RecordDownloaded("mid:1", "170001");
+        SubscriptionStore.RecordDownloaded("mid:1", "170001");
+        SubscriptionStore.RecordDownloaded("mid:1", "170001");
+        Assert.Single(SubscriptionStore.LoadHistory("mid:1"));
+    }
+
+    [Fact]
+    public void RecordDownloaded_MovesExistingAid_KeepsSingleEntry()
+    {
+        // F12: RecordDownloaded 对已存在 aid 采用 Remove+Add（最近优先语义）：
+        // active list 里同 aid 只能出现一次，且重复记录后仍为单条。
+        SubscriptionStore.RecordDownloaded("mid:1", "a1");
+        SubscriptionStore.RecordDownloaded("mid:1", "b2");
+        SubscriptionStore.RecordDownloaded("mid:1", "a1"); // 同 aid 重复
+        var hist = SubscriptionStore.LoadHistory("mid:1");
+        Assert.Equal(2, hist.Count); // a1 + b2，不重复
+        Assert.Contains("a1", hist);
+        Assert.Contains("b2", hist);
+    }
 }

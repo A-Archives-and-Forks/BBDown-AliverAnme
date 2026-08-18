@@ -166,6 +166,63 @@ public class DownloadPipelineTests
     }
 
     [Fact]
+    public async Task MultiThreadDownloadAndMerge_MultipleClips_AssembledInOrderByteExact()
+    {
+        // G7：此前所有 SHA-256 E2E 测试都只产生单 clip（256KB 载荷 / 1MB 分片），
+        // 多 clip 的命名/排序/按序拼接（错位/乱序/漏段）无字节级验证。这里用
+        // 3 个分片（2.5MB 载荷 + 1MB 分片 → 1MB+1MB+0.5MB），验证：
+        //  1) 服务端实际收到 3 段互补、无重叠的 Range（覆盖 [0, size)）——分片正确；
+        //  2) 合并产物与服务端载荷逐字节一致（SHA-256）——任意错位/乱序/漏段都会反映。
+        using var server = new LocalByteServer(2_500_000);
+        var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(dir);
+        var target = Path.Combine(dir, "video.mp4");
+        try
+        {
+            var config = new BBDownDownloadUtil.DownloadConfig { MultiThread = true };
+            var original = Config.Current.ThreadSegmentSizeMb;
+            try
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = 1 }); // 1MB 分片
+                await BBDownDownloadUtil.MultiThreadDownloadAndMergeAsync(
+                    $"http://127.0.0.1:{server.Port}/file", target, config, CancellationToken.None);
+            }
+            finally
+            {
+                Config.Apply(Config.Current with { ThreadSegmentSizeMb = original });
+            }
+
+            // 3 个分片：1MB + 1MB + 0.5MB（2 次整片 + 1 次末段）
+            Assert.Equal(3, server.RangeHeaders.Count);
+            // 3 段互补且不重叠地覆盖 [0, size)：按起始位置排序后，前导起点必须为 0，
+            // 每段起点必须接上一段终点+1，末段必须覆盖到文件末尾。
+            var ranges = server.RangeHeaders
+                .Select(h =>
+                {
+                    var p = h.Split('=')[1].Split('-');
+                    return (From: long.Parse(p[0]), To: long.Parse(p[1]));
+                })
+                .OrderBy(r => r.From)
+                .ToList();
+            Assert.Equal(0, ranges[0].From);
+            for (int i = 1; i < ranges.Count; i++)
+                Assert.Equal(ranges[i - 1].To + 1, ranges[i].From);
+            Assert.Equal(2_500_000 - 1, ranges[^1].To);
+
+            // 产物字节级一致：错位/乱序/漏段都会破坏哈希
+            Assert.Equal(server.PayloadHash, TestHash.ComputeSha256Hex(await File.ReadAllBytesAsync(target)));
+            Assert.Equal(2_500_000, new FileInfo(target).Length);
+            // 分片已清理 + 锁已释放
+            Assert.Empty(Directory.GetFiles(dir, "*.vclip"));
+            Assert.Equal(0, BBDownDownloadUtil.ActivePathLockCount);
+        }
+        finally
+        {
+            Directory.Delete(dir, true);
+        }
+    }
+
+    [Fact]
     public async Task MultiThreadDownloadAndMerge_OversizedStaleClip_IsTruncatedNotMerged()
     {
         // 回归：旧分片若比目标分片更长（上次中断留下的超长尾部），不能把截断后"恰好吻合"
@@ -838,6 +895,9 @@ public class DownloadPipelineTests
         /// <summary>服务端载荷的 SHA-256 十六进制串。测试用它校验下载产物内容一致（而非仅长度）。</summary>
         public string PayloadHash { get; }
 
+        /// <summary>已服务的 Range 请求区间（G7 验证多分片覆盖时用）。锁保护。</summary>
+        public List<string> RangeHeaders { get; } = [];
+
         public LocalByteServer(int size)
         {
             _payload = new byte[size];
@@ -865,6 +925,10 @@ public class DownloadPipelineTests
                                 continue;
                             }
                             // 支持 Range 请求：响应 206 分段
+                            if (ctx.Request.HttpMethod == "GET" && !string.IsNullOrEmpty(ctx.Request.Headers["Range"]))
+                            {
+                                lock (RangeHeaders) RangeHeaders.Add(ctx.Request.Headers["Range"]);
+                            }
                             var rangeHeader = ctx.Request.Headers["Range"];
                             if (string.IsNullOrEmpty(rangeHeader))
                             {
