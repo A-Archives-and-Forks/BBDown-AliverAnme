@@ -84,7 +84,7 @@ internal static class WidevineCrypto
             throw new ArgumentException("ECB block must be exactly 16 bytes", nameof(data));
         using var aes = Aes.Create();
         aes.Key = key;
-        // codeql[cs/ecb-encryption] 仅单块协议操作，见方法上方说明
+        // codeql[cs/ecb-encryption]
         aes.Mode = CipherMode.ECB;
         aes.Padding = PaddingMode.None;
         using var enc = aes.CreateEncryptor();
@@ -119,7 +119,7 @@ internal static class WidevineCrypto
     {
         using var aes = Aes.Create();
         aes.Key = key;
-        // codeql[cs/ecb-encryption] 仅零 IV 单块解密，见方法上方说明
+        // codeql[cs/ecb-encryption]
         aes.Mode = CipherMode.ECB;
         aes.Padding = PaddingMode.None;
         using var dec = aes.CreateDecryptor();
