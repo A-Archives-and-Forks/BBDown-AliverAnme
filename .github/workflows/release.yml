@@ -226,11 +226,19 @@ jobs:
             fi
           } >> "$NOTES_FILE"
 
-          # Use gh CLI to create release with notes from file
-          gh release create "$TAG" \
-            --title "BBDown ${TAG}" \
-            --notes-file "$NOTES_FILE" \
-            ${{ contains(github.ref_name, '-') && '--prerelease' || '' }} \
-            artifacts/*.zip
+          # 幂等发布：release 可能已被手动/脚本先行创建——同名会导致 gh release create
+          # 直接失败（'a release with the same tag name already exists'），构建产物永远传不上去。
+          # 先探测：已存在则跳过创建、仅补齐 assets；不存在则正常创建并随附 assets。
+          # --clobber 覆盖同名资产，保证重复运行/重跑安全。
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release ${TAG} already exists — skipping creation, uploading assets"
+            gh release upload "$TAG" artifacts/*.zip --clobber
+          else
+            gh release create "$TAG" \
+              --title "BBDown ${TAG}" \
+              --notes-file "$NOTES_FILE" \
+              ${{ contains(github.ref_name, '-') && '--prerelease' || '' }} \
+              artifacts/*.zip
+          fi
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
