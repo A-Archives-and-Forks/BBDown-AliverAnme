@@ -494,9 +494,31 @@ public static partial class HTTPUtil
 
             if (retryAsGet)
             {
+                // GET 兜底有界重试：HEAD 不被支持/失败后回退 GET，网络瞬断时若只发一次会
+                // 误报"短链解析失败（目标可能已失效）"。重试一次（指数退避）并记录 Warn——
+                // 此前 catch { return current; } 无任何日志，瞬断被静默当成内容性失败。
+                var getResult = await GetOnceAsync(current);
+                if (getResult.Next is not null)
+                {
+                    current = getResult.Next;
+                    continue;
+                }
+                return getResult.Current;
+            }
+            return current;
+        }
+        // 到达跳数上限仍未结束：返回当前地址（调用方据此判断）
+        return current;
+
+        // 局部函数：GET 一次指定地址。返回 { Current = 未重定向的最终地址（含成功/校验中止/无 Location），
+        //  Next = 有待跟随的下一跳 }。网络失败抛 HttpRequestException。
+        async Task<(string Current, string? Next)> GetOnceAsync(string target)
+        {
+            for (int attempt = 1; ; attempt++)
+            {
                 try
                 {
-                    using var getRequest = new HttpRequestMessage(HttpMethod.Get, current);
+                    using var getRequest = new HttpRequestMessage(HttpMethod.Get, target);
                     getRequest.Headers.TryAddWithoutValidation("User-Agent", GetUserAgent(null));
                     getRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
                     getRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
@@ -508,30 +530,35 @@ public static partial class HTTPUtil
                         var location = getResponse.Headers.Location;
                         if (location is null)
                         {
-                            return current;
+                            return (target, null);
                         }
-                        var next = location.IsAbsoluteUri ? location : new Uri(new Uri(current), location);
+                        var next = location.IsAbsoluteUri ? location : new Uri(new Uri(target), location);
                         if (!validateNextHop(next))
                         {
                             Logger.LogWarn($"重定向目标未通过校验，已中止: {SensitiveDataMasker.MaskUrl(next.ToString())}");
-                            return current;
+                            return (target, null);
                         }
-                        current = next.ToString();
-                        continue;
+                        return (target, next.ToString());
                     }
-                    return current;
+                    return (target, null);
                 }
                 catch (HttpRequestException)
                 {
-                    // GET 也失败：按不可达处理，返回当前地址
-                    return current;
+                    if (attempt == 1)
+                    {
+                        Logger.LogWarn($"重定向 GET 请求失败，{RedirectGetRetryDelayMs}ms 后重试一次: {SensitiveDataMasker.MaskUrl(target)}");
+                        await Task.Delay(RedirectGetRetryDelayMs, token);
+                        continue;
+                    }
+                    Logger.LogWarn($"重定向 GET 请求重试仍失败: {SensitiveDataMasker.MaskUrl(target)}");
+                    throw;
                 }
             }
-            return current;
         }
-        // 到达跳数上限仍未结束：返回当前地址（调用方据此判断）
-        return current;
     }
+
+    /// <summary>短链 GET 兜底重试的退避常量（与 API 层退避基数一致）。</summary>
+    private const int RedirectGetRetryDelayMs = 500;
 
     public static async Task<byte[]> GetPostResponseAsync(string Url, byte[] postData, Dictionary<string, string>? headers = null, CancellationToken token = default)
     {

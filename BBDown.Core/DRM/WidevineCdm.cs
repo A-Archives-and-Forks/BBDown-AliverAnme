@@ -77,6 +77,14 @@ public sealed class WidevineCdm : IDisposable
             Logger.LogWarn($"许可证请求失败: {ex.Message}");
             return null;
         }
+        catch (TimeoutException ex)
+        {
+            // SendRequestAsync 重试耗尽后把超时转成 TimeoutException（与 HTTPUtil 策略一致）：
+            // 若保留 TaskCanceledException 原样抛出，会在 GetKeysAsync 被
+            // catch (OperationCanceledException) throw 误判为"用户取消"（诊断误导）。
+            Logger.LogWarn($"许可证请求超时: {ex.Message}");
+            return null;
+        }
 
         return ParseResponse(responseBytes, requestBytes);
     }
@@ -187,34 +195,77 @@ public sealed class WidevineCdm : IDisposable
 
     // ---- HTTP ----
 
+    /// <summary>许可证请求最大尝试次数（含首次）：CDN 瞬时 5xx/传输故障重试上限。</summary>
+    private const int MaxLicenseAttempts = 3;
+
+    /// <summary>许可证重试退避毫秒数：500ms × 2^(attempt-1)，单次封顶 4s。</summary>
+    private static int LicenseRetryDelayMs(int attempt) => Math.Min(500 * (1 << (attempt - 1)), 4000);
+
     private static async Task<byte[]> SendRequestAsync(byte[] body, CancellationToken token = default)
     {
-        using var content = new ByteArrayContent(body);
-        content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/x-protobuf");
-
-        using var req = new HttpRequestMessage(HttpMethod.Post, LicenseUrl) { Content = content };
-        req.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.GetUserAgent(null));
-        req.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
-        req.Headers.TryAddWithoutValidation("Accept", "*/*");
-
-        // 许可证响应携带内容解密密钥：强制走始终校验证书的客户端（VerifiedAppHttpClient），
-        // 不受用户 --insecure 影响——跳过 TLS 校验会让中间人直接窃取内容密钥。
-        using var resp = await HTTPUtil.VerifiedAppHttpClient.SendAsync(req, token);
-        if (!resp.IsSuccessStatusCode)
+        // 许可证请求有界重试：5xx（服务器瞬时过载/CDN 抖动）与瞬时传输故障（无状态码的
+        // HttpRequestException、token 未取消的超时）参与最多 MaxLicenseAttempts 次尝试。
+        // 4xx 是确定性失败（设备证书被拒/吊销），重试无意义，立即抛出。
+        // 真正的用户取消（token 已取消）不重试，原样向上传播——GetKeysAsync 的
+        // catch (OperationCanceledException) throw 保证取消信号不丢失。
+        for (int attempt = 1; ; attempt++)
         {
-            // 非 2xx：许可证服务器常回错误状态文本（设备证书被拒/吊销等）。读错误体
-            // 给出可操作诊断，替代 EnsureSuccessStatusCode 的裸状态码消息（状态码消息
-            // 不含吊销/证书这类可定位信息）。错误体通常很短且不含密钥材料。
-            string errorBody;
-            try { errorBody = await resp.Content.ReadAsStringAsync(token); }
-            catch (OperationCanceledException) { throw; } // 用户取消向上传播，不吞
-            catch (Exception) { errorBody = ""; }
-            throw new HttpRequestException(
-                $"许可证请求失败 (HTTP {(int)resp.StatusCode})" +
-                (string.IsNullOrEmpty(errorBody) ? "" : $": {errorBody}"),
-                null, resp.StatusCode);
+            try
+            {
+                using var content = new ByteArrayContent(body);
+                content.Headers.ContentType = MediaTypeHeaderValue.Parse("application/x-protobuf");
+
+                using var req = new HttpRequestMessage(HttpMethod.Post, LicenseUrl) { Content = content };
+                req.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.GetUserAgent(null));
+                req.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com");
+                req.Headers.TryAddWithoutValidation("Accept", "*/*");
+
+                // 许可证响应携带内容解密密钥：强制走始终校验证书的客户端（VerifiedAppHttpClient），
+                // 不受用户 --insecure 影响——跳过 TLS 校验会让中间人直接窃取内容密钥。
+                using var resp = await HTTPUtil.VerifiedAppHttpClient.SendAsync(req, token);
+                if (!resp.IsSuccessStatusCode)
+                {
+                    // 5xx 瞬时故障参与有界重试；4xx 确定性失败立即抛（带状态码供上层定位）
+                    if ((int)resp.StatusCode >= 500 && attempt < MaxLicenseAttempts)
+                    {
+                        await Task.Delay(LicenseRetryDelayMs(attempt), token);
+                        continue;
+                    }
+                    // 非 2xx：许可证服务器常回错误状态文本（设备证书被拒/吊销等）。读错误体
+                    // 给出可操作诊断，替代 EnsureSuccessStatusCode 的裸状态码消息（状态码消息
+                    // 不含吊销/证书这类可定位信息）。错误体通常很短且不含密钥材料。
+                    string errorBody;
+                    try { errorBody = await resp.Content.ReadAsStringAsync(token); }
+                    catch (OperationCanceledException) { throw; } // 用户取消向上传播，不吞
+                    catch (Exception) { errorBody = ""; }
+                    throw new HttpRequestException(
+                        $"许可证请求失败 (HTTP {(int)resp.StatusCode})" +
+                        (string.IsNullOrEmpty(errorBody) ? "" : $": {errorBody}"),
+                        null, resp.StatusCode);
+                }
+                return await resp.Content.ReadAsByteArrayAsync(token);
+            }
+            catch (HttpRequestException ex) when (attempt < MaxLicenseAttempts
+                                                  && (ex.StatusCode is null || (int)ex.StatusCode >= 500))
+            {
+                // 瞬断（无状态码的 HttpRequestException，如连接被重置）或 5xx：退避重试。
+                // 重试耗尽或带 4xx 状态码（确定性失败）时 when 不满足，异常原样向上抛出。
+                await Task.Delay(LicenseRetryDelayMs(attempt), token);
+            }
+            catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+            {
+                // 超时抛的 TaskCanceledException 其 token 未取消：瞬时故障，参与重试。
+                // 重试耗尽后转成 TimeoutException——若保留 OCE 原样抛出，会被 GetKeysAsync
+                // 的 catch (OperationCanceledException) throw 误判为"用户取消"（诊断误导，
+                // 与 HTTPUtil 的超时转 TimeoutException 策略不一致）。
+                if (attempt < MaxLicenseAttempts)
+                {
+                    await Task.Delay(LicenseRetryDelayMs(attempt), token);
+                    continue;
+                }
+                throw new TimeoutException($"许可证请求超时（{attempt} 次尝试后）: {LicenseUrl}", ex);
+            }
         }
-        return await resp.Content.ReadAsByteArrayAsync(token);
     }
 
     // ---- license response ----

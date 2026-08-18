@@ -25,6 +25,13 @@ public class FavListFetcher : IFetcher
         {
             var favListApi = $"https://api.bilibili.com/x/v3/fav/folder/created/list-all?up_mid={mid}";
             using var favDoc = JsonDocument.Parse(await HTTPUtil.GetWebSourceAsync(favListApi, token: cancellationToken));
+            // 与主分支/分页请求一致：业务层 code 必须检查。未登录（code=-101）会被
+            // 误诊为"该用户没有创建收藏夹"——真实原因是凭据失效，报错应指明。
+            if (favDoc.RootElement.TryGetProperty("code", out var favCode) && favCode.GetInt64() != 0)
+            {
+                var favMsg = favDoc.RootElement.GetValueAsStringSafe("message");
+                throw new InvalidOperationException($"获取默认收藏夹失败: {favMsg} (code={favCode})");
+            }
             var list = favDoc.RootElement.GetPropertySafe("data").EnumerateArraySafe("list");
             var firstFav = list.FirstOrDefault();
             if (firstFav.ValueKind == System.Text.Json.JsonValueKind.Undefined)

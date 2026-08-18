@@ -14,6 +14,13 @@ public class BangumiInfoFetcher : IFetcher
         string api = $"https://{Config.Current.EpHost}/pgc/view/web/season?ep_id={id}";
         string json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
+        // 丢弃 API 顶层 code/message 会把区域限制/账号失效/风控误诊为"响应缺 result 节点"。
+        // 与 Cheese/Normal fetcher 一致：非 0 code 给可读诊断。
+        if (infoJson.RootElement.TryGetProperty("code", out var rootCode) && rootCode.GetInt64() != 0)
+        {
+            var msg = infoJson.RootElement.GetValueAsStringSafe("message");
+            throw new InvalidOperationException($"番剧接口返回错误: {msg} (code={rootCode})");
+        }
         if (!infoJson.RootElement.TryGetProperty("result", out var result))
             throw new KeyNotFoundException("Bangumi API response missing 'result' node");
         string cover = result.GetValueAsStringSafe("cover");

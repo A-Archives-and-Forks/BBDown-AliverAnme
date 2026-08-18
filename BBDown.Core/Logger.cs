@@ -278,4 +278,16 @@ public static class Logger
         }
         AppendToFile(line);
     }
+
+    /// <summary>
+    /// 把异常完整信息（含堆栈/InnerException）写入日志文件，不受 DebugLog 门控。
+    /// 只调 AppendToFile，不打印控制台——最终用户只需要一行可读摘要（handler 会输出），
+    /// 完整堆栈供事后排查。serve 模式下任务白名单外异常仅靠 Message 难以定位根因
+    /// （裁剪/AOT 发布时 Message 可能是资源键），完整 ex.ToString() 落盘是唯一诊断证据。
+    /// </summary>
+    public static void LogStack(Exception ex)
+    {
+        var line = DateTime.Now.ToString("[yyyy-MM-dd HH:mm:ss.fff]") + " - " + ex;
+        AppendToFile(line);
+    }
 }

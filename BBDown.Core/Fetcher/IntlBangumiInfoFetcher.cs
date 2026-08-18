@@ -17,6 +17,12 @@ public partial class IntlBangumiInfoFetcher : IFetcher
                      $"/intl/gateway/v2/ogv/view/app/season?ep_id={id}&platform=android&s_locale=zh_SG&mobi_app=bstar_a" + (Config.Current.Token != "" ? $"&access_key={Config.Current.Token}" : "");
         string json = (await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken)).Replace("\\/", "/");
         using var infoJson = JsonDocument.Parse(json);
+        // 与 BangumiInfoFetcher 一致：顶层 code/message 不能丢弃，区域限制/失效/风控需可诊断。
+        if (infoJson.RootElement.TryGetProperty("code", out var rootCode) && rootCode.GetInt64() != 0)
+        {
+            var msg = infoJson.RootElement.GetValueAsStringSafe("message");
+            throw new InvalidOperationException($"国际版番剧接口返回错误: {msg} (code={rootCode})");
+        }
         if (!infoJson.RootElement.TryGetProperty("result", out var result))
             throw new KeyNotFoundException("Intl Bangumi API response missing 'result' node");
         string seasonId = result.GetValueAsStringSafe("season_id");

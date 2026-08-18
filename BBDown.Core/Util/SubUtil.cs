@@ -251,7 +251,7 @@ public static partial class SubUtil
             }
             return subtitles;
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or TimeoutException)
         {
             Logger.LogDebug("GetIntlSubtitlesFromApi1 failed: {0}", ex.Message);
             return null;
@@ -290,7 +290,7 @@ public static partial class SubUtil
             }
             return subtitles;
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException or IndexOutOfRangeException or ArgumentException)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException or IndexOutOfRangeException or ArgumentException or TimeoutException)
         {
             Logger.LogDebug("GetIntlSubtitlesFromApi2 failed: {0}", ex.Message);
             return null;
@@ -328,7 +328,7 @@ public static partial class SubUtil
             //}
             return subtitles;
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or TimeoutException)
         {
             Logger.LogDebug("GetSubtitlesFromApi1 failed: {0}", ex.Message);
             return null;
@@ -361,7 +361,7 @@ public static partial class SubUtil
 
             return subtitles;
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException)
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or TimeoutException)
         {
             Logger.LogDebug("GetSubtitlesFromApi2 failed: {0}", ex.Message);
             return null;
@@ -411,10 +411,11 @@ public static partial class SubUtil
             return subtitles;
         }
         catch (Exception ex) when (ex is HttpRequestException or InvalidOperationException or InvalidProtocolBufferException
-                              or System.Text.Json.JsonException or InvalidDataException)
+                              or System.Text.Json.JsonException or InvalidDataException or TimeoutException)
         {
             // JsonException 覆盖 RiskControlResponseException（接口返回 HTML 而非 grpc 数据）：
-            // 字幕是装饰性资源，任何抓取失败都应降级为"无字幕"而非让页面下载失败
+            // 字幕是装饰性资源，任何抓取失败（含 HTTPUtil 重试耗尽抛出的 TimeoutException）
+            // 都应降级为"无字幕"而非让页面下载失败
             Logger.LogDebug("GetSubtitlesFromApi3 failed: {0}", ex.Message);
             return null;
         }
