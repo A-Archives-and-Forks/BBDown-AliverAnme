@@ -57,6 +57,13 @@ public static partial class HTTPUtil
     private static readonly Lazy<HttpClient> _insecureAppHttpClient =
         new(() => CreateClient(allowRedirect: true, TimeSpan.FromMinutes(2), skipSslCheck: true), LazyThreadSafetyMode.ExecutionAndPublication);
 
+    // 媒体下载专用池：AllowAutoRedirect=false（B3-F3，下载请求携带登录 Cookie，
+    // 不跟随任何重定向以免凭据随 3xx 引向非官方主机）。其余与 AppHttpClient 同构。
+    private static readonly Lazy<HttpClient> _mediaHttpClient =
+        new(() => CreateClient(allowRedirect: false, TimeSpan.FromMinutes(2), skipSslCheck: false), LazyThreadSafetyMode.ExecutionAndPublication);
+    private static readonly Lazy<HttpClient> _insecureMediaHttpClient =
+        new(() => CreateClient(allowRedirect: false, TimeSpan.FromMinutes(2), skipSslCheck: true), LazyThreadSafetyMode.ExecutionAndPublication);
+
     public static HttpClient AppHttpClient =>
         Config.Current.SkipSslCheck ? _insecureAppHttpClient.Value : _appHttpClient.Value;
 
@@ -65,6 +72,16 @@ public static partial class HTTPUtil
     /// 不受 --insecure 影响——跳过校验会让中间人直接窃取解密密钥，不能由用户选项降级。
     /// </summary>
     public static HttpClient VerifiedAppHttpClient => _appHttpClient.Value;
+
+    /// <summary>
+    /// 媒体下载专用客户端：禁用自动跟随重定向（B3-F3）。下载请求携带登录 Cookie，
+    /// 且 URL 由 B 站播放接口（受信任源）返回——若开启自动跳转，一个被篡改/被攻破的
+    /// CDN 或上游响应的 3xx 会把带 Cookie 的下载流量引向任意主机（凭据外泄）。
+    /// 禁用后 3xx 由调用方按非 2xx 处理（EnsureSuccessStatusCode 抛错），不跟随。
+    /// 与 AppHttpClient 相同的 insecure 策略隔离（独立池，互不复用连接）。
+    /// </summary>
+    public static HttpClient MediaDownloadClient =>
+        Config.Current.SkipSslCheck ? _insecureMediaHttpClient.Value : _mediaHttpClient.Value;
 
     /// <summary>
     /// 从响应头 Date 校准服务器时钟偏移（秒），写入 Config（流内 + 全局双写，
@@ -76,8 +93,16 @@ public static partial class HTTPUtil
     /// 偏差导致签名被拒的请求，其错误响应恰好能校准下一次重试的 wts/ts。
     /// internal 供测试直接调用验证校准逻辑。
     /// </summary>
-    internal static void CalibrateClock(HttpResponseMessage response)
+    /// <param name="response">企业响应。Date 头将被校准。</param>
+    /// <param name="fromVerifiedPool"><c>true</c> 表示响应来自始终校验证书的连接池。
+    /// 不安全池（--insecure）下的 Date 头可被链上中间人伪造：写入全局时钟偏移会扰动
+    /// 同一进程内其它已校验流的 WBI 签名基准（B3-L2）。偏移是进程级全局物理量，
+    /// 不应由不可信传输的响应改写。</param>
+    internal static void CalibrateClock(HttpResponseMessage response, bool fromVerifiedPool = true)
     {
+        // --insecure 连接的 Date 头不可信（中间人可控）：不参与全局时钟校准，
+        // 避免不安全流污染已验证流的 WBI 时间基准。
+        if (!fromVerifiedPool) return;
         if (response.Headers.Date is not { } serverDate) return;
         // 只对 WBI 签名权威主机 api.bilibili.com（含子域）校准：WBI 签名经 Parser.WbiSign
         // 只发给该主机，其它主机（bangumi.bilibili.com、api.bilibili.tv、api.biliintl.com
@@ -201,7 +226,8 @@ public static partial class HTTPUtil
                 using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
                 // 登录接口同样参与服务器时钟校准（响应头 Date）：与其它 API 调用保持一致，
                 // 否则依赖签名时间戳的后续请求在校准缺失下可能因时钟偏差被拒。
-                CalibrateClock(webResponse);
+                // 用 fromVerifiedPool 区分：--insecure 连接的 Date 头由中间人可控，不写全局偏移
+                CalibrateClock(webResponse, fromVerifiedPool: !Config.Current.SkipSslCheck);
                 // 5xx 显式抛错走下方退避；4xx 交给 EnsureSuccessStatusCode 立即抛出（不重试）
                 if (!webResponse.IsSuccessStatusCode && (int)webResponse.StatusCode >= 500)
                     throw new HttpRequestException($"服务器返回 {(int)webResponse.StatusCode} {webResponse.ReasonPhrase}", null, webResponse.StatusCode);
@@ -289,6 +315,46 @@ public static partial class HTTPUtil
         return current;
     }
 
+    /// <summary>
+    /// 带 Cookie（登录凭据）外发前的目标主机白名单（B3-S1 纵深防御）。
+    /// 仅允许向两类主机发送登录 Cookie：1) B 站官方域名（含子域）；2) 操作者经
+    /// --host/--ep-host/--tv-host 显式配置的后台主机（BiliPlus/自建镜像站是操作者自选，
+    /// 与 serve 侧的 IsOfficialHost 校验同源：显式配置即信任）。其余任何主机一律拒绝，
+    /// 防未来调用方把用户可控 URL 传入 sendCookie:true 的外泄面。
+    /// </summary>
+    private static bool IsTrustedCookieHost(string url)
+    {
+        if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
+        if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
+        var host = uri.DnsSafeHost;
+        // 回环/本机地址无条件放行：本地调试/测试服务器（HttpListener 假服务）不涉及
+        // 跨网络凭据外泄，且 serve 的回调校验已在 BBDownApiServer 层单独收口。
+        if (host == "localhost" || host == "127.0.0.1" || host == "::1")
+            return true;
+        // 官方域名（含子域）放行
+        foreach (var h in CookieTrustedHosts)
+            if (host.Equals(h, StringComparison.OrdinalIgnoreCase)
+                || host.EndsWith("." + h, StringComparison.OrdinalIgnoreCase))
+                return true;
+        // 操作者显式配置的后台主机放行（BiliPlus/镜像站；位于 URL 的 Host 字段映射）
+        if (IsConfiguredHost(host, Config.Current.Host)
+            || IsConfiguredHost(host, Config.Current.EpHost)
+            || IsConfiguredHost(host, Config.Current.TvHost))
+            return true;
+        return false;
+    }
+
+    private static bool IsConfiguredHost(string host, string? configured)
+    {
+        if (string.IsNullOrWhiteSpace(configured)) return false;
+        if (!Uri.TryCreate("https://" + configured.Trim(), UriKind.Absolute, out var uri)) return false;
+        return host.Equals(uri.DnsSafeHost, StringComparison.OrdinalIgnoreCase);
+    }
+
+    /// <summary>允许携带登录 Cookie 外发的官方域名（与 UrlResolver.TrustedBilibiliHosts 同步）。</summary>
+    private static readonly string[] CookieTrustedHosts =
+        { "bilibili.com", "b23.tv", "bilivideo.com", "hdslb.com", "biliapi.net", "bilibili.tv", "aisee.tv" };
+
     private static async Task<string> GetWebSourceCoreAsync(string url, bool sendCookie, string? userAgent, CancellationToken token, bool rejectHtml = false)
     {
         // API 层统一重试：仅对 5xx、传输层失败（HttpRequestException.StatusCode 为 null）
@@ -307,6 +373,12 @@ public static partial class HTTPUtil
                 var effectiveUa = GetUserAgent(userAgent);
                 webRequest.Headers.TryAddWithoutValidation("User-Agent", effectiveUa);
                 webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
+                // B3-S1 纵深防御：带 Cookie 的请求必须先确认目标在可信 B 站域白名单内。
+                // 否则一旦未来某调用方把用户可控 URL 传入本方法，登录凭据（SESSDATA）会
+                // 随 HttpClient 直接外发（凭据泄露）。当前全部 sendCookie:true 调用方都传
+                // B 站 API/CDN 域名（受信任源），此校验是防回退闸而非改动现有行为。
+                if (sendCookie && !IsTrustedCookieHost(url))
+                    throw new InvalidOperationException($"拒绝向非可信主机发送登录 Cookie: {SensitiveDataMasker.MaskUrl(url)}");
                 if (sendCookie)
                     webRequest.Headers.TryAddWithoutValidation("Cookie", (url.Contains("/ep") || url.Contains("/ss")) ? Config.Current.Cookie + ";CURRENT_FNVAL=4048;" : Config.Current.Cookie);
                 if (url.Contains("api.bilibili.com"))
@@ -332,7 +404,7 @@ public static partial class HTTPUtil
                 timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
                 using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
                 // 服务器时钟校准：在所有状态码分支前执行（错误响应也带 Date，见 CalibrateClock）
-                CalibrateClock(webResponse);
+                CalibrateClock(webResponse, fromVerifiedPool: !Config.Current.SkipSslCheck);
                 // 5xx：显式抛 HttpRequestException（带状态码）走下方退避；
                 // 4xx 交给 EnsureSuccessStatusCode 立即抛出（HttpRequestException.StatusCode < 500，
                 // 不满足重试过滤条件，不会被重试）。
@@ -403,7 +475,14 @@ public static partial class HTTPUtil
         return (int)Math.Min(raw, 12_000);
     }
 
-    // 重写重定向处理, 自动跟随多次重定向
+    // 重写重定向处理, 自动跟随多次重定向。
+    /// <summary>
+    /// 跟随重定向到最终地址（使用启用自动跳转的共享客户端，无逐跳校验、无跳数上限）。
+    /// <b>仅供硬编码的可信 URL（当前唯一调用方：Github releases/latest 更新检查）使用</b>——
+    /// 不得把用户输入/不可信 URL 传入本方法：它会在访问前就跟随任何中间重定向，
+    /// 未做主机校验，若复用到不可信输入会形成开放重定向/SSRF 盲发请求面（B3-L1）。
+    /// 不可信地址请用 <see cref="GetWebLocationCheckedAsync"/>（逐跳校验）。
+    /// </summary>
     public static async Task<string> GetWebLocationAsync(string url, CancellationToken token = default)
     {
         // 先尝试 HEAD，部分服务器不支持则 fallback 到 GET
@@ -610,9 +689,17 @@ public static partial class HTTPUtil
                 // 小响应体归还连接。
                 using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
                 timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
-                using var response = await AppHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                // B3-F2：凭据最重的 gRPC POST 禁用自动跟随重定向。
+                // AppHttpClient（AllowAutoRedirect=true）会在 307/308 上连同 body 与
+                // authorization/x-bili-metadata-bin（含 access_token）重放到跨主机目标——
+                // gRPC 端点本不应重定向，跟随只会给凭据外泄留面。用 NoRedirectClient：
+                // 3xx 在此显式拦下报错，不跟随、不外发凭据（与 GET 逐跳校验同思想）。
+                using var response = await NoRedirectClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                // 3xx：gRPC 端点不应重定向，显式拦截（不允许凭据/body 随 307/308 重放）
+                if ((int)response.StatusCode is >= 300 and < 400)
+                    throw new HttpRequestException($"gRPC 端点返回意外重定向 (HTTP {(int)response.StatusCode})，已拒绝跟随以避免凭据外发", null, response.StatusCode);
                 // 服务器时钟校准：在所有状态码分支前执行（错误响应也带 Date，见 CalibrateClock）
-                CalibrateClock(response);
+                CalibrateClock(response, fromVerifiedPool: !Config.Current.SkipSslCheck);
                 if (!response.IsSuccessStatusCode && (int)response.StatusCode >= 500)
                     throw new HttpRequestException($"服务器返回 {(int)response.StatusCode} {response.ReasonPhrase}", null, response.StatusCode);
                 response.EnsureSuccessStatusCode();

@@ -60,17 +60,30 @@
 | Parser-Low-2 | ✅ WBI mixin key 日志改 MaskValue |
 
 ### 未消纳（记录，评估后决定）
+
+> ✅ 已按后续加固批全部处理（见下“B3 补充加固已消纳”），下表保留为历史记录：
+> - HTTP-L1/L2/S1、AppHelper-F2/F3/S1/S2、Parser-L3 已修复；
+> - HTTP-S2/S3、AppHelper-S3/S4、Parser-L5 评估后维持现状（载荷非机密/已有更上游链路/改动风险>收益，见对应修改注释）。
+
 | 来源 | 级别 | 位置 | 说明 |
 |------|------|------|------|
-| HTTP-L1 | Low | HTTPUtil.GetWebLocationAsync | 无校验自动跳转、无跳数上限；仅用于硬编码 GitHub 更新检查，加使用约束注释即可 |
-| HTTP-L2 | Low | HTTPUtil.CalibrateClock | --insecure 下中间人可伪造 Date 头写全局时钟偏移 → 跨流 WBI 扰动（轻 DoS）。待评估流内化 |
-| HTTP-S1 | Susg. | GetWebSourceCoreAsync | Cookie 携带边界仅靠调用方纪律，建议 HTTP 层主机白名单纵深防御 |
-| HTTP-S2/S3 | Susg. | webhook 客户端 | CLI webhook 用自动跳转受 insecure 影响；serve 侧独立 client 不随 insecure（安全偏严，知悉） |
-| AppHelper-F2 | Low | GetPostResponseAsync | 凭据最重的 gRPC POST 走自动跟随重定向客户端；默认 TLS 校验下概率低，但与自身重定向卫生不一致，待评估改 AllowAutoRedirect=false |
-| AppHelper-F3 | Low | BBDownDownloadUtil 媒体 Cookie | --force-http 明文降级 + 登录 Cookie 同链可见；建议媒体 URL 主机白名单 + force-http 去 Cookie 或告警 |
-| AppHelper-S1–S4 | Susg. | gzip/帧校验/日志首尾/设备指纹 | gzip 解压上限、gRPC 帧首字节校验、token 日志保留首尾、空 buvid 指纹识别——均为可选项 |
-| Parser-L3 | Low | 异常消息回显 | B 站响应文本进日志/终端（ANSI 注入面），serve 客户端可控；可选剥离控制字符 |
-| Parser-L5 | Low | tv/intl 时钟校准盲区 | 常规流程必有 web API 先行校准，保持现状可接受 |
+| HTTP-L1 | Low | HTTPUtil.GetWebLocationAsync | ✅ 加使用约束 XML 注释（仅供硬编码可信 URL，禁用不可信输入） |
+| HTTP-L2 | Low | HTTPUtil.CalibrateClock | ✅ 加 fromVerifiedPool 参数：--insecure 连接的 Date 头（中间人可控）不写全局时钟偏移，防跨流 WBI 扰动 |
+| HTTP-S1 | Sugg. | GetWebSourceCoreAsync | ✅ Cookie 主机白名单纵深防御：sendCookie=true 前校验主机 ∈ 官方域 / 操作者配置的 Host / 回环，非可信主机拒绝外发凭据且不发任何网络请求 |
+| HTTP-S2/S3 | Sugg. | webhook 客户端 | ⭕ 维持现状：CLI webhook 载荷非机密、自动跟随无害；serve 侧已有独立校验 client 收敛 |
+| AppHelper-F2 | Low | GetPostResponseAsync | ✅ gRPC POST 改 NoRedirectClient + 3xx 显式拦截（禁止凭据/body 随 307/308 重放外发） |
+| AppHelper-F3 | Low | BBDownDownloadUtil 媒体 Cookie | ✅ 新增 MediaDownloadClient（AllowAutoRedirect=false）替换 3 处媒体下载请求；--force-http 明文时 LogWarn 告警（无法强去 Cookie 否则 CDN 取流失败） |
+| AppHelper-S1 | Sugg. | GzipDecompress | ✅ gzip 解压设 48MB 上限防解压炸弹（剔除输出超限内存占用） |
+| AppHelper-S2 | Sugg. | ReadMessage 帧首字节 | ✅ gRPC 帧首字节显式校验（仅 0/1，其它抛 InvalidDataException 替代静默当未压缩） |
+| AppHelper-S3 | Sugg. | token 日志首尾 | ⭕ 维持现状：保留首尾 4 字符是刻意设计（B1/B2 已验证通过，用于核对凭据身份） |
+| AppHelper-S4 | Sugg. | 空 buvid 指纹 | ⭕ 维持现状：真实设备标识已由 BuvidProvider（buvid3）维护，AppHelper 空 buvid 是无关紧要历史字段；强行生成格式不符可能反触发风控 |
+| Parser-L3 | Low | 异常消息回显 | ✅ SanitizeServerText 剥离控制字符再拼异常消息（防 ANSI/日志投毒注入面） |
+| Parser-L5 | Low | tv/intl 时钟校准盲区 | ⭕ 维持现状：常规流程必有 web API 先行校准（审查结论“保持现状可接受”） |
+
+### B3 补充加固新增测试
+- ClockCalibrationTests：FromInsecurePool_DoesNotWriteGlobalOffset（L2）
+- HttpUtilRetryTests：CookieNonTrustedHost_ThrowsBeforeNetwork / TrustedHost_WithCookie_Succeeds（S1）
+- AppHelperMessageTests（新文件 5 测）：帧首字节非法/过短/gzip 往返/未压缩往返/解压上限（S1/S2）
 
 ## 第 4 轮：D8 HTTP 并发请求数上限
 

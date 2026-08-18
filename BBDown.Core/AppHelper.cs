@@ -357,7 +357,10 @@ static partial class AppHelper
     #endregion
 
     /// <summary>
-    /// 读取gRPC响应流 通过前5字节信息 解析/解压后面的报文体
+    /// 读取gRPC响应流 通过前5字节信息 解析/解压后面的报文体。
+    /// B3-S1/S2：gRPC 响应可能来自被攻破/恶意的服务端（或 --insecure 中间人）——
+    /// 帧首字节必须显式校验（gRPC 约定 0=未压缩/1=gzip，其它值报畸形而非静默当未压缩）；
+    /// gzip 解压设 48MB 输出上限防解压炸弹占满内存。
     /// </summary>
     /// <param name="data"></param>
     /// <returns>字节流</returns>
@@ -366,6 +369,10 @@ static partial class AppHelper
         if (data.Length < 5)
             throw new InvalidDataException($"gRPC response too short: {data.Length} bytes");
         (byte first, int size) = ReadInfo(data);
+        // B3-S2：gRPC 帧首字节合法值只有 0（未压缩）/ 1（gzip）。其它值说明通信层被破坏
+        // 或响应根本不是 gRPC 帧，显式报错替代静默按“未压缩”解析的误导性反序列化错误。
+        if (first is not 0 and not 1)
+            throw new InvalidDataException($"Invalid gRPC compression flag: 0x{first:X2}（期望 0=未压缩 或 1=gzip）");
         int payloadLen = first == 1 ? data.Length - 5 : Math.Min(size, data.Length - 5);
         if (payloadLen <= 0)
             throw new InvalidDataException($"Invalid gRPC payload length: {payloadLen}");
@@ -427,11 +434,22 @@ static partial class AppHelper
     /// <returns></returns>
     private static byte[] GzipDecompress(byte[] data)
     {
+        // B3-S1：解压上限防 gzip 炸弹——恶意/被攻破的服务端可下发小压缩包膨胀为 GB 级
+        // 内存占用。上限 48MB（合法播放响应远小于此，参见 DRM/播放数据量级）。
+        const int MaxDecompressedBytes = 48 * 1024 * 1024;
         using var output = new MemoryStream();
         using (var input = new MemoryStream(data))
         {
             using var decomp = new GZipStream(input, CompressionMode.Decompress);
-            decomp.CopyTo(output);
+            var buffer = new byte[64 * 1024];
+            while (true)
+            {
+                int read = decomp.Read(buffer, 0, buffer.Length);
+                if (read <= 0) break;
+                if (output.Length + read > MaxDecompressedBytes)
+                    throw new InvalidDataException($"gRPC gzip 解压超过 {MaxDecompressedBytes / 1024 / 1024}MB 上限（疑似解压炸弹），已中止");
+                output.Write(buffer, 0, read);
+            }
         }
         return output.ToArray();
     }

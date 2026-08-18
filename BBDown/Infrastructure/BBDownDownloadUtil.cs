@@ -90,7 +90,7 @@ internal static class BBDownDownloadUtil
             httpRequestMessage.Headers.TryAddWithoutValidation("If-Range", ifRange);
         httpRequestMessage.RequestUri = new(url);
 
-        using var response = (await HTTPUtil.AppHttpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
+        using var response = (await HTTPUtil.MediaDownloadClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
 
         if (response.StatusCode == HttpStatusCode.OK) // server doesn't response a partial content
         {
@@ -926,7 +926,7 @@ internal static class BBDownDownloadUtil
             // 复核只是单字节小请求，独立短超时兜底，避免卡死跳过路径（失败一律视为"无法确认"）
             using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
             timeoutCts.CancelAfter(TimeSpan.FromSeconds(15));
-            using var response = await HTTPUtil.AppHttpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+            using var response = await HTTPUtil.MediaDownloadClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
             response.EnsureSuccessStatusCode();
             // 206 的 Content-Range 尾段 /total 是权威总长；缺尾段（bytes 0-0/*）无法确认
             if (response.Content.Headers.ContentRange is { HasRange: true, Length: { } total })
@@ -965,7 +965,7 @@ internal static class BBDownDownloadUtil
                 httpRequestMessage.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.GetUserAgent(null));
                 httpRequestMessage.Headers.TryAddWithoutValidation("Cookie", Core.Config.Current.Cookie);
                 httpRequestMessage.RequestUri = new(url);
-                using var response = (await HTTPUtil.AppHttpClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
+                using var response = (await HTTPUtil.MediaDownloadClient.SendAsync(httpRequestMessage, HttpCompletionOption.ResponseHeadersRead, token)).EnsureSuccessStatusCode();
                 long totalSizeBytes = response.Content.Headers.ContentLength ?? 0;
                 if (method == HttpMethod.Head && totalSizeBytes <= 0)
                     continue; // HEAD 未声明长度：部分 CDN 对 HEAD 不返回 Content-Length，回退 GET 再探测
@@ -1157,6 +1157,11 @@ internal static class BBDownDownloadUtil
             return url;
         }
 
+        // B3-F3：--force-http 会同时使登录 Cookie 与下载票据在明文链路可见。
+        // 这是用户显式选项（抓包/调试场景），无法强制去 Cookie（多数 CDN 需 Cookie
+        // 才能返回完整体，强制去除会直接下载失败）。至少显式告警，让用户在明文链路上
+        // 的暴露面可知。
+        Logger.LogWarn("--force-http：媒体请求降级为明文 http，登录 Cookie 将随请求在链路上可见（建议仅在抓包/调试的仅本机链路使用）");
         Logger.LogDebug("将https更改为http");
         return url.Replace("https:", "http:");
     }

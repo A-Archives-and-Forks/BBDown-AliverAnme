@@ -606,6 +606,25 @@ public static partial class Parser
         }
     }
 
+    /// <summary>
+    /// 净化服务端可控文本后再拼入异常消息（B3-L3）：play_detail/message 来自 B 站响应，
+    /// 可含控制字符（ANSI 转义/换行）——异常消息会经 Logger 落盘并经 serve API 返回，
+    /// 直接拼入会让远端内容向操作者的日志/终端注入转义序列（日志投毒/ANSI 注入面）。
+    /// 只剥离控制字符，保留可读内容；serrve 由客户端提交 URL 的注入面已在服务端
+    /// SanitizeLogString 收口，这里收 Core 侧解析路径。
+    /// </summary>
+    private static string SanitizeServerText(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        var sb = new System.Text.StringBuilder(text.Length);
+        foreach (var ch in text)
+        {
+            if (char.IsControl(ch)) sb.Append(' ');
+            else sb.Append(ch);
+        }
+        return sb.ToString().Trim();
+    }
+
     internal static void ThrowIfPlayLimited(JsonElement root)
     {
         if (!root.TryGetProperty("result", out var result))
@@ -628,7 +647,7 @@ public static partial class Parser
             _ => "当前番剧/视频存在播放限制，接口返回不可播放"
         };
 
-        throw new InvalidOperationException($"{message} (limit_play_reason={reason}, play_detail={detail})");
+        throw new InvalidOperationException($"{message} (limit_play_reason={SanitizeServerText(reason)}, play_detail={SanitizeServerText(detail)})");
     }
 
     /// <summary>
@@ -641,7 +660,7 @@ public static partial class Parser
         if (!root.TryGetProperty("code", out var code) || code.ValueKind != JsonValueKind.Number) return;
         if (!code.TryGetInt64(out var codeValue) || codeValue == 0) return;
         var message = root.GetValueAsStringSafe("message", $"接口返回错误码 {codeValue}");
-        throw new InvalidOperationException($"接口返回错误: {message} (code={codeValue})");
+        throw new InvalidOperationException($"接口返回错误: {SanitizeServerText(message)} (code={codeValue})");
     }
 
     /// <summary>

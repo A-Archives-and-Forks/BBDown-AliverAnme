@@ -15,6 +15,48 @@ namespace BBDown.Tests;
 public class HttpUtilRetryTests
 {
     [Fact]
+    public async Task GetWebSource_CookieNonTrustedHost_ThrowsBeforeNetwork()
+    {
+        // B3-S1：带登录 Cookie（sendCookie:true）的请求必须先通过目标主机白名单。
+        // 非官方、非用户配置的主机（如任意域名/公网 IP）不得外发凭据，且校验在发起
+        // 任何网络请求之前——本地假服务器绝不会被访问到（请求计数保持 0）。
+        using var server = new ScriptedServer((200, """{"code":0}"""));
+        var original = Config.Current;
+        try
+        {
+            Config.ApplyToCurrentAsyncFlow(original with { Cookie = "SESSDATA=secret" });
+            var ex = await Assert.ThrowsAsync<InvalidOperationException>(() =>
+                HTTPUtil.GetWebSourceAsync($"http://not-a-trusted-host.example:{server.Port}/api", token: CancellationToken.None));
+            Assert.Contains("非可信主机", ex.Message);
+            Assert.Equal(0, server.RequestCount); // 网络请求根本没发出：凭据未外泄
+        }
+        finally
+        {
+            Config.ApplyToCurrentAsyncFlow(original);
+        }
+    }
+
+    [Fact]
+    public async Task GetWebSource_TrustedHost_WithCookie_Succeeds()
+    {
+        // B3-S1：官方域名（api.bilibili.com）与本地回环放行带 Cookie 请求，现有调用方
+        // 语义不回退。用回环测试服务器验证：loopback 白名单放行 + Cookie 请求整体链路可用。
+        using var server = new ScriptedServer((200, """{"code":0}"""));
+        var original = Config.Current;
+        try
+        {
+            Config.ApplyToCurrentAsyncFlow(original with { Cookie = "SESSDATA=x" });
+            var body = await HTTPUtil.GetWebSourceAsync($"http://127.0.0.1:{server.Port}/api", token: CancellationToken.None);
+            Assert.Equal("""{"code":0}""", body);
+            Assert.Equal(1, server.RequestCount);
+        }
+        finally
+        {
+            Config.ApplyToCurrentAsyncFlow(original);
+        }
+    }
+
+    [Fact]
     public async Task GetWebSource_RetriesOn500_ThenSucceeds()
     {
         using var server = new ScriptedServer((500, "boom"), (200, """{"code":0}"""));

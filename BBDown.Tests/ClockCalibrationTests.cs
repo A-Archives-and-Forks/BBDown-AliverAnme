@@ -83,6 +83,25 @@ public class ClockCalibrationTests
     }
 
     [Fact]
+    public void CalibrateClock_FromInsecurePool_DoesNotWriteGlobalOffset()
+    {
+        // B3-L2：不安全池（--insecure）下 Date 头可被中间人伪造，若写入进程级全局偏移
+        // 会扰动同一进程内其它已校验流的 WBI 签名基准。必须忽略不安全池的校准。
+        var original = Config.Current;
+        try
+        {
+            Config.Apply(Config.Current with { ServerClockOffsetSeconds = 0 });
+            using var response = new HttpResponseMessage();
+            response.Headers.Date = DateTimeOffset.UtcNow.AddMinutes(30); // 中间人伪造的大偏移
+
+            HTTPUtil.CalibrateClock(response, fromVerifiedPool: false); // 模拟 --insecure 连接
+
+            Assert.Equal(0, Config.Current.ServerClockOffsetSeconds);
+        }
+        finally { Config.Apply(original); }
+    }
+
+    [Fact]
     public void GetTimeStamp_RespectsServerClockOffset()
     {
         var original = Config.Current;
