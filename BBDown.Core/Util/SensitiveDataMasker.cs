@@ -14,6 +14,11 @@ public static class SensitiveDataMasker
     {
         "access_key", "access_token", "refresh_token", "token",
         "SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5", "sid",
+        // 带签名媒体 URL（playurl/CDN）的临时授权参数：sign/x_sign/w_rid 是 CDN 下载票据、
+        // deadline 是其时效戳。这些 URL 经 AppHelper/Parser 解析后流转到下载器，下载器日志
+        // 若明文落盘会绕过前两者的脱敏承诺——DebugLog 下日志含用户可用的临时下载权
+        //（含付费/大会员内容），统一纳入脱敏（B3-F1）。marlinToken 是 DRM 内容许可令牌。
+        "sign", "x_sign", "w_rid", "deadline", "marlin_token", "marlintoken",
     };
 
     /// <summary>值为 <c>k=v; k=v</c> 结构、需要逐项脱敏的请求头。</summary>

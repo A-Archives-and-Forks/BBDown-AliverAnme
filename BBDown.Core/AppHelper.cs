@@ -120,11 +120,15 @@ static partial class AppHelper
             {
                 if (item.DashVideo != null)
                 {
+                    // StreamInfo 是 optional 消息：畸形帧含 dashVideo 但不含 streamInfo 时
+                    // 直接解引用会 NRE（服务端下发任意 protobuf 即可终止本任务，B3-F4）。
+                    // 空判回落 0 与下方 DashAudio 分支一致。
                     videos.Add(new AudioInfoWitCodecId(
-                        item.StreamInfo.Quality,
+                        item.StreamInfo?.Quality ?? 0,
                         item.DashVideo.BaseUrl,
                         item.DashVideo.BackupUrl.ToList(),
-                        (uint)(item.DashVideo.Size * 8 / Math.Max(resp.VideoInfo.Timelength / 1000, 1)),
+                        // Size 是粉丝向带宽展示值：size*8 在 ulong 域计算防极端值乘法回绕
+                        (uint)checked((ulong)item.DashVideo.Size * 8 / Math.Max(resp.VideoInfo.Timelength / 1000, 1)),
                         item.DashVideo.Codecid
                     ));
                 }

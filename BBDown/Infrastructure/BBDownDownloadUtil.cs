@@ -329,7 +329,9 @@ internal static class BBDownDownloadUtil
     private static async Task DownloadFileCoreAsync(string url, string path, DownloadConfig config, (long size, HttpResponseHeaders? headers, HttpContentHeaders? contentHeaders)? probe = null, CancellationToken token = default)
     {
         if (config.ForceHttp) url = ReplaceUrl(url);
-        Logger.LogDebug("Start downloading: {0}", url);
+        // 下载 URL 含签名/时效参数（sign/deadline）：日志脱敏后才落盘，避免 PID/日志文件
+        // 携带用户可用的 CDN 临时下载权（与 AppHelper 对 PlayViewReply 的脱敏承诺一致）。
+        Logger.LogDebug("Start downloading: {0}", SensitiveDataMasker.MaskUrl(url));
         string desDir = Path.GetDirectoryName(path)!;
         if (!string.IsNullOrEmpty(desDir) && !Directory.Exists(desDir)) Directory.CreateDirectory(desDir);
         // 探测合并：多线程降级复用 MultiThreadDownloadAndMergeAsync 已探测的结果（probe 非空），
@@ -661,7 +663,8 @@ internal static class BBDownDownloadUtil
         (long size, HttpResponseHeaders? headers, HttpContentHeaders? contentHeaders) probe, CancellationToken token)
     {
         if (config.ForceHttp) url = ReplaceUrl(url);
-        Logger.LogDebug("Start downloading: {0}", url);
+        // 同上：多线程路径同样对带签名 URL 脱敏再进日志
+        Logger.LogDebug("Start downloading: {0}", SensitiveDataMasker.MaskUrl(url));
         var (fileSize, probeHeaders, probeContentHeaders) = probe;
         if (config.UseAria2c)
         {

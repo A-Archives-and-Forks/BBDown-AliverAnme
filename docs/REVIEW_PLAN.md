@@ -44,11 +44,33 @@
 | F10 | Suggestion | LiveStreamUtil.cs | ✅ 补 2 个可稳定分支：非数字 roomId→ArgumentException（ResolveAsync 不发起网络请求）；零字节 EOF→删除空 seg + 退避重连续录（新 StreamMode.ZeroByte）。⚠️ LiveStreamWriteException 分支需要磁盘故障/只读文件系统，跨平台测试不可靠触发，保留人工验证 |
 | F12 | Suggestion | 多处 | ✅ IsBlockedAddress CGNAT/ULA 经 IsSafeCallbackUrl 域名 DNS 分支直测（6 断言）；ProgressBar Dispose 结算新增 Test 文件（2 测试）；SubscriptionStore 幂等新增 5 测试（重复 Add/不存在 Remove/同 aid 去重/最近优先）。⚠️ LocalIntegration 缺 ffmpeg return 改 Skip 在 **xunit v2 无法实现**：`Assert.Skip` 动态跳过仅 v3 支持；静态 `[Fact(Skip)]` 编译期写死不能表达运行时缺 ffmpeg，且与 G1 的 `failSkips:true` 冲突（Skip 会变失败）——保留 return，待 v3 迁移时改为 Assert.Skip |
 
-## 第 3 轮：B3 独立安全审查（上次 risk-core 超时未完成）
+## 第 3 轮：B3 独立安全审查（Parser 签名/HTTP 层/AppHelper）
 
-- 范围：Parser 签名验证、HTTP 层安全视角、AppHelper
-- 产出：发现项清单 → 按优先级并入后续轮次修复
-- 注意：验证 AES 的自测 C 程序有 bug 属子代理工具问题，非项目代码缺陷
+> ✅ 已完成（三路并行 reviewer 全产出，无子代理超时）。
+
+### 结论
+- **无 High、无当前可利用的 Medium**：签名链（WbiSign/GetSign/盐配对/时序）、HttpClient 池隔离（insecure↔校验池）、VerifiedAppHttpClient 不可降级、Cookie 携带边界、重定向逐跳校验、超时/取消分类、日志脱敏七面全部核实通过 ✅。
+- 跨文件一致的根问题：**签名媒体 URL 脱敏在下载链路失效**（AppHelper/Parser 明确脱敏，下载器日志却明文落盘）。
+
+### 已消纳修复（低风险高价值）
+| 来源 | 处理 |
+|------|------|
+| Parser-M1 + AppHelper-F1 | ✅ SensitiveKeys 扩 `sign/x_sign/w_rid/deadline/marlin_token`；`BBDownDownloadUtil` 两处 Start downloading 日志改 SensitiveDataMasker.MaskUrl；+1 单测 |
+| AppHelper-F4 | ✅ `item.StreamInfo?.Quality ?? 0` 防畸形帧 NRE（+S5 Size*8 checked 防 ulong 回绕） |
+| Parser-Low-2 | ✅ WBI mixin key 日志改 MaskValue |
+
+### 未消纳（记录，评估后决定）
+| 来源 | 级别 | 位置 | 说明 |
+|------|------|------|------|
+| HTTP-L1 | Low | HTTPUtil.GetWebLocationAsync | 无校验自动跳转、无跳数上限；仅用于硬编码 GitHub 更新检查，加使用约束注释即可 |
+| HTTP-L2 | Low | HTTPUtil.CalibrateClock | --insecure 下中间人可伪造 Date 头写全局时钟偏移 → 跨流 WBI 扰动（轻 DoS）。待评估流内化 |
+| HTTP-S1 | Susg. | GetWebSourceCoreAsync | Cookie 携带边界仅靠调用方纪律，建议 HTTP 层主机白名单纵深防御 |
+| HTTP-S2/S3 | Susg. | webhook 客户端 | CLI webhook 用自动跳转受 insecure 影响；serve 侧独立 client 不随 insecure（安全偏严，知悉） |
+| AppHelper-F2 | Low | GetPostResponseAsync | 凭据最重的 gRPC POST 走自动跟随重定向客户端；默认 TLS 校验下概率低，但与自身重定向卫生不一致，待评估改 AllowAutoRedirect=false |
+| AppHelper-F3 | Low | BBDownDownloadUtil 媒体 Cookie | --force-http 明文降级 + 登录 Cookie 同链可见；建议媒体 URL 主机白名单 + force-http 去 Cookie 或告警 |
+| AppHelper-S1–S4 | Susg. | gzip/帧校验/日志首尾/设备指纹 | gzip 解压上限、gRPC 帧首字节校验、token 日志保留首尾、空 buvid 指纹识别——均为可选项 |
+| Parser-L3 | Low | 异常消息回显 | B 站响应文本进日志/终端（ANSI 注入面），serve 客户端可控；可选剥离控制字符 |
+| Parser-L5 | Low | tv/intl 时钟校准盲区 | 常规流程必有 web API 先行校准，保持现状可接受 |
 
 ## 第 4 轮：D8 HTTP 并发请求数上限
 

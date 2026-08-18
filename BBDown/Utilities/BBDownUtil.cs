@@ -359,7 +359,10 @@ public static partial class BBDownUtil
             // 提取结果随元组返回，由父流程显式 Apply（AsyncLocal 写入不会回流父调用方）。
             string? newWbi = ExtractWbiKey(json);
             if (newWbi is not null)
-                Logger.LogDebug("wbi: {0}", newWbi);
+                // WBI mixin key 是会话级签名材料（非用户凭据），DebugLog 明文落盘属
+                // 签名材料泄露原则问题——持钥者可对任意 WBI 接口伪造 w_rid。掩码保留
+                // 首尾 4 字符用于核对轮换即可（B3）。
+                Logger.LogDebug("wbi: {0}", SensitiveDataMasker.MaskValue(newWbi));
 
             if (code == -101)
             {

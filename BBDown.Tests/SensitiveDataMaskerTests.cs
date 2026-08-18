@@ -44,6 +44,22 @@ public class SensitiveDataMaskerTests
     }
 
     [Fact]
+    public void MaskUrl_MasksSignedMediaUrlParams()
+    {
+        // B3：带签名媒体 URL（playurl/CDN）的临时授权参数必须脱敏——下载器日志若明文
+        // 落盘会携带用户可用的 CDN 下载票据（含付费内容），与 AppHelper 脱敏承诺对齐。
+        var masked = SensitiveDataMasker.MaskUrl(
+            "https://cn-hnbc-dx-v-12.bilivideo.com/upgcx/1.mp4?deadline=1750000000&sign=deadbeefdeadbeefdeadbeef&x_sign=aaabbbcccddd&marlin_token=xyz12345678");
+
+        Assert.DoesNotContain("deadbeefdeadbeefdeadbeef", masked);
+        Assert.DoesNotContain("aaabbbcccddd", masked);
+        Assert.DoesNotContain("1750000000", masked); // deadline 值脱敏（保留 key 便于定位）
+        Assert.DoesNotContain("xyz12345678", masked);
+        Assert.Contains("sign=", masked);
+        Assert.Contains("deadline=", masked); // key 名保留，只掩值
+    }
+
+    [Fact]
     public void MaskUrl_NoQueryString_ReturnsUnchanged()
     {
         const string url = "https://www.bilibili.com/video/BV1qt4y1X7TW";
