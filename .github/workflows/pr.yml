@@ -126,6 +126,7 @@ jobs:
             BBDown.Tests/TestResults/*.trx
             BBDown.Tests/TestResults/*.log
           if-no-files-found: ignore
+          retention-days: 7
 
   # Native AOT smoke：BBDown 的 Directory.Build.props 全局 PublishAot=true，
   # 确保 PR 能产出可运行的 AOT 二进制（与 release.yml 的 linux-x64 对齐）

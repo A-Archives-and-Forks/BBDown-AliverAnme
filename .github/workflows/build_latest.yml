@@ -71,12 +71,14 @@ jobs:
         with:
           name: BBDown_win-x64
           path: BBDown_${{ needs.set-date.outputs.date }}_win-x64.zip
+          retention-days: 7
 
       - name: Upload Artifact [win-arm64]
         uses: actions/upload-artifact@v5
         with:
           name: BBDown_win-arm64
           path: BBDown_${{ needs.set-date.outputs.date }}_win-arm64.zip
+          retention-days: 7
 
   build-linux-x64-arm64:
     runs-on: ubuntu-latest
@@ -145,12 +147,14 @@ jobs:
         with:
           name: BBDown_linux-x64
           path: BBDown_${{ needs.set-date.outputs.date }}_linux-x64.zip
+          retention-days: 7
 
       - name: Upload Artifact[linux-arm64]
         uses: actions/upload-artifact@v5
         with:
           name: BBDown_linux-arm64
           path: BBDown_${{ needs.set-date.outputs.date }}_linux-arm64.zip
+          retention-days: 7
 
   build-mac-x64-arm64:
     runs-on: macos-latest
@@ -181,12 +185,14 @@ jobs:
         with:
           name: BBDown_osx-x64
           path: BBDown_${{ needs.set-date.outputs.date }}_osx-x64.zip
+          retention-days: 7
 
       - name: Upload Artifact [osx-arm64]
         uses: actions/upload-artifact@v5
         with:
           name: BBDown_osx-arm64
           path: BBDown_${{ needs.set-date.outputs.date }}_osx-arm64.zip
+          retention-days: 7
 
   # Docker 镜像构建 + serve 启动冒烟：验证 Dockerfile 能产出可运行的 AOT 镜像，
   # 且 serve 在非回环监听下正确要求 token（默认 CMD 拒绝启动是预期行为）。
