@@ -336,7 +336,14 @@
 
 ---
 
-[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.6.8...HEAD
+[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.6.15...HEAD
+[1.6.15]: https://github.com/AliverAnme/BBDown/compare/v1.6.14...v1.6.15
+[1.6.14]: https://github.com/AliverAnme/BBDown/compare/v1.6.13...v1.6.14
+[1.6.13]: https://github.com/AliverAnme/BBDown/compare/v1.6.12...v1.6.13
+[1.6.12]: https://github.com/AliverAnme/BBDown/compare/v1.6.11...v1.6.12
+[1.6.11]: https://github.com/AliverAnme/BBDown/compare/v1.6.10...v1.6.11
+[1.6.10]: https://github.com/AliverAnme/BBDown/compare/v1.6.9...v1.6.10
+[1.6.9]: https://github.com/AliverAnme/BBDown/compare/v1.6.8...v1.6.9
 [1.6.8]: https://github.com/AliverAnme/BBDown/compare/v1.6.7...v1.6.8
 [1.6.7]: https://github.com/AliverAnme/BBDown/compare/v1.6.6...v1.6.7
 [1.6.6]: https://github.com/AliverAnme/BBDown/compare/v1.6.5...v1.6.6
