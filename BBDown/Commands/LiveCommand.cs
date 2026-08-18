@@ -15,8 +15,12 @@ public class LiveSettings : CommandSettings
     public string RoomId { get; set; } = "";
 
     [CommandOption("-o|--output")]
-    [Description("输出文件路径(默认: 直播间标题_直播录制_时间.flv)")]
+    [Description("输出文件路径(默认: 直播间标题_直播录制_时间.flv，输出到 --work-dir 目录下)")]
     public string? Output { get; set; }
+
+    [CommandOption("-w|--work-dir")]
+    [Description("设置工作目录(默认: 当前目录；未指定--output时录制文件将输出到该目录)")]
+    public string WorkDir { get; set; } = "";
 
     [CommandOption("-c|--cookie")]
     [Description("设置字符串cookie(不设置则自动读取本地 BBDown.data 登录凭据)")]
@@ -60,7 +64,10 @@ public class LiveCommand : Command<LiveSettings>
                 Logger.Log($"正在解析直播间 {settings.RoomId}...");
                 var info = await LiveStreamUtil.ResolveAsync(settings.RoomId, cancellationToken);
                 Logger.Log($"直播间: {info.Title} (UP: {info.Uname})，画质: {LiveStreamUtil.QualityName(info.Quality)} (qn={info.Quality})");
-                string path = settings.Output ?? $"{LiveStreamUtil.SanitizeFileName(info.Title)}_直播录制_{DateTime.Now:yyyyMMdd_HHmmss}.flv";
+                // 直播录制默认输出目录尊重 --work-dir（与主下载命令一致）；
+                // 显式 --output 为绝对路径时不受影响。
+                string workDir = Program.ChangeWorkingDir(new MyOption { WorkDir = settings.WorkDir });
+                string path = settings.Output ?? Path.Combine(workDir, $"{LiveStreamUtil.SanitizeFileName(info.Title)}_直播录制_{DateTime.Now:yyyyMMdd_HHmmss}.flv");
                 Logger.Log($"开始录制直播流: {path} (Ctrl+C 停止；断流/网络中断自动重连续录)");
 
                 DateTime lastLog = DateTime.MinValue;

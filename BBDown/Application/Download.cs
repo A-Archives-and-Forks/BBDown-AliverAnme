@@ -49,13 +49,9 @@ internal partial class Program
                 $"所选分P不存在: {(selectedPages is null ? "ALL" : string.Join(",", selectedPages))}，视频共有 {pagesCount} 个分P");
         }
 
-        // 根据p数选择存储路径
-        savePathFormat = string.IsNullOrEmpty(myOption.FilePattern) ? SinglePageDefaultSavePath : myOption.FilePattern;
-        // 1. 多P; 2. 只有1P, 但是是番剧, 尚未完结时 按照多P处理
-        if (pagesCount > 1 || (bangumi && !vInfo.IsBangumiEnd))
-        {
-            savePathFormat = string.IsNullOrEmpty(myOption.MultiFilePattern) ? MultiPageDefaultSavePath : myOption.MultiFilePattern;
-        }
+        // 保存路径模板按【实际下载的分P数】决策：-p 单选 1 集时即使视频总P>1
+        // 也走单P模板（-F 生效，产物不再带 [P##] 前缀）；番剧未完结时固定按多P处理。
+        savePathFormat = ResolveSavePathFormat(myOption.FilePattern, myOption.MultiFilePattern, pagesInfo.Count, bangumi && !vInfo.IsBangumiEnd);
 
         var failedPages = new List<int>();
 

@@ -11,6 +11,20 @@ namespace BBDown;
 
 internal partial class Program
 {
+    /// <summary>
+    /// 决策保存路径模板：单P模板（-F/默认）还是多P模板（-M/默认）。
+    /// 多P判定基于【实际下载的分P数】而非视频总P数——-p 单选 1 集时即使视频
+    /// 共有多个分P也走单P模板（-F 生效，产物不再带 [P##] 前缀）；
+    /// 番剧未完结时固定按多P处理（每P自成文件）。useMultiWhenSingle 为真时强制多P。
+    /// </summary>
+    internal static string ResolveSavePathFormat(string filePattern, string multiFilePattern, int actualPageCount, bool useMultiWhenSingle)
+    {
+        var single = string.IsNullOrEmpty(filePattern) ? SinglePageDefaultSavePath : filePattern;
+        if (actualPageCount > 1 || useMultiWhenSingle)
+            return string.IsNullOrEmpty(multiFilePattern) ? MultiPageDefaultSavePath : multiFilePattern;
+        return single;
+    }
+
     private static string FormatSavePath(string savePathFormat, string title, Video? videoTrack, Audio? audioTrack, Page p, int pagesCount, string apiType, long pubTime)
     {
         var result = savePathFormat.Replace('\\', '/');

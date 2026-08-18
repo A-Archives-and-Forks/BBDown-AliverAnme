@@ -15,8 +15,12 @@ public class ArticleSettings : CommandSettings
     public string CvId { get; set; } = "";
 
     [CommandOption("-o|--output")]
-    [Description("输出 Markdown 文件路径(默认: 专栏标题.md)")]
+    [Description("输出 Markdown 文件路径(默认: 专栏标题.md，输出到 --work-dir 目录下)")]
     public string? Output { get; set; }
+
+    [CommandOption("-w|--work-dir")]
+    [Description("设置工作目录(默认: 当前目录；未指定--output时专栏 Markdown 将输出到该目录)")]
+    public string WorkDir { get; set; } = "";
 }
 
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
@@ -32,7 +36,10 @@ public class ArticleCommand : Command<ArticleSettings>
                 string cvId = ArticleUtil.ExtractCvId(settings.CvId);
                 Logger.Log($"正在获取专栏 cv{cvId}...");
                 var article = await ArticleUtil.FetchAsync(cvId, cancellationToken);
-                string path = settings.Output ?? $"{LiveStreamUtil.SanitizeFileName(article.Title)}.md";
+                // 专栏默认输出目录尊重 --work-dir（与主下载命令一致）；
+                // 显式 --output 为绝对路径时不受影响（Path.Combine 对已根化第二参数直接透传）。
+                string workDir = Program.ChangeWorkingDir(new MyOption { WorkDir = settings.WorkDir });
+                string path = settings.Output ?? Path.Combine(workDir, $"{LiveStreamUtil.SanitizeFileName(article.Title)}.md");
                 await ArticleUtil.SaveAsMarkdownAsync(article, path);
                 Logger.Log($"专栏已保存: {path}");
                 return 0;

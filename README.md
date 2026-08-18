@@ -143,10 +143,10 @@ BBDown 会在开始下载前识别这种情况并中止，避免产出一个被�
 | `login` | APP 扫码登录 WEB 账号 |
 | `logintv` | APP 扫码登录 TV 账号 |
 | `serve` | 以 API 服务器模式运行 |
-| `live` | 录制 B 站直播流（断流自动重连，录制内容写入独立分段，结束后用 FFmpeg concat 合成最终文件；取消/断连时已录分段保留在 `.segs/session-*` 目录，可手动恢复） |
-| `article` | 下载 B 站专栏文章为 Markdown |
+| `live` | 录制 B 站直播流（断流自动重连，录制内容写入独立分段，结束后用 FFmpeg concat 合成最终文件；取消/断连时已录分段保留在 `.segs/session-*` 目录，可手动恢复）。支持 `--work-dir` 指定输出/分段目录（默认当前目录） |
+| `article` | 下载 B 站专栏文章为 Markdown。支持 `--work-dir` 指定输出目录（默认当前目录） |
 | `watchlater` | 批量下载稍后再看列表（需登录） |
-| `sub` | 订阅管理：`sub add/list/remove/check`，检查并增量下载新内容 |
+| `sub` | 订阅管理：`sub add/list/remove/check`，检查并增量下载新内容（以稿件 aid 为粒度；首次 check 无下载历史时，订阅视频的所有分P会被视为新内容全量下载，下载成功后才记录历史跳过） |
 
 `serve` 子选项：
 
@@ -286,6 +286,8 @@ BBDown -a --access-token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
 ```
 </details>
 
+> **弹幕说明**：`--download-danmaku-formats` 目前仅支持 `xml` 与 `ass` 两种格式（默认可写 `xml,ass`；B 站原生 protobuf 弹幕尚未实现）。`--danmaku-filter` / `--danmaku-filter-user` 仅在生成 ASS 弹幕时过滤关键词 / 发送者，XML 弹幕始终保留原始全量（XML 作存档、ASS 作过滤展示）。
+
 ### 自定义输出文件名格式
 
 | 代码 | 含义 |
@@ -308,6 +310,8 @@ BBDown -a --access-token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
 | `<ownerMid>` | 上传者 mid（下载番剧时为空） |
 | `<publishDate>` | 发布时间（yyyy-MM-dd_HH-mm-ss） |
 | `<apiType>` | API 类型（TV / APP / INTL / WEB） |
+
+> **命名模板选择**：单分P视频用单P模板（`<videoTitle>` 或 `-F`），多分P视频用多P模板（`<videoTitle>/[P<pageNumberWithZero>]<pageTitle>` 或 `-M`）。多P判定基于**实际下载的分P数**——`-p 3` 只单选 1 集时即使视频有多个分P也走单P模板（`-F` 生效，产物不带 `[P##]` 前缀）；番剧未完结时固定按多P处理。
 
 ### API 服务器
 

@@ -140,11 +140,11 @@ public class MyOption : CommandSettings
     public bool DownloadDanmaku { get; set; } = false;
 
     [CommandOption("--download-danmaku-formats")]
-    [Description("指定需下载的弹幕格式, 用逗号分隔")]
+    [Description("指定需下载的弹幕格式, 用逗号分隔(仅支持 xml,ass)")]
     public string? DownloadDanmakuFormats { get; set; }
 
     [CommandOption("--danmaku-filter")]
-    [Description("弹幕过滤: 包含任一关键词的弹幕将被丢弃(逗号分隔)")]
+    [Description("弹幕过滤: 包含任一关键词的弹幕将被丢弃(逗号分隔, 仅作用于 ASS 弹幕，XML 保留原始)")]
     public string? DanmakuFilter { get; set; }
 
     [CommandOption("--danmaku-filter-user")]
@@ -152,7 +152,7 @@ public class MyOption : CommandSettings
     public string? DanmakuFilterUser { get; set; }
 
     [CommandOption("--comments")]
-    [Description("同时下载视频评论区, 保存为 JSON")]
+    [Description("同时下载视频评论区, 保存为 JSON(每个视频仅在第 1 个分P 时下载一次，防重复)")]
     public bool DownloadComments { get; set; }
 
     [CommandOption("--notify-webhook")]
