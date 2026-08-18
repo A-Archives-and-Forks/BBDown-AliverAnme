@@ -595,19 +595,29 @@ public static partial class HTTPUtil
                     throw new RiskControlResponseException(Url);
                 return bytes;
             }
-            catch (HttpRequestException ex) when (attempt < maxRetry && ex.StatusCode is null)
+            catch (HttpRequestException ex) when (attempt < maxRetry && (ex.StatusCode is null || (int)ex.StatusCode >= 500))
             {
-                // 仅重试连接级失败（StatusCode null = 请求未到达服务器，如连接被拒/DNS 失败）：
-                // POST 不幂等（此函数用于 Widevine gRPC 许可证请求），服务端收到 5xx 或发生超时
-                // 时请求可能已被处理，重发会造成服务端重复签发/放大风控请求数。
+                // 本函数仅服务幂等查询（PlayView gRPC 播放地址、字幕 gRPC）：重发不改变
+                // 服务端状态，连接级失败（StatusCode null）与 5xx 均可安全有界重试。
+                // 真正的非幂等请求（Widevine 许可证）走 VerifiedAppHttpClient 直连
+                // （WidevineCdm.cs），不经过本函数的重试逻辑。
                 int backoffMs = ExponentialBackoffMs(attempt);
                 Logger.LogDebug("API POST 失败(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(Url));
                 await Task.Delay(backoffMs, token);
             }
+            catch (OperationCanceledException) when (attempt < maxRetry && !token.IsCancellationRequested)
+            {
+                // timeoutCts 超时抛的 OperationCanceledException 其用户 token 未取消：
+                // 超时是最常见的瞬时传输层故障，与 5xx 同权参与有界重试（幂等查询）。
+                // 真正的用户取消（token 已取消）不重试，直接向上传播。
+                int backoffMs = ExponentialBackoffMs(attempt);
+                Logger.LogDebug("API POST 超时(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(Url));
+                await Task.Delay(backoffMs, token);
+            }
             catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
             {
-                // 超时（timeoutCts 触发）：POST 不幂等，超时后服务端可能已成功处理，
-                // 不重试，直接以可读超时错误抛出（token 已取消的真实取消向上传播）。
+                // 所有重试用尽后仍超时（timeoutCts 触发）：以可读超时错误抛出
+                // （token 已取消的真实取消不进入此处，直接向上传播）。
                 throw new TimeoutException($"API POST 超时 ({Config.Current.ApiTimeoutMs}ms): {SensitiveDataMasker.MaskUrl(Url)}", ex);
             }
         }

@@ -60,12 +60,13 @@ public static class PathUtil
             title = "_" + title;
         // Windows 不允许文件/目录名以点或空格结尾（会静默剥离/创建失败）：
         // 标题 "video." 或 "video " 在 Windows 上 File.Create/目录创建直接失败。
-        // 仅当去掉尾随点/空格后名称仍非空时裁剪（纯 "." / ".." / "..." 已在上方
-        // 无效字符替换中处理，不会到达这里；防御性再兜底）。去掉后若为空（如
-        // 输入全为点），前缀下划线保证有合法基名。
+        // 仅当去掉尾随点/空格后名称仍非空时裁剪。注意：'.'（46）不在 InvalidChars 中，
+        // 纯 "." / ".." / "..." 不会被上方无效字符替换处理，必须在此兜底。
+        // 去掉后为空（输入全为点/空格）时前缀下划线：必须拼接裁剪后的 trimmed（空串）
+        // 而非原 title——拼接原 title 会保留尾随点/空格（"."→"_."），产物仍非法。
         var trimmed = title.TrimEnd('.', ' ');
         if (trimmed.Length == 0)
-            title = "_" + title;
+            title = "_" + trimmed;
         else if (trimmed != title)
             title = trimmed;
         return title;

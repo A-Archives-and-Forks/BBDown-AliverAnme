@@ -150,6 +150,7 @@
 - 配置了 `--serve-token` 后，`/get-tasks`、`/add-task`、`/cancel`、`/remove-finished` 所有端点都要求请求头 `X-Serve-Token` 匹配，否则返回 401。
 - **非回环监听必须 `--serve-token`**：`-l http://0.0.0.0:<port>` 或 `-l http://<非回环IP>:<port>` 等非回环地址会把任务端点暴露到局域网/公网，未配置 `--serve-token` 时 serve 拒绝启动（提示必须配置 token）。
 - **不再启用任意来源 CORS**：serve 已移除 `AllowAnyOrigin`，响应不返回 `Access-Control-Allow-Origin`，浏览器跨域请求会被同源策略拦截。
+- **写端点带 CSRF/跨源防护（无条件生效）**：`/add-task`、`/cancel`、`/remove-finished` 校验请求头 `Origin` 必须为回环来源（`127.0.0.1`/`localhost`/`[::1]`）或缺失（非浏览器客户端），否则返回 403；`/add-task` 的请求体必须为 `application/json`（`text/plain` 是 CORS 简单请求的合法载体，可直接跨源发出不触发预检），否则返回 415。浏览器管理页面请通过 `http://localhost` 或 `http://127.0.0.1` 托管（`file://` 页面跨源 POST 的 `Origin: null` 会被拒绝）。
 - **任务完成回调由服务端配置**：serve 启动时通过 `--notify-webhook <url>` 指定任务完成回调地址（服务端固定 allowlist）；客户端请求体中的 `callBackWebHook` / `notifyWebhook` 字段被忽略。回调地址会拦截回环/链路本地/云元数据等敏感目标，并在每次回调连接时用已校验的 DNS 解析结果绑定连接（缓解 DNS 重绑定）。
 - 默认仅监听 `http://127.0.0.1:23333`（仅本机可访问）。需要对外提供服务时请显式 `-l http://0.0.0.0:<port>`，并务必配合 `--serve-token` 与反向代理。
 - API 服务器不支持 HTTPS 配置，如有需要请自行使用 nginx 等反向代理进行配置。

@@ -200,6 +200,9 @@ public class ServeApiSecurityTests
     [InlineData("Could not find a part of the path '\\\\server\\share\\dir'", "Could not find a part of the path 'dir'")]
     [InlineData("磁盘空间不足", "磁盘空间不足")] // 无路径消息原样保留
     [InlineData(null, "")]
+    // URL/相对路径不是绝对路径，不得被替换（http://x/y 会变成 "http:y"，a/b/c 会变成 "ac"）
+    [InlineData("下载失败: https://example.com/a/b/c.mp4 已超时", "下载失败: https://example.com/a/b/c.mp4 已超时")]
+    [InlineData("无法打开 data/video/xxx.mp4", "无法打开 data/video/xxx.mp4")]
     public void SanitizeErrorMessage_HidesAbsolutePathLeaksFilename(string? input, string expected)
     {
         // 绝对路径（盘符/UNC/Unix 根）在错误消息中应被替换为末段，防止经 /get-tasks

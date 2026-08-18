@@ -18,6 +18,26 @@ public class PathUtilTests
     public void GetValidFileName_ShortInput_UnchangedOrSanitized(string input, string expected)
         => Assert.Equal(expected, PathUtil.GetValidFileName(input));
 
+    // ── 尾随点/空格（Windows 拒绝以点/空格结尾的文件名）──
+
+    [Theory]
+    [InlineData("video.", "video")]
+    [InlineData("video ", "video")]
+    [InlineData("video.. ", "video")]
+    [InlineData(".", "_")]
+    [InlineData("..", "_")]
+    [InlineData("...", "_")]
+    [InlineData(" ", "_")]
+    [InlineData(" . ", "_")]
+    public void GetValidFileName_TrailingDotOrSpace_Sanitized(string input, string expected)
+    {
+        // 纯点/空格串（'.' 不在 InvalidChars 中，上方字符替换不会处理）必须产出
+        // 合法基名：前缀下划线且不保留尾随点/空格（"_." / "_ " 在 Windows 上仍非法）。
+        var result = PathUtil.GetValidFileName(input);
+        Assert.Equal(expected, result);
+        Assert.False(result.EndsWith('.') || result.EndsWith(' '), $"产物仍以点/空格结尾: {result}");
+    }
+
     // ── 长路径截断 ──
 
     [Fact]

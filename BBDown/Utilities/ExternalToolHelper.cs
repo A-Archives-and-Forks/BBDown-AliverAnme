@@ -50,12 +50,14 @@ public static class ExternalToolHelper
     public static string? FindExecutable(string name)
     {
         var fileExt = OperatingSystem.IsWindows() ? ".exe" : "";
-        // 只在 PATH 与程序目录（APP_DIR）中查找，绝不搜索当前工作目录：
+        // 只在程序目录（APP_DIR）与 PATH 中查找，绝不搜索当前工作目录：
         // BBDown 是下载器，常被放在任意视频/下载目录运行，该目录里若有先前植入的
         // ffmpeg.exe/aria2c.exe/mp4box.exe（或误入的伪造二进制），会静默执行本地
-        // 伪造文件（可执行文件劫持）。PATH 与程序目录是用户/包管理器建立的可信位置。
+        // 伪造文件（可执行文件劫持）。APP_DIR 与 PATH 是用户/包管理器建立的可信位置。
+        // APP_DIR 优先于 PATH：程序自带/随包分发的工具版本受控，不应被 PATH 中同名
+        // 旧版或注入的工具覆盖。
         var envPath = Environment.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];
-        var searchPath = envPath.Concat(new[] { Program.APP_DIR });
+        var searchPath = new[] { Program.APP_DIR }.Concat(envPath);
         return searchPath.Select(p => Path.Combine(p, name + fileExt)).FirstOrDefault(IsExecutableFile);
     }
 

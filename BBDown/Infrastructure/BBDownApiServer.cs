@@ -47,6 +47,8 @@ public partial class BBDownApiServer
     private readonly Dictionary<string, List<DateTime>> _authFailures = [];
     private readonly object _authFailuresLock = new();
     private const int MaxAuthFailuresPerMinute = 5;
+    /// <summary>认证失败跟踪的 IP 上限：超过后清理过期条目，防一次性 IP 轰炸导致字典无限增长。</summary>
+    private const int MaxTrackedAuthFailureIps = 1024;
 
     /// <summary>
     /// 接受队列上限：正在处理 + 排队等待的任务总数上限。
@@ -385,25 +387,43 @@ public partial class BBDownApiServer
 
     /// <summary>匹配盘符/UNC/Unix 根绝对路径（含尾随文件名或目录段），保留路径最后一段。
     /// 形如 D:\a\b\c.mp4、\\server\share\x、/home/u/x.mp4；交替三种根前缀，
-    /// 中间目录段任意、末尾段捕获为 file（含中文/空格等非分隔符字符）。</summary>
-    [System.Text.RegularExpressions.GeneratedRegex(@"(?:[A-Za-z]:\\|/|\\\\)(?:[^\\/\r\n]+[\\/])*(?<file>[^\\/\r\n]+)")]
+    /// 中间目录段任意、末尾段捕获为 file（含中文/空格等非分隔符字符）。
+    /// Unix 根分支用 (?&lt;![/:\w]) 负向后顾：URL（http://x/y，/ 前是 : 或 /）与
+    /// 相对路径（a/b/c，/ 前是路径字符）不被当作绝对路径替换，避免破坏消息里的 URL。</summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"(?:[A-Za-z]:\\|(?<![/:\w])/|\\\\)(?:[^\\/\r\n]+[\\/])*(?<file>[^\\/\r\n]+)")]
     private static partial System.Text.RegularExpressions.Regex _absolutePathRegex();
 
     /// <summary>
     /// 认证失败限速判定：1 分钟滑动窗口内失败次数达到阈值返回 true（拒绝服务）。
     /// 每次失败都调用本方法登记；限速状态按来源 IP 隔离，同机合法客户端不受影响。
+    /// 窗口过期的空条目会被移除，防止攻击者用大量一次性 IP 轰炸时字典无限增长
+    /// （每 IP 一条永不清除的空 list）；字典超过上限时顺带清理全部过期条目。
     /// </summary>
     private bool IsAuthLockedOut(string clientIp)
     {
         lock (_authFailuresLock)
         {
             var now = DateTime.UtcNow;
+            // 攻击者换 IP 轰炸时字典条目会累积：超过上限则先全局清理过期条目
+            //（O(n) 只发生在异常规模下，正常路径零开销）。
+            if (_authFailures.Count > MaxTrackedAuthFailureIps)
+            {
+                foreach (var stale in _authFailures.Where(kv => kv.Value.Count == 0 || now - kv.Value[^1] > TimeSpan.FromMinutes(1)).ToList())
+                    _authFailures.Remove(stale.Key);
+            }
             if (!_authFailures.TryGetValue(clientIp, out var list))
             {
                 _authFailures[clientIp] = [now];
                 return false;
             }
             list.RemoveAll(t => now - t > TimeSpan.FromMinutes(1));
+            if (list.Count == 0)
+            {
+                // 窗口内条目全部过期：移除键重建，避免保留空 list 条目
+                _authFailures.Remove(clientIp);
+                _authFailures[clientIp] = [now];
+                return false;
+            }
             if (list.Count >= MaxAuthFailuresPerMinute) return true;
             list.Add(now);
             return false;

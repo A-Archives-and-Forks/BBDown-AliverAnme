@@ -168,18 +168,19 @@ public class HttpUtilRetryTests
     }
 
     [Fact]
-    public async Task GetPostResponse_Timeout_NotRetried_Throws()
+    public async Task GetPostResponse_Timeout_RetriedUntilExhaustedThenThrows()
     {
-        // F5：grpc API 的 POST 请求不幂等（Widevine 许可证），超时后服务端可能已成功处理，
-        // 重发会造成服务端重复签发。因此 POST 超时只发出一次请求便以 TimeoutException 抛出，
-        // 不参与 GET 的有界超时重试。
+        // F5：GetPostResponseAsync 仅服务幂等查询（PlayView gRPC 播放地址、字幕 gRPC），
+        // 重发不改变服务端状态；超时（timeoutCts 触发、用户 token 未取消）是瞬时传输层
+        // 故障，与 GET 同权参与有界重试。真正的非幂等请求（Widevine 许可证）走
+        // VerifiedAppHttpClient 直连，不经过本函数的重试逻辑。
         using var server = new StallingServer();
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10, ApiTimeoutMs = 100 });
             await Assert.ThrowsAnyAsync<TimeoutException>(() =>
                 HTTPUtil.GetPostResponseAsync($"http://127.0.0.1:{server.Port}/grpc", new byte[] { 0x00 }, token: CancellationToken.None));
-            Assert.Equal(1, server.RequestCount); // POST 超时不重试，只有初始请求
+            Assert.Equal(3, server.RequestCount); // 超时被重试到耗尽，没有多余请求
         }
         finally
         {
