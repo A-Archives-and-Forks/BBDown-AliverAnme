@@ -140,7 +140,7 @@ public partial class BBDownApiServer
         _taskFile = taskFilePath ?? Path.Combine(Environment.CurrentDirectory, "bbdown-tasks.json");
     }
 
-    public void SetUpServer()
+    public void SetupServer()
     {
         if (app is not null) return;
         LoadFinishedTasks();
@@ -395,7 +395,7 @@ public partial class BBDownApiServer
             // 收到取消信号（如 Ctrl+C），正常退出
         }
         // 关停收尾：Kestrel 已停止接收新请求。取消共享令牌已在 ApplicationStopping
-        // 触发（见 SetUpServer 的注册）。这里限时等待所有在途后台任务完成
+        // 触发（见 SetupServer 的注册）。这里限时等待所有在途后台任务完成
         // "取消 → 终止外部进程 → 持久化"，避免退出进程时遗留孤儿 ffmpeg/aria2c
         // 或丢失未落盘的任务记录。等待超时（例如下载器在取消后仍卡在外部进程上）
         // 则放弃等待，不无限阻塞退出。

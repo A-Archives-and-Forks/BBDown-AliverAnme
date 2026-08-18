@@ -57,7 +57,7 @@ public class ServeApiHttpTests
             _ownsTaskFile = taskFilePath == null;
             _taskFile = taskFilePath ?? Path.Combine(Path.GetTempPath(), $"bbdown-tasks-{Guid.NewGuid():N}.json");
             Server = new BBDownApiServer(maxConcurrent: maxConcurrent, serveToken: withToken ? "test-token" : null, taskFilePath: _taskFile);
-            Server.SetUpServer();
+            Server.SetupServer();
             _runTask = Task.Run(() => Server.Run(BaseUrl, _cts.Token));
             // 等待服务器就绪（Kestrel 开始监听）后再发请求：WebApplication 启动在
             // CI 首次运行/慢环境下明显慢于本地，若不等待，所有请求都会撞上
@@ -364,7 +364,7 @@ public class ServeApiHttpTests
         // 默认安全边界：非回环监听（0.0.0.0/具体网卡 IP）会把端点暴露到局域网/公网，
         // 未配置 --serve-token 时必须拒绝启动——删掉这条防线测试仍全绿。
         var server = new BBDownApiServer();
-        server.SetUpServer();
+        server.SetupServer();
         Assert.Throws<InvalidOperationException>(() => server.Run("http://0.0.0.0:12345"));
         Assert.Throws<InvalidOperationException>(() => server.Run("http://192.168.1.10:12345"));
         // 回环监听不带 token 是受信任本地边界，保持兼容（不抛）——但 Run 会阻塞，

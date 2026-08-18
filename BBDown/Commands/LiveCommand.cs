@@ -58,9 +58,9 @@ public class LiveCommand : Command<LiveSettings>
                 if (session is not null) Config.Apply(session);
 
                 Logger.Log($"正在解析直播间 {settings.RoomId}...");
-                var (_, title, uname, _, quality) = await LiveStreamUtil.ResolveAsync(settings.RoomId, cancellationToken);
-                Logger.Log($"直播间: {title} (UP: {uname})，画质: {LiveStreamUtil.QualityName(quality)} (qn={quality})");
-                string path = settings.Output ?? $"{LiveStreamUtil.SanitizeFileName(title)}_直播录制_{DateTime.Now:yyyyMMdd_HHmmss}.flv";
+                var info = await LiveStreamUtil.ResolveAsync(settings.RoomId, cancellationToken);
+                Logger.Log($"直播间: {info.Title} (UP: {info.Uname})，画质: {LiveStreamUtil.QualityName(info.Quality)} (qn={info.Quality})");
+                string path = settings.Output ?? $"{LiveStreamUtil.SanitizeFileName(info.Title)}_直播录制_{DateTime.Now:yyyyMMdd_HHmmss}.flv";
                 Logger.Log($"开始录制直播流: {path} (Ctrl+C 停止；断流/网络中断自动重连续录)");
 
                 DateTime lastLog = DateTime.MinValue;

@@ -40,7 +40,6 @@ public static partial class BBDownUtil
             Logger.LogDebug($"检查更新失败详情: {ex}");
         }
     }
-    public static Task<string> GetAvIdAsync(string input) => UrlResolver.ResolveAsync(input);
 
     /// <summary>带取消令牌的 URL 解析：serve 模式下让 /cancel 能中断正在进行的解析。</summary>
     public static Task<string> GetAvIdAsync(string input, CancellationToken cancellationToken)
@@ -116,28 +115,6 @@ public static partial class BBDownUtil
             try { if (File.Exists(outputFilePath)) File.Delete(outputFilePath); } catch (Exception) { }
             throw;
         }
-    }
-
-    /// <summary>
-    /// 寻找指定目录下指定后缀的文件的详细路径 如".txt"
-    /// </summary>
-    /// <param name="dir"></param>
-    /// <param name="ext"></param>
-    /// <returns></returns>
-    public static string[] GetFiles(string dir, string ext)
-    {
-        List<string> al = [];
-        DirectoryInfo d = new(dir);
-        foreach (FileInfo fi in d.GetFiles())
-        {
-            if (fi.Extension.Equals(ext, StringComparison.OrdinalIgnoreCase))
-            {
-                al.Add(fi.FullName);
-            }
-        }
-        string[] res = al.ToArray();
-        Array.Sort(res); //排序
-        return res;
     }
 
     public static string GetValidFileName(string input, string re = "_", bool filterSlash = false, int maxBaseNameLength = 100)
@@ -443,6 +420,7 @@ public static partial class BBDownUtil
             if (!doc.RootElement.TryGetProperty("expires", out var expires)
                 || expires.ValueKind != JsonValueKind.Number || !expires.TryGetInt64(out var expiry) || expiry <= 0)
                 return null;
+            // 秒 → 天换算（1 天 = 86400 秒），估算 SESSDATA 剩余有效期
             var days = (int)((expiry - DateTimeOffset.UtcNow.ToUnixTimeSeconds()) / 86400.0);
             return days;
         }

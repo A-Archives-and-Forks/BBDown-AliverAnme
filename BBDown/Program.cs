@@ -224,7 +224,7 @@ partial class Program
         IsServeMode = true;
         Logger.LogFilePath = Path.Combine(Directory.GetCurrentDirectory(), "bbdown-api.log");
         var server = new BBDownApiServer(maxConcurrent, serveToken, notifyWebhook: notifyWebhook, trustProxy: trustProxy);
-        server.SetUpServer();
+        server.SetupServer();
         try
         {
             server.Run(string.IsNullOrEmpty(listenUrl) ? defaultListenUrl : listenUrl, cancellationToken);

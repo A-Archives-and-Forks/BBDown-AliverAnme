@@ -341,7 +341,4 @@ public static partial class UrlResolver
 
     [GeneratedRegex(@"window\.__INITIAL_STATE__=([\s\S].*?);\(function\(\)")]
     private static partial Regex StateRegex();
-
-    [GeneratedRegex("md(\\d+)")]
-    private static partial Regex MdRegex();
 }

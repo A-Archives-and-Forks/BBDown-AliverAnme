@@ -10,6 +10,9 @@ namespace BBDown.Core;
 
 public static partial class Parser
 {
+    /// <summary>调试日志中 PlayJson 摘要的最大字符数（防巨响应刷屏/耗内存）。</summary>
+    private const int LogJsonSummaryMaxChars = 1024;
+
     public static string WbiSign(string api)
     {
         return $"{api}&w_rid=" + Convert.ToHexStringLower(MD5.HashData(Encoding.UTF8.GetBytes(api + Config.Current.Wbi)));
@@ -117,7 +120,7 @@ public static partial class Parser
         {
             Logger.LogDebug("PlayJson {0} chars: {1}",
                 parsedResult.WebJsonString.Length,
-                parsedResult.WebJsonString.Length > 1024 ? parsedResult.WebJsonString[..1024] + "…" : parsedResult.WebJsonString);
+                parsedResult.WebJsonString.Length > LogJsonSummaryMaxChars ? parsedResult.WebJsonString[..LogJsonSummaryMaxChars] + "…" : parsedResult.WebJsonString);
         }
 
         //intl接口需要两次请求(code=0和code=1)
@@ -204,9 +207,9 @@ public static partial class Parser
             respJson.Dispose();
             throw;
         }
-        // 外层 try/finally：覆盖 356 行 DRM 提取 throw、250/455 行 GetPlayJsonAsync
-        // await 抛错等所有中途异常路径——respJson 已 parse 但未走到方法末尾 dispose 时，
-        // 由 finally 统一释放（JsonDocument.Dispose 幂等，与 262/456 的显式释放不冲突）。
+        // 外层 try/finally：覆盖 DRM 提取 throw、GetPlayJsonAsync await 抛错等所有中途
+        // 异常路径——respJson 已 parse 但未走到方法末尾 dispose 时，由 finally 统一释放
+        //（JsonDocument.Dispose 幂等，与显式释放路径不冲突）。
         try
         {
             // 根据API版本自动定位数据节点
@@ -469,7 +472,7 @@ public static partial class Parser
                 // 重发失败（业务错误或无 durl）时沿用首次已校验的响应降级，不丢可用轨道。
                 string firstWebJson = parsedResult.WebJsonString;
                 var firstRoot = root;
-                // 重发可能抛网络/超时/解析异常（dash 分支 280 行同款过滤器）：重发失败但
+                // 重发可能抛网络/超时/解析异常（dash 分支同款过滤器）：重发失败但
                 // 首次响应已通过业务校验且完全可用，沿用首次响应降级，不把整个解析拖垮。
                 // 真正的用户取消（OperationCanceledException，非 TaskCanceledException）
                 // 不被过滤器捕获，向上传播走取消路径。

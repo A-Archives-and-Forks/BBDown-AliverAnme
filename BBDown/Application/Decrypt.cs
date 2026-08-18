@@ -34,6 +34,8 @@ internal partial class Program
         {
             try
             {
+                // drm_tech_type=2 是 Widevine（B 站约定，与 Parser.cs 请求 &drm_tech_type=2 对应）：
+                // 携带 PSSH 时走 Widevine 许可证解密。其它技术类型（如 DASH 明文）不在此路径。
                 if (parsed.DrmTechType == 2)
                 {
                     if (!string.IsNullOrEmpty(parsed.PsshBase64))

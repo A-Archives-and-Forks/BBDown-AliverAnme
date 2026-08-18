@@ -10,6 +10,9 @@ namespace BBDown.Core;
 
 static partial class AppHelper
 {
+    /// <summary>调试日志中 PlayViewReply 摘要的最大字符数（防巨响应刷屏/耗内存）。</summary>
+    private const int LogJsonSummaryMaxChars = 1024;
+
     private static readonly string API = "https://grpc.biliapi.net/bilibili.app.playurl.v1.PlayURL/PlayView";
     private static readonly string API2 = "https://app.bilibili.com/bilibili.pgc.gateway.player.v2.PlayURL/PlayView";
     private static readonly string dalvikVer = "2.1.0";
@@ -85,7 +88,7 @@ static partial class AppHelper
         if (Config.Current.DebugLog)
         {
             var json = JsonSerializer.Serialize(resp, JsonContext.Default.PlayViewReply);
-            var summary = json.Length > 1024 ? json[..1024] + "…" : json;
+            var summary = json.Length > LogJsonSummaryMaxChars ? json[..LogJsonSummaryMaxChars] + "…" : json;
             summary = SignedUrlParamRegex().Replace(summary, "$1***");
             Logger.LogDebug("PlayViewReply {0} chars: {1}", json.Length, summary);
         }

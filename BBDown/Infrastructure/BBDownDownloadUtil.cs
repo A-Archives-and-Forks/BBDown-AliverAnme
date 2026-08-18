@@ -160,16 +160,16 @@ internal static class BBDownDownloadUtil
             stallCts.CancelAfter(MediaReadStallTimeout);
             while (downloadedBytes < totalBytes)
             {
-                int recevied;
+                int received;
                 try
                 {
-                    recevied = await stream.ReadAsync(buffer.AsMemory(0, blockSize), stallCts.Token);
+                    received = await stream.ReadAsync(buffer.AsMemory(0, blockSize), stallCts.Token);
                 }
                 catch (OperationCanceledException) when (!token.IsCancellationRequested)
                 {
                     throw new IOException($"下载停滞：{MediaReadStallTimeout.TotalSeconds:0} 秒内未收到数据，已触发重试");
                 }
-                if (recevied == 0)
+                if (received == 0)
                 {
                     // 提前 EOF：仅当服务器声明了 Content-Length 且未读够时是截断——
                     // 说明连接中断，必须抛错触发重试，不能把截断当成功。
@@ -182,8 +182,8 @@ internal static class BBDownDownloadUtil
                 // 依赖 FileStream 自身缓冲，不逐块 FlushAsync：每 256KB 一次刷盘会
                 // 把异步写放大成同步 syscall，大文件下载产生海量无必要的刷新调用。
                 // 分片结束时统一 flush 一次，保证数据落盘后调用方（合并）可读到完整内容。
-                await fileStream.WriteAsync(buffer.AsMemory(0, recevied), token);
-                downloadedBytes += recevied;
+                await fileStream.WriteAsync(buffer.AsMemory(0, received), token);
+                downloadedBytes += received;
                 onProgress(id, downloadedBytes - fromPosition, totalBytes);
             }
             // 分片写完后落盘：合并/删除等后续操作依赖磁盘上已有完整数据
@@ -231,11 +231,6 @@ internal static class BBDownDownloadUtil
         => WithPathLockAsync(path, action, token);
 
     /// <summary>
-    /// 取得某个目标路径的独占锁并登记一个使用者。
-    /// 必须与 <see cref="UnregisterDownloadLock"/> 成对使用，否则字典会持续膨胀 ——
-    /// serve 模式是长驻进程，每个下载过的路径都留下一个 SemaphoreSlim 就是内存泄漏。
-    /// </summary>
-    /// <summary>
     /// 规范化为锁键：Path.GetFullPath 展开相对路径/“..”段，Windows 下统一小写
     /// （NTFS 不区分大小写，大小写不同的同一路径应共享一把锁）。
     /// 规范化必须同时用于 Acquire 与 Unregister，否则字典键不匹配导致锁泄漏。
@@ -248,6 +243,11 @@ internal static class BBDownDownloadUtil
         return OperatingSystem.IsWindows() ? full.ToLowerInvariant() : full;
     }
 
+    /// <summary>
+    /// 取得某个目标路径的独占锁并登记一个使用者。
+    /// 必须与 <see cref="UnregisterDownloadLock"/> 成对使用，否则字典会持续膨胀 ——
+    /// serve 模式是长驻进程，每个下载过的路径都留下一个 SemaphoreSlim 就是内存泄漏。
+    /// </summary>
     private static PathLock AcquireDownloadLock(string path)
     {
         var key = NormalizeLockKey(path);
@@ -354,7 +354,6 @@ internal static class BBDownDownloadUtil
                 throw new InvalidOperationException("aria2下载可能存在错误");
             // 不清除身份清单：它作为"完成证书"保留，下次重跑时 PrepareAria2cTarget 可经
             // CanResumeFrom 确认身份后跳过，而不是把完整文件误判为"身份不可信"删除重下。
-            Console.WriteLine();
             return;
         }
         int retry = 0;
@@ -507,6 +506,7 @@ internal static class BBDownDownloadUtil
             if (!CanResumeFrom(path, url, fileSize, out var reason, headers?.ETag?.Tag, contentHeaders?.LastModified?.ToString("R")))
             {
                 Logger.LogDebug("aria2c: 既有文件资源身份不可信（{0}），删除后完整重下", reason ?? "未知原因");
+                // 用位与 &（非短路）：两个文件都必须尝试删除，&& 会因第一个成功而漏删第二个
                 bool purged = TryDeleteStale(path) & TryDeleteStale(controlFile);
                 DeleteResumeManifest(path);
                 if (!purged)
@@ -524,6 +524,7 @@ internal static class BBDownDownloadUtil
                 // 身份可信但超长（长度超过远端总长）：内容不可信（越界尾部/资源变化），
                 // 删除完整重下。否则 aria2c --continue 从超出 EOF 的偏移续传可能 416 死循环。
                 Logger.LogDebug("aria2c: 既有文件({0}字节)大于远端({1}字节)，内容不可信，删除后完整重下", partialLength, fileSize);
+                // 用位与 &（非短路）：两个文件都必须尝试删除，&& 会因第一个成功而漏删第二个
                 bool purged = TryDeleteStale(path) & TryDeleteStale(controlFile);
                 DeleteResumeManifest(path);
                 if (!purged)
@@ -676,7 +677,6 @@ internal static class BBDownDownloadUtil
             if (File.Exists(path + ".aria2") || !File.Exists(path))
                 throw new InvalidOperationException("aria2下载可能存在错误");
             // 同单线程：保留身份清单作为完成证书，供重跑跳过完整文件
-            Console.WriteLine();
             return ([], fileSize);
         }
         Logger.LogDebug("文件大小：{0} bytes", fileSize);

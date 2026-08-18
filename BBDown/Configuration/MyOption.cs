@@ -160,7 +160,7 @@ public class MyOption : CommandSettings
     public string? NotifyWebhook { get; set; }
 
     [CommandOption("--skip-ai")]
-    [Description("跳过AI字幕下载(默认开启)")]
+    [Description("跳过AI字幕下载（名称表示真跳过：值为 true 时不下载 AI 字幕；需下载请显式传 --skip-ai false）")]
     [DefaultValue(true)]
     public bool SkipAi { get; set; } = true;
 

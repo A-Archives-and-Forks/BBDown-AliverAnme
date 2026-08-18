@@ -53,10 +53,17 @@ public static class LiveStreamUtil
     };
 
     /// <summary>
+    /// 直播间解析结果：一条可录制的 FLV 流地址 + 房间信息。
+    /// 取代 5 元组返回值——按名取用比 <c>(url, _, _, _, _)</c> 位置解构可读性高，
+    /// 也避免新增字段时破坏所有调用点（H13）。
+    /// </summary>
+    public sealed record LiveStreamInfo(string Url, string Title, string Uname, string RoomId, int Quality);
+
+    /// <summary>
     /// 解析直播间信息与一条可录制的 flv 直播流地址。
     /// 返回的 Quality 是本账号实际拿到的最高的 current_qn（0 表示响应未携带）。
     /// </summary>
-    public static async Task<(string Url, string Title, string Uname, string RoomId, int Quality)> ResolveAsync(string roomId, CancellationToken token = default)
+    public static async Task<LiveStreamInfo> ResolveAsync(string roomId, CancellationToken token = default)
     {
         if (!long.TryParse(roomId, out _))
             throw new ArgumentException($"直播间 ID 必须是数字，当前值: '{roomId}'");
@@ -109,7 +116,7 @@ public static class LiveStreamUtil
                     ? $"（接口可用格式: {string.Join(", ", lastFormats)}；当前仅支持 flv，HLS/ts/fmp4 暂不支持）"
                     : "（接口未返回任何流）"));
         }
-        return (picked, title, uname, roomId, pickedQn);
+        return new LiveStreamInfo(picked, title, uname, roomId, pickedQn);
     }
 
     /// <summary>
@@ -241,7 +248,8 @@ public static class LiveStreamUtil
                 token.ThrowIfCancellationRequested();
                 try
                 {
-                    var (url, _, _, _, _) = await ResolveAsync(roomId, token);
+                    var info = await ResolveAsync(roomId, token);
+                    var url = info.Url;
                     var segPath = Path.Combine(segDir, $"seg-{segIndex++:000}.flv");
                     // progressBase = 已录完分段的累计字节（total），进度回调上报累计值，
                     // 重连后新分段从 total 起报而不是从 0 倒退。

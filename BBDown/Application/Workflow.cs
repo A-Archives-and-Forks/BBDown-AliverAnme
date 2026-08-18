@@ -43,7 +43,9 @@ internal partial class Program
         string input = myOption.Url;
         string savePathFormat = myOption.FilePattern;
         string lang = myOption.Language;
-        string aidOri = ""; //原始aid
+        string aidOri = ""; // 用户输入的原始资源标识（URL/BV/av 等解析前的形态），
+                            // 供 Parser.ExtractTracksAsync 的 aidOri 参数做回退/展示——
+                            // 解析出的真实 aid 由 UrlResolver 结果与各分P 结构承载。
         int delay = myOption.DelayPerPage;
         Config.Apply(new AppSettings(
             Cookie: myOption.Cookie,

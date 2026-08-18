@@ -16,10 +16,15 @@ namespace BBDown;
 
 internal partial class Program
 {
+    /// <summary>调试日志中 JSON 响应摘要的最大字符数（防巨响应刷屏/耗内存）。</summary>
+    private const int LogJsonSummaryMaxChars = 1024;
+
+    /// <summary>混流后短暂等待外部进程释放输出文件句柄的毫秒数（防 finally 删除轨道文件时仍被占用）。</summary>
+    private const int FileHandleReleaseDelayMs = 200;
+
     public static async Task DownloadPagesAsync(MyOption myOption, VInfo vInfo, Dictionary<string, byte> encodingPriority, Dictionary<string, int> dfnPriority,
         string? firstEncoding, bool downloadDanmaku, BBDownDanmakuFormat[] downloadDanmakuFormats, string input, string savePathFormat, string lang, string aidOri, int delay, string apiType, DownloadTask? relatedTask = null, CancellationToken cancellationToken = default)
     {
-        cancellationToken.ThrowIfCancellationRequested();
         cancellationToken.ThrowIfCancellationRequested();
         List<Page> pagesInfo = vInfo.PagesInfo;
         bool bangumi = vInfo.IsBangumi;
@@ -255,7 +260,7 @@ internal partial class Program
             // 短暂等待外部进程释放输出文件句柄后，finally 再删除轨道文件。
             // 取消在这里正常传播（不吞 OCE）：混流已成功、产物已保存，轨道可以清理，
             // 但取消必须中止整批下载，而不是继续处理剩余分 P。
-            await Task.Delay(200, cancellationToken);
+            await Task.Delay(FileHandleReleaseDelayMs, cancellationToken);
         }
         finally
         {
@@ -1014,7 +1019,7 @@ internal partial class Program
                         if (Config.Current.DebugLog)
                             Logger.LogDebug("WebJson {0} chars: {1}",
                                 webJson.Length,
-                                webJson.Length > 1024 ? webJson[..1024] + "…" : webJson);
+                                webJson.Length > LogJsonSummaryMaxChars ? webJson[..LogJsonSummaryMaxChars] + "…" : webJson);
                         return false;
                     }
 

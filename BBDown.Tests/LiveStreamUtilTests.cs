@@ -398,15 +398,15 @@ public class LiveStreamUtilTests
         LiveStreamUtil.LiveApiHost = $"http://127.0.0.1:{server.Port}";
         try
         {
-            var (url, title, uname, roomId, quality) = await LiveStreamUtil.ResolveAsync("12345", CancellationToken.None);
+            var info = await LiveStreamUtil.ResolveAsync("12345", CancellationToken.None);
 
             Assert.True(server.PlayRequests.Count >= 1);
             Assert.Contains("qn=30000", server.PlayRequests[0]); // 首选最高画质
-            Assert.NotNull(url);
-            Assert.Equal("测试直播", title);
-            Assert.Equal("tester", uname);
-            Assert.Equal("12345", roomId);
-            Assert.Equal(10000, quality);
+            Assert.NotNull(info.Url);
+            Assert.Equal("测试直播", info.Title);
+            Assert.Equal("tester", info.Uname);
+            Assert.Equal("12345", info.RoomId);
+            Assert.Equal(10000, info.Quality);
         }
         finally
         {
@@ -431,13 +431,13 @@ public class LiveStreamUtilTests
         LiveStreamUtil.LiveApiHost = $"http://127.0.0.1:{server.Port}";
         try
         {
-            var (url, _, _, _, quality) = await LiveStreamUtil.ResolveAsync("12345", CancellationToken.None);
+            var info = await LiveStreamUtil.ResolveAsync("12345", CancellationToken.None);
 
             Assert.Equal(2, server.PlayRequests.Count);
             Assert.Contains("qn=30000", server.PlayRequests[0]);
             Assert.Contains("qn=10000", server.PlayRequests[1]);
-            Assert.NotNull(url);
-            Assert.Equal(10000, quality); // 回落后的原画
+            Assert.NotNull(info.Url);
+            Assert.Equal(10000, info.Quality); // 回落后的原画
         }
         finally
         {

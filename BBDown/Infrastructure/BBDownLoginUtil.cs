@@ -13,6 +13,9 @@ namespace BBDown;
 
 internal static class BBDownLoginUtil
 {
+    /// <summary>二维码 PNG 输出的像素缩放倍数（GetGraphic 参数；7 保证手机可扫）。</summary>
+    private const int QrCodePngScale = 7;
+
     /// <summary>
     /// 轮询扫码登录状态，并透出 poll 响应的 Set-Cookie 头。
     /// B 站新版登录（2026）将 SESSDATA 等凭证经 Set-Cookie 下发，必须保留响应头。
@@ -76,8 +79,6 @@ internal static class BBDownLoginUtil
             using var loginDoc = JsonDocument.Parse(await HTTPUtil.GetWebSourceAsync(loginUrl, token: cancellationToken));
             string url = loginDoc.RootElement.GetPropertySafe("data").GetStringSafe("url")!;
             string qrcodeKey = BBDownUtil.GetQueryString("qrcode_key", url);
-            //Logger.Log(oauthKey);
-            //Logger.Log(url);
             bool flag = false;
             Logger.Log("生成二维码...");
             QRCodeGenerator qrGenerator = new();
@@ -85,7 +86,7 @@ internal static class BBDownLoginUtil
             PngByteQRCode pngByteCode = new(qrCodeData);
             try
             {
-                await File.WriteAllBytesAsync("qrcode.png", pngByteCode.GetGraphic(7));
+                await File.WriteAllBytesAsync("qrcode.png", pngByteCode.GetGraphic(QrCodePngScale));
                 Logger.Log("生成二维码成功: qrcode.png, 请打开并扫描, 或扫描打印的二维码");
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
@@ -186,7 +187,8 @@ internal static class BBDownLoginUtil
         catch (OperationCanceledException)
         {
             // 区分主动取消与 HttpClient 超时：超时抛的 TaskCanceledException 其 token 未取消，
-            // 应报告网络超时而非"已取消"，避免掩盖真实失败原因（与 B3 的 ClassifyCancellation 一致）。
+            // 应报告网络超时而非"已取消"，避免掩盖真实失败原因（与 serve 侧
+            // ClassifyCancellation 的判别逻辑一致）。
             if (cancellationToken.IsCancellationRequested)
                 Logger.LogWarn("WEB 登录已取消。");
             else
@@ -219,7 +221,7 @@ internal static class BBDownLoginUtil
             PngByteQRCode pngByteCode = new(qrCodeData);
             try
             {
-                await File.WriteAllBytesAsync("qrcode.png", pngByteCode.GetGraphic(7));
+                await File.WriteAllBytesAsync("qrcode.png", pngByteCode.GetGraphic(QrCodePngScale));
                 Logger.Log("生成二维码成功: qrcode.png, 请打开并扫描, 或扫描打印的二维码");
             }
             catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

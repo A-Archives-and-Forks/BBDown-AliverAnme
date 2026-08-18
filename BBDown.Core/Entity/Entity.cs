@@ -25,7 +25,10 @@ public static class Entity
             {
                 if (long.TryParse(aid, out var aidNum))
                     return BilibiliBvConverter.Encode(aidNum);
-                return aid; // fallback: return raw aid if not numeric
+                // aid 非纯数字（可能本就是 BV 号或自定义标识）：无法编码，直接返回原始 aid。
+                // 注意：此处 fallback 返回的是原始字符串而非真实 BV——调用方不应假设 bvid 恒为
+                // 规范化 BV 号（如仅用于展示/匹配时它等价 aid；用于请求 API 时请用 aid 字段）。
+                return aid;
             }
         }
         public List<ViewPoint> points = new();
