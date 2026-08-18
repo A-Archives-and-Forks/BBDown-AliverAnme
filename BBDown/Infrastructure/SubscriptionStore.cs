@@ -35,6 +35,10 @@ public static class SubscriptionStore
     /// <summary>存储根目录（程序目录）。internal 供测试注入临时目录，避免污染真实安装目录。</summary>
     internal static string StoreRoot = Program.APP_DIR;
 
+    /// <summary>每个订阅保存在历史文件中的最大 avid 条数：超出后移除最旧的。
+    /// 足够大（正常订阅不会触顶），只是约束无界增长。</summary>
+    private const int MaxHistoryPerTarget = 5000;
+
     private static string SubFile => Path.Combine(StoreRoot, "BBDownSubscriptions.json");
     private static string HistoryFile => Path.Combine(StoreRoot, "BBDownSubscriptions.history.json");
 
@@ -213,7 +217,13 @@ public static class SubscriptionStore
             }
 
             if (!hist.TryGetValue(target, out var list)) { list = []; hist[target] = list; }
-            if (!list.Contains(aid)) list.Add(aid);
+            // Remove + Add：重复下载同一 avid 时把它移到末尾（保持"最近"语义），键唯一。
+            list.Remove(aid);
+            list.Add(aid);
+            // 历史只增不减：多年部署无界增长，每次 sub check 全量解析变慢。
+            // 保留最近 N 条（超过的按时间顺序移除最旧的）。N 足够大，正常订阅不会触顶。
+            if (list.Count > MaxHistoryPerTarget)
+                list.RemoveRange(0, list.Count - MaxHistoryPerTarget);
             // 写入失败向上传播：调用方据此让 sub check 返回非零退出码，
             // 否则下次运行会因历史未记录而重复下载已下载内容。
             AtomicWrite(HistoryFile, ToJson(hist, SubscriptionJsonContext.Default.DictionaryStringListString));

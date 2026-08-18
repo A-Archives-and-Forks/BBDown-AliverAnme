@@ -79,9 +79,16 @@ public sealed class SystemProcessRunner : IExternalProcessRunner
         try
         {
             await WaitWithTimeoutAsync(p, spec, cancellationToken);
-            if (stdoutTask != null) await stdoutTask;
-            if (stderrTask != null) await stderrTask;
-            if (stdinTask != null) await stdinTask;
+            // 成功路径同样带超时兜底等管道任务：进程已退出后 stdout/stderr 读取应立即结束，
+            // 但极端场景（脱离子进程继承管道句柄等）下读取可能短暂挂起钉住并发槽。
+            // 与清理路径不同：管道任务的异常（读取/写入失败）应向上传播而不是吞掉——
+            // 外部进程成功退出但 stderr 读取失败的证据不能丢。
+            var pipeTasks = new List<Task>();
+            if (stdoutTask != null) pipeTasks.Add(stdoutTask);
+            if (stderrTask != null) pipeTasks.Add(stderrTask);
+            if (stdinTask != null) pipeTasks.Add(stdinTask);
+            if (pipeTasks.Count > 0)
+                await Task.WhenAll(pipeTasks).WaitAsync(TimeSpan.FromSeconds(5));
             return p.ExitCode;
         }
         catch

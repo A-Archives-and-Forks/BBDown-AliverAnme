@@ -170,11 +170,17 @@ public static class LiveStreamUtil
         ConcatFailedWithSegmentsSaved
     }
 
+    /// <summary>短段判定阈值：单段收到字节数低于此值且连接中断，视为病态 CDN 只喂几 KB 就断。</summary>
+    private const int ShortSegmentThresholdBytes = 64 * 1024;
+    /// <summary>短段中断连续达到该次数后套用退避：否则病态 CDN 下无退避紧循环每秒数次
+    /// 调 getRoomPlayInfo，长时间可能触发 B 站风控。</summary>
+    private const int MaxConsecutiveShortSegments = 3;
+
     /// <summary>
     /// 录制直播流到文件。如果发生断流且房间仍在直播，会自动重连并生成多个分段，
     /// 录制结束后将所有分段合并为最终文件。
     /// </summary>
-    public static async Task<LiveRecordResult> DownloadToFileAsync(string roomId, string path, Action<long>? onProgress, CancellationToken token = default)
+    public static async Task<LiveRecordResult> DownloadToFileAsync(string roomId, string path, Action<long>? onProgress, CancellationToken token = default, TimeSpan? readStallTimeout = null)
     {
         // 每段独立文件：重连后的新 FLV 流含新的 FLV 头与重置时间戳，
         // 直接追加到旧流末尾的原始字节拼接不保证可播放。记录在独立分段里，
@@ -193,6 +199,9 @@ public static class LiveStreamUtil
         long total = 0;
         // 连续无进展次数：决定退避时长，任何分段收到数据即清零。
         int consecutiveFailures = 0;
+        // 连续短段中断次数：病态 CDN 每次只喂几 KB 就断时，达到阈值套用退避（见循环内）。
+        // 收到正常大段即清零（短段与短段之间若夹杂正常段，不算连续病态）。
+        int consecutiveShortSegments = 0;
         int segIndex = 0;
         var segmentFiles = new List<string>();
 
@@ -238,7 +247,7 @@ public static class LiveStreamUtil
                     // 重连后新分段从 total 起报而不是从 0 倒退。
                     // 本段收到任何字节都算有效传输：读中断返回的已写字节同样计入，
                     // 使 URL 到期/瞬断这类"有数据"的连接中断不消耗退避预算，不会误终止长录制。
-                    var (segBytes, readInterrupted) = await StreamToFileAsync(url, segPath, total, onProgress, token);
+                    var (segBytes, readInterrupted) = await StreamToFileAsync(url, segPath, total, onProgress, token, readStallTimeout);
                     if (readInterrupted) Logger.LogDebug("直播流连接在读取时中断，已写入 {0} 字节", segBytes);
 
                     if (segBytes > 0)
@@ -247,10 +256,22 @@ public static class LiveStreamUtil
                         segmentFiles.Add(segPath);
                         total += segBytes;
                         consecutiveFailures = 0;
+                        // 收到正常大段：短段中断计数清零（与短段之间夹杂正常段不算连续病态）
+                        if (segBytes >= ShortSegmentThresholdBytes) consecutiveShortSegments = 0;
                         if (readInterrupted)
                         {
                             // 用户取消：结束录制，已写内容照常保存
                             if (token.IsCancellationRequested) break;
+                            if (segBytes < ShortSegmentThresholdBytes && ++consecutiveShortSegments >= MaxConsecutiveShortSegments)
+                            {
+                                // 病态 CDN：每次只给几 KB 就断。短段中断连续多次后必须退避，
+                                // 否则无退避紧循环每秒数次调 getRoomPlayInfo，长时间触发风控。
+                                // 正常大段中断（URL 到期/瞬断）不消耗此计数，仍立即续录。
+                                consecutiveShortSegments = 0;
+                                Logger.LogWarn($"直播流连续 {MaxConsecutiveShortSegments} 次只收到短段（{segBytes} 字节）后中断，退避后重连...");
+                                await BackoffAsync(new IOException($"直播流短段中断（{segBytes} 字节）"));
+                                continue;
+                            }
                             // 有数据的中断（URL 到期/瞬断/读停滞是常态）：立即重新解析续录，
                             // 不等退避，避免每次 URL 到期丢失内容。
                             Logger.LogWarn("直播流连接中断但直播间仍在直播，正在重新解析流地址续录...");
@@ -544,7 +565,7 @@ public static class LiveStreamUtil
     /// 用户取消时上层把本段计入已录内容并合成保存，否则 Ctrl+C 会把当前分段全部丢弃。
     /// 写盘失败抛 <see cref="LiveStreamWriteException"/>（本地故障，重连无意义）。
     /// </summary>
-    private static async Task<(long Written, bool ReadInterrupted)> StreamToFileAsync(string url, string segPath, long progressBase, Action<long>? onProgress, CancellationToken token = default)
+    private static async Task<(long Written, bool ReadInterrupted)> StreamToFileAsync(string url, string segPath, long progressBase, Action<long>? onProgress, CancellationToken token = default, TimeSpan? stallTimeout = null)
     {
         using var req = new HttpRequestMessage(HttpMethod.Get, url);
         req.Headers.TryAddWithoutValidation("User-Agent", HTTPUtil.GetUserAgent(null));
@@ -568,8 +589,10 @@ public static class LiveStreamUtil
             // 读停滞看门狗：网络波动时连接可能既不 RST 也不 EOF，只是不再有数据——
             // 无超时客户端上 ReadAsync 会永久挂起，录制卡死且重连逻辑永远不触发。
             // 每收到一段数据重置计时；超时未收到数据视为连接死亡，按读中断返回交上层重连。
+            // stallTimeout 为 per-call 注入（测试用短阈值），缺省回落全局 ReadStallTimeout。
+            var effectiveStallTimeout = stallTimeout ?? ReadStallTimeout;
             using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(token);
-            stallCts.CancelAfter(ReadStallTimeout);
+            stallCts.CancelAfter(effectiveStallTimeout);
             while (true)
             {
                 int read;
@@ -591,7 +614,7 @@ public static class LiveStreamUtil
                     return (written, ReadInterrupted: true);
                 }
                 if (read == 0) break; // 流结束（主播下播/正常 EOF）
-                stallCts.CancelAfter(ReadStallTimeout); // 收到数据：重置停滞计时
+                stallCts.CancelAfter(effectiveStallTimeout); // 收到数据：重置停滞计时
                 try
                 {
                     await fs.WriteAsync(buffer.AsMemory(0, read), token);

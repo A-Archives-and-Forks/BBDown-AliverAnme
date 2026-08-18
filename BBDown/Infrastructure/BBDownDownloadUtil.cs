@@ -25,6 +25,26 @@ internal static class BBDownDownloadUtil
         public DownloadTask? RelatedTask { get; set; } = null;
     }
 
+    /// <summary>
+    /// VOD 媒体流读停滞看门狗阈值：CDN 发完响应头后停发数据（黑洞/半死 TCP）时，
+    /// ResponseHeadersRead 之后 HttpClient.Timeout 不约束响应体读取（见 HTTPUtil 注释），
+    /// ReadAsync 会永久挂起——CLI 需手动 Ctrl+C；serve 模式下每个挂起的分片钉死
+    /// 一个并发槽（默认 --max-concurrent 3 即 1/3），3 个即服务停摆且无任何日志。
+    /// 每收到一块数据重置计时；超时未收到数据抛可重试 IOException 走既有退避链。
+    /// 与直播侧（LiveStreamUtil.ReadStallTimeout）同一模式，VOD 侧此前没有防护。
+    /// internal 可注入：测试缩短该阈值验证看门狗行为。
+    /// </summary>
+    internal static TimeSpan MediaReadStallTimeout { get; set; } = TimeSpan.FromSeconds(60);
+
+    /// <summary>
+    /// 依据最终扩展名判定轨道类型：视频轨分片用 .vclip、音频轨用 .aclip。
+    /// 统一不区分大小写：CDN 回传大写的 .MP4 时，区分大小写的 EndsWith(".mp4") 会把
+    /// 视频分片错判为音频（.aclip），与清理规则错位——清理时误删视频分片或把音频分片
+    /// 当视频保留。此前 5 处判定中 4 处区分大小写、1 处 OrdinalIgnoreCase，行为不一致。
+    /// </summary>
+    private static bool IsVideoClipPath(string path)
+        => Path.GetExtension(path).EndsWith(".mp4", StringComparison.OrdinalIgnoreCase);
+
     private static async Task<long> RangeDownloadToTmpAsync(int id, string url, string tmpName, long fromPosition, long? toPosition, Action<int, long, long> onProgress, bool failOnRangeNotSupported = false, string? ifRange = null, long expectedTotalSize = -1, CancellationToken token = default)
     {
         using var fileStream = new FileStream(tmpName, FileMode.OpenOrCreate);
@@ -130,9 +150,25 @@ internal static class BBDownDownloadUtil
         var buffer = ArrayPool<byte>.Shared.Rent(blockSize);
         try
         {
+            // 读停滞看门狗：网络波动时连接可能既不 RST 也不 EOF，只是不再有数据到达
+            //（黑洞/半死 TCP）。ResponseHeadersRead 之后 HttpClient.Timeout 不约束响应体
+            // 读取，无看门狗时 ReadAsync 永久挂起。与直播侧（LiveStreamUtil.StreamToFileAsync）
+            // 同一模式：每收到一段数据重置计时；超时未收到数据视为连接死亡，抛可重试的
+            // IOException（上层 catch 链已含 IOException，见 IsSizeArtifactFailure 同源处理）
+            // 走既有退避重试。真正的用户取消（token 已取消）原样向上传播。
+            using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+            stallCts.CancelAfter(MediaReadStallTimeout);
             while (downloadedBytes < totalBytes)
             {
-                var recevied = await stream.ReadAsync(buffer.AsMemory(0, blockSize), token);
+                int recevied;
+                try
+                {
+                    recevied = await stream.ReadAsync(buffer.AsMemory(0, blockSize), stallCts.Token);
+                }
+                catch (OperationCanceledException) when (!token.IsCancellationRequested)
+                {
+                    throw new IOException($"下载停滞：{MediaReadStallTimeout.TotalSeconds:0} 秒内未收到数据，已触发重试");
+                }
                 if (recevied == 0)
                 {
                     // 提前 EOF：仅当服务器声明了 Content-Length 且未读够时是截断——
@@ -142,6 +178,7 @@ internal static class BBDownDownloadUtil
                         throw new IOException("下载中断：响应提前结束，已触发重试");
                     break;
                 }
+                stallCts.CancelAfter(MediaReadStallTimeout); // 收到数据：重置停滞计时
                 // 依赖 FileStream 自身缓冲，不逐块 FlushAsync：每 256KB 一次刷盘会
                 // 把异步写放大成同步 syscall，大文件下载产生海量无必要的刷新调用。
                 // 分片结束时统一 flush 一次，保证数据落盘后调用方（合并）可读到完整内容。
@@ -611,7 +648,7 @@ internal static class BBDownDownloadUtil
             {
                 string trackManifest = ResumeManifestPath(Path.Combine(Path.GetDirectoryName(path)!,
                     "00000_" + Path.GetFileNameWithoutExtension(path)
-                    + (Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip")));
+                    + (IsVideoClipPath(path) ? ".vclip" : ".aclip")));
                 if (File.Exists(trackManifest)) File.Delete(trackManifest);
             }
             catch (IOException) { /* 清理失败不影响主流程 */ }
@@ -687,7 +724,7 @@ internal static class BBDownDownloadUtil
             // 全部分片，而不是逐片按长度判断——长度相同的前缀会被复用拼入新资源，内容混合。
             string dir0 = Path.GetDirectoryName(path)!;
             string stem0 = Path.GetFileNameWithoutExtension(path);
-            string clipExt0 = Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip";
+            string clipExt0 = IsVideoClipPath(path) ? ".vclip" : ".aclip";
             // 该轨道的全部预期分片路径（与 allClips 一一对应）：用于检测"是否存在任意分片"，
             // 不要求首分片存在——中断可能只留下后续分片，只要任一存在就必须做身份校验。
             List<string> expectedClips = allClips
@@ -729,7 +766,7 @@ internal static class BBDownDownloadUtil
                 await Parallel.ForEachAsync(allClips, parallelOptions, async (clip, _) =>
                 {
                     int retry = 0;
-                    string tmp = Path.Combine(Path.GetDirectoryName(path)!, clip.index.ToString("00000") + "_" + Path.GetFileNameWithoutExtension(path) + (Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip"));
+                    string tmp = Path.Combine(Path.GetDirectoryName(path)!, clip.index.ToString("00000") + "_" + Path.GetFileNameWithoutExtension(path) + (IsVideoClipPath(path) ? ".vclip" : ".aclip"));
                     while (retry < maxRetry)
                     {
                         try
@@ -818,7 +855,7 @@ internal static class BBDownDownloadUtil
         string? dir = Path.GetDirectoryName(path);
         if (string.IsNullOrEmpty(dir) || !Directory.Exists(dir)) return;
         string prefix = Path.GetFileNameWithoutExtension(path);
-        string clipExt = Path.GetExtension(path).EndsWith(".mp4", StringComparison.OrdinalIgnoreCase) ? ".vclip" : ".aclip";
+        string clipExt = IsVideoClipPath(path) ? ".vclip" : ".aclip";
         foreach (var clip in new DirectoryInfo(dir).EnumerateFiles("*_" + prefix + clipExt))
         {
             try { clip.Delete(); }

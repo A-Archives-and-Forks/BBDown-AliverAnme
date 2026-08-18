@@ -58,7 +58,12 @@ static partial class BBDownMuxer
 
     private static string EscapeString(string str)
     {
-        return string.IsNullOrEmpty(str) ? str : str.Replace("\\", "\\\\").Replace("\"", "\\\"");
+        // mp4box 的 -itags 值要求双引号包裹、值内 " 和 \ 需转义；CR/LF 不转义会直接破坏
+        // itags 的 token 语法（引号内的换行让解析器认为值提前结束）。多行 desc/title 等
+        // 元数据来自 B 站内容（信任边界），无法挑出换行输入，只能这里折叠为空格。
+        // 替换为空字符会拼接单词、替换为空格是安全的折行。
+        return string.IsNullOrEmpty(str) ? str
+            : str.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", " ").Replace("\n", " ");
     }
 
     private static async Task<int> MuxByMp4box(string url, string videoPath, string audioPath, string outPath, string desc, string title, string author, string episodeId, string pic, string lang, List<Subtitle>? subs, bool audioOnly, bool videoOnly, List<ViewPoint>? points, CancellationToken cancellationToken)
