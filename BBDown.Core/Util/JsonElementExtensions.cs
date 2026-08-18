@@ -19,7 +19,11 @@ public static class JsonElementExtensions
             return defaultValue;
         if (!element.TryGetProperty(propertyName, out var prop))
             return defaultValue;
-        return prop.ValueKind == JsonValueKind.Number && prop.TryGetInt32(out var v) ? v : defaultValue;
+        if (prop.ValueKind == JsonValueKind.Number && prop.TryGetInt32(out var v))
+            return v;
+        if (prop.ValueKind == JsonValueKind.String && int.TryParse(prop.GetString(), out var sv))
+            return sv;
+        return defaultValue;
     }
 
     public static long GetInt64Safe(this JsonElement element, string propertyName, long defaultValue = 0)
@@ -28,7 +32,11 @@ public static class JsonElementExtensions
             return defaultValue;
         if (!element.TryGetProperty(propertyName, out var prop))
             return defaultValue;
-        return prop.ValueKind == JsonValueKind.Number && prop.TryGetInt64(out var v) ? v : defaultValue;
+        if (prop.ValueKind == JsonValueKind.Number && prop.TryGetInt64(out var v))
+            return v;
+        if (prop.ValueKind == JsonValueKind.String && long.TryParse(prop.GetString(), out var sv))
+            return sv;
+        return defaultValue;
     }
 
     public static double GetDoubleSafe(this JsonElement element, string propertyName, double defaultValue = 0)
@@ -37,7 +45,11 @@ public static class JsonElementExtensions
             return defaultValue;
         if (!element.TryGetProperty(propertyName, out var prop))
             return defaultValue;
-        return prop.ValueKind == JsonValueKind.Number && prop.TryGetDouble(out var v) ? v : defaultValue;
+        if (prop.ValueKind == JsonValueKind.Number && prop.TryGetDouble(out var v))
+            return v;
+        if (prop.ValueKind == JsonValueKind.String && double.TryParse(prop.GetString(), System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var sv))
+            return sv;
+        return defaultValue;
     }
 
     public static bool GetBooleanSafe(this JsonElement element, string propertyName, bool defaultValue = false)

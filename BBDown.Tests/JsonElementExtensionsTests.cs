@@ -59,4 +59,38 @@ public class JsonElementExtensionsTests
         var e = Parse("""{"name": "abc"}""");
         Assert.Equal("abc", e.GetStringSafe("name"));
     }
+
+    [Theory]
+    [InlineData("""{"code": 12345}""", 12345)]
+    [InlineData("""{"code": "12345"}""", 12345)]
+    [InlineData("""{"code": -101}""", -101)]
+    [InlineData("""{"code": "-101"}""", -101)]
+    [InlineData("""{"code": "invalid"}""", 0)]
+    [InlineData("""{"code": null}""", 0)]
+    [InlineData("""{"other": 1}""", 0)]
+    public void GetInt32Safe_HandlesNumbersAndStringNumbers(string json, int expected)
+    {
+        Assert.Equal(expected, Parse(json).GetInt32Safe("code"));
+    }
+
+    [Theory]
+    [InlineData("""{"code": 9876543210}""", 9876543210L)]
+    [InlineData("""{"code": "9876543210"}""", 9876543210L)]
+    [InlineData("""{"code": -101}""", -101L)]
+    [InlineData("""{"code": "-101"}""", -101L)]
+    [InlineData("""{"code": "invalid"}""", 0L)]
+    [InlineData("""{"code": null}""", 0L)]
+    public void GetInt64Safe_HandlesNumbersAndStringNumbers(string json, long expected)
+    {
+        Assert.Equal(expected, Parse(json).GetInt64Safe("code"));
+    }
+
+    [Theory]
+    [InlineData("""{"val": 12.34}""", 12.34)]
+    [InlineData("""{"val": "12.34"}""", 12.34)]
+    [InlineData("""{"val": "invalid"}""", 0.0)]
+    public void GetDoubleSafe_HandlesNumbersAndStringNumbers(string json, double expected)
+    {
+        Assert.Equal(expected, Parse(json).GetDoubleSafe("val"), precision: 2);
+    }
 }

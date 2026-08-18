@@ -244,10 +244,12 @@ public class SpaceVideoFetcher : IFetcher
                 item.GetInt64Safe("created")));
         }
 
-        // 用 GetInt32() 而非 GetInt32Safe()：总数控制着翻页上界，
-        // 静默退化为 0 会让循环直接结束，只拿到第一页却毫无征兆。
-        // FavListFetcher 对同类字段也是这么做的。
-        var totalCount = data.GetPropertySafe("page").GetPropertySafe("count").GetInt32();
+        var pageProp = data.TryGetPropertySafe("page");
+        var totalCount = pageProp?.GetInt32Safe("count", -1) ?? -1;
+        if (totalCount < 0)
+        {
+            throw new InvalidOperationException("获取 UP 主投稿列表失败: 响应中缺少有效的 page.count 字段");
+        }
         return (entries, totalCount);
     }
 

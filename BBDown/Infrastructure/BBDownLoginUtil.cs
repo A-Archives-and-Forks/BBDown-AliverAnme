@@ -103,7 +103,8 @@ internal static class BBDownLoginUtil
                 cancellationToken.ThrowIfCancellationRequested();
                 var (w, setCookies) = await GetLoginStatusAsync(qrcodeKey, cancellationToken);
                 using var pollDoc = JsonDocument.Parse(w);
-                if (pollDoc.RootElement.TryGetProperty("code", out var topCode) && topCode.GetInt64() != 0)
+                long topCode = pollDoc.RootElement.GetInt64Safe("code");
+                if (topCode != 0)
                 {
                     var msg = pollDoc.RootElement.GetValueAsStringSafe("message");
                     Logger.LogError($"登录请求失败: {msg} (code={topCode})");

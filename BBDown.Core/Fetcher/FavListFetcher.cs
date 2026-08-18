@@ -27,7 +27,8 @@ public class FavListFetcher : IFetcher
             using var favDoc = JsonDocument.Parse(await HTTPUtil.GetWebSourceAsync(favListApi, token: cancellationToken));
             // 与主分支/分页请求一致：业务层 code 必须检查。未登录（code=-101）会被
             // 误诊为"该用户没有创建收藏夹"——真实原因是凭据失效，报错应指明。
-            if (favDoc.RootElement.TryGetProperty("code", out var favCode) && favCode.GetInt64() != 0)
+            long favCode = favDoc.RootElement.GetInt64Safe("code");
+            if (favCode != 0)
             {
                 var favMsg = favDoc.RootElement.GetValueAsStringSafe("message");
                 throw new InvalidOperationException($"获取默认收藏夹失败: {favMsg} (code={favCode})");
@@ -49,7 +50,8 @@ public class FavListFetcher : IFetcher
         var api = $"https://api.bilibili.com/x/v3/fav/resource/list?media_id={favId}&pn=1&ps={pageSize}&order=mtime&type=2&tid=0&platform=web";
         var json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
-        if (infoJson.RootElement.TryGetProperty("code", out var rootCode) && rootCode.GetInt64() != 0)
+        long rootCode = infoJson.RootElement.GetInt64Safe("code");
+        if (rootCode != 0)
         {
             var msg = infoJson.RootElement.GetValueAsStringSafe("message");
             throw new InvalidOperationException($"获取收藏夹失败: {msg} (code={rootCode})");
@@ -141,7 +143,8 @@ public class FavListFetcher : IFetcher
             api = $"https://api.bilibili.com/x/v3/fav/resource/list?media_id={favId}&pn={page}&ps={pageSize}&order=mtime&type=2&tid=0&platform=web";
             json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
             using var jsonDoc = JsonDocument.Parse(json);
-            if (jsonDoc.RootElement.TryGetProperty("code", out var pageCode) && pageCode.GetInt64() != 0)
+            long pageCode = jsonDoc.RootElement.GetInt64Safe("code");
+            if (pageCode != 0)
             {
                 var msg = jsonDoc.RootElement.GetValueAsStringSafe("message");
                 throw new InvalidOperationException($"获取收藏夹第 {page} 页失败: {msg} (code={pageCode})");

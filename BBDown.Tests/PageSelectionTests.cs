@@ -95,6 +95,11 @@ public class PageSelectionTests
     [InlineData("1,LATEST", 5, "1,5")]
     [InlineData("LATEST,3", 5, "5,3")]
     [InlineData("1-2,LATEST", 5, "1-2,5")]
+    [InlineData("1-LATEST", 5, "1-5")]
+    [InlineData("1-LAST", 5, "1-5")]
+    [InlineData("1-NEW", 5, "1-5")]
+    [InlineData("2 - LATEST", 5, "2-5")]
+    [InlineData("1-2, 4-LATEST", 6, "1-2,4-6")]
     [InlineData(" latest ", 5, "5")]   // 大小写与空白容忍
     [InlineData("1,LATEST,3", 2, "1,2,3")]
     public void ExpandPageAliases_WholeSegmentMatching(string input, int pageCount, string expected)
@@ -105,10 +110,19 @@ public class PageSelectionTests
     }
 
     [Fact]
+    public void ExpandPageAliases_RangeAliases_ParsesCorrectly()
+    {
+        var expanded = Program.ExpandPageAliases("1-LATEST", 5);
+        var pages = Program.ParsePageSelection(expanded);
+        Assert.Equal(new[] { "1", "2", "3", "4", "5" }, pages);
+    }
+
+    [Fact]
     public void ExpandPageAliases_NonAliasSegments_Untouched()
     {
         // 含别名字样的普通段不能被误替换（如分P 恰好叫 "LAST" 之外的内容）
         Assert.Equal("3,LASTING,2", Program.ExpandPageAliases("3,LASTING,2", 7));
         Assert.Equal("8,PLASTER", Program.ExpandPageAliases("8,PLASTER", 9));
+        Assert.Equal("1-PLASTER", Program.ExpandPageAliases("1-PLASTER", 9));
     }
 }

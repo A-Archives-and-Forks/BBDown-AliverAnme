@@ -777,7 +777,7 @@ public partial class BBDownApiServer
 
     /// <summary>B 站官方域名后缀白名单（含子域）。</summary>
     private static readonly string[] OfficialHostSuffixes =
-        { "bilibili.com", "biliapi.net", "bilibili.tv", "aisee.tv", "bilivideo.com", "hdslb.com" };
+        { "bilibili.com", "b23.tv", "biliapi.net", "biliapi.com", "bilibili.tv", "biliintl.com", "aisee.tv", "bilivideo.com", "hdslb.com" };
 
     /// <summary>
     /// host 字段是否指向 B 站官方域名。空值视为合法（回落默认）；

@@ -328,7 +328,7 @@ public static partial class BBDownUtil
             var source = await HTTPUtil.GetWebSourceAsync(api, token: token);
             using var navDoc = JsonDocument.Parse(source);
             var json = navDoc.RootElement;
-            int code = json.GetPropertySafe("code").GetInt32();
+            int code = json.GetInt32Safe("code");
 
             // wbi 密钥必须在判断登录状态之前提取：nav 接口在未登录（code=-101）时
             // 依然会返回 wbi_img，而此前的提前 return 会跳过这一步，
@@ -353,7 +353,7 @@ public static partial class BBDownUtil
                     : "尚未登录 (code=-101，本地无 Cookie)");
                 return (false, hasCookie, newWbi);
             }
-            var is_login = json.GetPropertySafe("data").GetPropertySafe("isLogin").GetBoolean();
+            var is_login = json.TryGetPropertySafe("data")?.GetBooleanSafe("isLogin") ?? false;
             return (is_login, false, newWbi);
         }
         catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException or TimeoutException)

@@ -831,7 +831,7 @@ internal partial class Program
                         if (myOption.Interactive && !selected)
                         {
                             int i = 0;
-                            dfns.ForEach(key => Logger.LogColor($"{i++}.{AppSettings.QualityMap[key]}"));
+                            dfns.ForEach(key => Logger.LogColor($"{i++}.{AppSettings.QualityMap.GetValueOrDefault(key, $"未知({key})")}"));
                             Logger.Log("请选择最想要的清晰度(输入序号): ", false);
                             Console.ForegroundColor = ConsoleColor.Cyan;
                             vIndex = ReadIntSafe();

@@ -246,6 +246,33 @@ public class LiveStreamUtilTests
         Assert.Empty(formats);
     }
 
+    [Fact]
+    public void SelectFlvUrl_CaseInsensitiveFormat_PicksFlv()
+    {
+        const string playUrl = """
+        {
+          "stream": [
+            {
+              "protocol_name": "http_stream",
+              "format": [
+                { "format_name": "FLV", "codec": [
+                  { "codec_name": "avc", "current_qn": 10000, "base_url": "/live/room/1.flv", "url_info": [
+                    { "host": "https://example.com", "extra": "?token=1" } ] }
+                ] }
+              ]
+            }
+          ]
+        }
+        """;
+        using var doc = JsonDocument.Parse(playUrl);
+
+        var url = LiveStreamUtil.SelectFlvUrl(doc.RootElement, out var formats, out var quality);
+
+        Assert.Equal("https://example.com/live/room/1.flv?token=1", url);
+        Assert.Equal(10000, quality);
+        Assert.Contains("FLV", formats);
+    }
+
     // ==================== 完整录制循环集成测试（本地假 B 站服务器） ====================
 
     /// <summary>

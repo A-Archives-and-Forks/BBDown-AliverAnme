@@ -270,7 +270,7 @@ public static class DanmakuUtil
             int hour = (int)second / 3600;
             int minute = (int)(second - (hour * 3600)) / 60;
             second -= (hour * 3600) + (minute * 60);
-            return hour.ToString() + string.Format(":{0:D2}:", minute) + string.Format("{0:00.00}", second);
+            return string.Format(System.Globalization.CultureInfo.InvariantCulture, "{0}:{1:D2}:{2:00.00}", hour, minute, second);
         }
         public string Content { get; set; } = "";
         // 弹幕内容

@@ -924,12 +924,12 @@ public class DownloadPipelineTests
                                 resp.Close();
                                 continue;
                             }
-                            // 支持 Range 请求：响应 206 分段
-                            if (ctx.Request.HttpMethod == "GET" && !string.IsNullOrEmpty(ctx.Request.Headers["Range"]))
-                            {
-                                lock (RangeHeaders) RangeHeaders.Add(ctx.Request.Headers["Range"]);
-                            }
                             var rangeHeader = ctx.Request.Headers["Range"];
+                            // 支持 Range 请求：响应 206 分段
+                            if (ctx.Request.HttpMethod == "GET" && !string.IsNullOrEmpty(rangeHeader))
+                            {
+                                lock (RangeHeaders) RangeHeaders.Add(rangeHeader);
+                            }
                             if (string.IsNullOrEmpty(rangeHeader))
                             {
                                 resp.StatusCode = 200;

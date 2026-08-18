@@ -353,7 +353,7 @@ public static partial class HTTPUtil
 
     /// <summary>允许携带登录 Cookie 外发的官方域名（与 UrlResolver.TrustedBilibiliHosts 同步）。</summary>
     private static readonly string[] CookieTrustedHosts =
-        { "bilibili.com", "b23.tv", "bilivideo.com", "hdslb.com", "biliapi.net", "bilibili.tv", "aisee.tv" };
+        { "bilibili.com", "b23.tv", "bilivideo.com", "hdslb.com", "biliapi.net", "biliapi.com", "bilibili.tv", "biliintl.com", "aisee.tv" };
 
     private static async Task<string> GetWebSourceCoreAsync(string url, bool sendCookie, string? userAgent, CancellationToken token, bool rejectHtml = false)
     {

@@ -103,7 +103,7 @@ public static class LiveStreamUtil
         }
         if (picked is null)
         {
-            if (lastFormats.Contains("flv"))
+            if (lastFormats.Any(f => f.Equals("flv", StringComparison.OrdinalIgnoreCase)))
             {
                 // flv 在接口格式列表里但没有可用节点：CDN/接口瞬态故障，可重试
                 throw new InvalidOperationException($"暂时无法获取直播间 {roomId} 的 FLV 流地址（接口列出了 flv 但无可用节点），将自动重试");
@@ -128,7 +128,7 @@ public static class LiveStreamUtil
     /// </summary>
     internal static string? SelectFlvUrl(JsonElement playData, out string[] availableFormats, out int quality)
     {
-        var available = new HashSet<string>();
+        var available = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         string? picked = null;
         int pickedQn = 0;
         foreach (var stream in playData.EnumerateArraySafe("stream"))
@@ -137,7 +137,7 @@ public static class LiveStreamUtil
             {
                 var formatName = format.GetValueAsStringSafe("format_name");
                 if (formatName != "") available.Add(formatName);
-                if (formatName != "flv") continue;
+                if (!formatName.Equals("flv", StringComparison.OrdinalIgnoreCase)) continue;
                 foreach (var codec in format.EnumerateArraySafe("codec"))
                 {
                     var baseUrl = codec.GetValueAsStringSafe("base_url");

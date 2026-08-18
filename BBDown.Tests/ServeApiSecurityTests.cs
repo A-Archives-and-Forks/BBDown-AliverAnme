@@ -255,6 +255,9 @@ public class ServeApiSecurityTests
         Assert.True(BBDownApiServer.IsOfficialHost("https://api.bilibili.com"));
         Assert.True(BBDownApiServer.IsOfficialHost("upos-sz-mirrorcoso1.bilivideo.com"));
         Assert.True(BBDownApiServer.IsOfficialHost("https://grpc.biliapi.net"));
+        Assert.True(BBDownApiServer.IsOfficialHost("api.biliintl.com"));
+        Assert.True(BBDownApiServer.IsOfficialHost("https://api.biliintl.com"));
+        Assert.True(BBDownApiServer.IsOfficialHost("api.biliapi.com"));
         // 空值视为合法（回落默认）
         Assert.True(BBDownApiServer.IsOfficialHost(null));
         Assert.True(BBDownApiServer.IsOfficialHost(""));

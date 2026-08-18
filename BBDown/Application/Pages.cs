@@ -64,10 +64,24 @@ internal partial class Program
     internal static string ExpandPageAliases(string selectPage, int pageCount)
     {
         string lastPage = pageCount.ToString();
+        static string ExpandAlias(string text, string last)
+        {
+            var trimmed = text.Trim();
+            var upper = trimmed.ToUpperInvariant();
+            return upper is "LAST" or "NEW" or "LATEST" ? last : trimmed;
+        }
+
         return string.Join(',', selectPage.Split(',').Select(segment =>
         {
-            var trimmed = segment.Trim().ToUpperInvariant();
-            return trimmed is "LAST" or "NEW" or "LATEST" ? lastPage : segment;
+            var trimmed = segment.Trim();
+            var dash = trimmed.IndexOf('-', 1);
+            if (dash > 0)
+            {
+                var start = trimmed[..dash];
+                var end = trimmed[(dash + 1)..];
+                return $"{ExpandAlias(start, lastPage)}-{ExpandAlias(end, lastPage)}";
+            }
+            return ExpandAlias(segment, lastPage);
         }));
     }
 

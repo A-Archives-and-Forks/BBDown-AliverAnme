@@ -54,9 +54,14 @@ public static class BilibiliBvConverter
 
     public static long Decode(string bvid_str)
     {
+        if (bvid_str.StartsWith("BV1", StringComparison.OrdinalIgnoreCase) && bvid_str.Length == 12)
+        {
+            bvid_str = bvid_str[3..];
+        }
+
         if (bvid_str.Length != BV_LEN)
         {
-            throw new ArgumentException($"Bv BV1{bvid_str} must to be 12 char", nameof(bvid_str));
+            throw new ArgumentException($"BV 长度必须为 {BV_LEN} 字符后缀或 12 字符完整 BV1 字符串，当前输入: '{bvid_str}'", nameof(bvid_str));
         }
 
         byte[] bvid = Encoding.ASCII.GetBytes(bvid_str);

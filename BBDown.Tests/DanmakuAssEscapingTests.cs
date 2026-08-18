@@ -10,7 +10,7 @@ namespace BBDown.Tests;
 public class DanmakuAssEscapingTests
 {
     private static DanmakuUtil.DanmakuItem Make(string content, double second = 1.0, int color = 16777215)
-        => new(["" + second, "1", "25", color.ToString(), "1600000000"], content);
+        => new([second.ToString(System.Globalization.CultureInfo.InvariantCulture), "1", "25", color.ToString(), "1600000000"], content);
 
     private static async Task<string> RenderAsync(params DanmakuUtil.DanmakuItem[] items)
     {
@@ -122,5 +122,31 @@ public class DanmakuAssEscapingTests
         var text = dialogue.Split(',', 10)[9];
         // 用户正文里的反斜杠被替换为全角反斜杠，避免被 ASS 解析器当作指令执行
         Assert.Contains("测试＼N换行＼h空格＼b粗体", text);
+    }
+
+    [Fact]
+    public async Task DialogueTimestamps_UseDotSeparator_RegardlessOfCurrentCulture()
+    {
+        var originalCulture = System.Globalization.CultureInfo.CurrentCulture;
+        try
+        {
+            // 模拟德语/法语环境（小数分隔符为逗号 ','）
+            System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("de-DE");
+
+            var ass = await RenderAsync(Make("测试弹幕", second: 12.34));
+            var dialogue = ass.Split('\n').Single(l => l.StartsWith("Dialogue:"));
+            var fields = dialogue.Split(',', 10);
+
+            // 严格保证 Dialogue 顶层时间戳字段使用点号分隔且不含逗号
+            Assert.Equal(10, fields.Length);
+            Assert.Equal("0:00:12.34", fields[1]);
+            Assert.Equal("0:00:20.34", fields[2]);
+            Assert.DoesNotContain(",", fields[1]);
+            Assert.DoesNotContain(",", fields[2]);
+        }
+        finally
+        {
+            System.Globalization.CultureInfo.CurrentCulture = originalCulture;
+        }
     }
 }

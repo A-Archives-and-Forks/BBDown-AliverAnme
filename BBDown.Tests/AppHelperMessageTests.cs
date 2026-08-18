@@ -23,6 +23,15 @@ public class AppHelperMessageTests
     }
 
     [Fact]
+    public void ReadMessage_ValidUncompressed_EmptyPayload_ReturnsEmptyArray()
+    {
+        // gRPC / protobuf 规范：当消息字段全为默认值或为 Empty 响应时，载荷大小为 0（合法帧）
+        var frame = new byte[] { 0, 0, 0, 0, 0 };
+        var result = AppHelper.ReadMessage(frame);
+        Assert.Empty(result);
+    }
+
+    [Fact]
     public void ReadMessage_GzipCompressed_RoundTrips()
     {
         // gzip 帧：首字节 1 + gzip(bytes)

@@ -265,7 +265,7 @@ public static partial class UrlResolver
     /// 对任意主机的出站请求，因此只放行可信域名，防止向攻击者服务器发请求。
     /// </summary>
     private static readonly string[] TrustedBilibiliHosts =
-        { "bilibili.com", "b23.tv", "bilivideo.com", "hdslb.com", "biliapi.net", "bilibili.tv", "aisee.tv" };
+        { "bilibili.com", "b23.tv", "bilivideo.com", "hdslb.com", "biliapi.net", "biliapi.com", "bilibili.tv", "biliintl.com", "aisee.tv" };
 
     internal static bool IsTrustedBilibiliUrl(string url)
     {

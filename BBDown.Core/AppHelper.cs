@@ -57,6 +57,7 @@ static partial class AppHelper
     public static async Task<string> DoReqAsync(string aid, string cid, string epId, string qn, bool bangumi, string encoding, string appkey = "", CancellationToken token = default)
     {
         static long ParseId(string value, string name) =>
+            string.IsNullOrEmpty(value) ? 0 :
             long.TryParse(value, out var result)
                 ? result
                 : throw new ArgumentException($"{name} 必须是有效的数字 ID，当前值: '{value}'");
@@ -377,9 +378,11 @@ static partial class AppHelper
         if (first is not 0 and not 1)
             throw new InvalidDataException($"Invalid gRPC compression flag: 0x{first:X2}（期望 0=未压缩 或 1=gzip）");
         int payloadLen = first == 1 ? data.Length - 5 : Math.Min(size, data.Length - 5);
-        if (payloadLen <= 0)
+        if (payloadLen < 0 || (first == 1 && payloadLen == 0))
             throw new InvalidDataException($"Invalid gRPC payload length: {payloadLen}");
-        return first == 1 ? GzipDecompress(data[5..]) : data[5..(5 + payloadLen)];
+        if (first == 1)
+            return GzipDecompress(data[5..]);
+        return payloadLen == 0 ? [] : data[5..(5 + payloadLen)];
     }
 
     /// <summary>

@@ -18,9 +18,13 @@ public class BilibiliBvConverterTests
     [InlineData("7x411w7KC", 170001)]
     [InlineData("Q541167Qg", 455017605)]
     [InlineData("mK4y1C7Bz", 882584971)]
-    public void Decode_ReturnsExpectedAid(string bvSuffix, long expectedAid)
+    [InlineData("BV17x411w7KC", 170001)]
+    [InlineData("bv17x411w7KC", 170001)]
+    [InlineData("BV1Q541167Qg", 455017605)]
+    [InlineData("BV1mK4y1C7Bz", 882584971)]
+    public void Decode_ReturnsExpectedAid(string bvString, long expectedAid)
     {
-        var result = BilibiliBvConverter.Decode(bvSuffix);
+        var result = BilibiliBvConverter.Decode(bvString);
         Assert.Equal(expectedAid, result);
     }
 

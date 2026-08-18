@@ -18,7 +18,8 @@ public partial class IntlBangumiInfoFetcher : IFetcher
         string json = (await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken)).Replace("\\/", "/");
         using var infoJson = JsonDocument.Parse(json);
         // 与 BangumiInfoFetcher 一致：顶层 code/message 不能丢弃，区域限制/失效/风控需可诊断。
-        if (infoJson.RootElement.TryGetProperty("code", out var rootCode) && rootCode.GetInt64() != 0)
+        long rootCode = infoJson.RootElement.GetInt64Safe("code");
+        if (rootCode != 0)
         {
             var msg = infoJson.RootElement.GetValueAsStringSafe("message");
             throw new InvalidOperationException($"国际版番剧接口返回错误: {msg} (code={rootCode})");
