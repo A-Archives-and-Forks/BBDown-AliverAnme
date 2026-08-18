@@ -219,18 +219,16 @@ public class ConfigPropagationTests
     }
 
     /// <summary>
-    /// 当检测登录状态（nav 接口）超时触发 TimeoutException 时，CheckLoginWithDetails 必须捕获并优雅降级返回 (false, false, null)，
-    /// 避免在无网络或离线启动时导致整个命令直接崩溃。
+    /// 取消令牌必须传播进 BBDownUtil.CheckLoginWithDetails：预取消的 token 应立即抛
+    /// OperationCanceledException（在网络请求发起处），而不是吞掉用户取消信号。
     /// </summary>
     [Fact]
-    public async Task CheckLoginWithDetails_OnTimeout_ReturnsGracefully()
+    public async Task CheckLoginWithDetails_CancelledToken_PropagatesCancellation()
     {
         using var cts = new CancellationTokenSource();
-        // 传入已取消的 token 会触发取消/超时，验证捕获并返回 safe default
-        // 或者使用本地超时模拟
-        var (isLoggedIn, cookieExpired, newWbi) = await BBDownUtil.CheckLoginWithDetails("fake_cookie", cts.Token);
-        // 不抛未处理异常，返回非登录安全态
-        Assert.False(isLoggedIn);
+        cts.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(
+            () => BBDownUtil.CheckLoginWithDetails("fake_cookie", cts.Token));
     }
 
     private static string ComputeMd5Hex(string input)
