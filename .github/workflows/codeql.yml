@@ -11,6 +11,8 @@ on:
 
 permissions:
   contents: read
+  # 上传 SARIF 扫描结果到 Security → Code scanning 页需要 write 权限
+  security-events: write
 
 jobs:
   analyze:
