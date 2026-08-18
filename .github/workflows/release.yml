@@ -185,11 +185,16 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Download all artifacts
+      # 只下载本次发布的 zip（pattern BBDown_*）：本 run 的 artifact 里还含 docker-publish 的
+      # buildx 缓存产物（aliveranme~BBDown~<hash>.dockerbuild），与 release 无关；
+      # 全量下载（不带 pattern）既拉下无关物，又会把偶发传输失败放大成整个 job 失败——
+      # 曾以 'Artifact download failed after 5 retries' 拖挂 create-release。
+      - name: Download artifacts (release zips only)
         uses: actions/download-artifact@v5
         with:
           path: artifacts
           merge-multiple: true
+          pattern: BBDown_*
 
       - name: Build release notes
         run: |
