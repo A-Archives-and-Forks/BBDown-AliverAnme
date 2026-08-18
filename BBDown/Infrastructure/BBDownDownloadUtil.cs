@@ -841,7 +841,7 @@ internal static class BBDownDownloadUtil
         // 合并/清理调用方据此操作，不扫描目录（避免混入其它任务的残留分片）。
         string dir = Path.GetDirectoryName(path)!;
         string stem = Path.GetFileNameWithoutExtension(path);
-        string clipExt = Path.GetExtension(path).EndsWith(".mp4") ? ".vclip" : ".aclip";
+        string clipExt = IsVideoClipPath(path) ? ".vclip" : ".aclip";
         return (allClips!
             .Select(c => Path.Combine(dir, c.index.ToString("00000") + "_" + stem + clipExt))
             .OrderBy(p => p)
