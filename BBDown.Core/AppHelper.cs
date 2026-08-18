@@ -8,7 +8,7 @@ using System.Text.Json.Serialization;
 
 namespace BBDown.Core;
 
-static class AppHelper
+static partial class AppHelper
 {
     private static readonly string API = "https://grpc.biliapi.net/bilibili.app.playurl.v1.PlayURL/PlayView";
     private static readonly string API2 = "https://app.bilibili.com/bilibili.pgc.gateway.player.v2.PlayURL/PlayView";
@@ -78,9 +78,24 @@ static class AppHelper
         }
         var resp = new MessageParser<PlayViewReply>(() => new PlayViewReply()).ParseFrom(ReadMessage(data));
 
-        Logger.LogDebug("PlayViewReplyPlain: {0}", JsonSerializer.Serialize(resp, JsonContext.Default.PlayViewReply));
+        // 调试日志不记录完整 PlayViewReply：其中含每个轨道的 base_url/backup_url
+        //（带 sign/deadline 参数的临时签名 CDN 地址），全文落盘会把可用的签名媒体 URL
+        // 写进日志文件（与 Parser.cs 对 PlayJson 的自我约束一致）。截断到 1KB 仍可能
+        // 容纳完整 URL，因此对 URL 里的 sign 参数值做脱敏，只保留长度 + 摘要。
+        if (Config.Current.DebugLog)
+        {
+            var json = JsonSerializer.Serialize(resp, JsonContext.Default.PlayViewReply);
+            var summary = json.Length > 1024 ? json[..1024] + "…" : json;
+            summary = SignedUrlParamRegex().Replace(summary, "$1***");
+            Logger.LogDebug("PlayViewReply {0} chars: {1}", json.Length, summary);
+        }
         return ConvertToDashJson(resp);
     }
+
+    /// <summary>脱敏 URL 中的签名参数值：sign=<值>（及 x_sign 等变体）在摘要日志里替换为 ***。
+    /// 媒体地址的有效性依赖这些签名值，落入日志文件等于把临时下载权外泄。</summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"([?&](?:sign|x_sign|w_rid)=)[^&\s""]+")]
+    private static partial System.Text.RegularExpressions.Regex SignedUrlParamRegex();
 
     /// <summary>
     /// 将protobuf转换成网页那种json 这样就不用修改之前的解析逻辑了

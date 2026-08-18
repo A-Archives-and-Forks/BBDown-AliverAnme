@@ -21,7 +21,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
 namespace BBDown;
 
-public class BBDownApiServer
+public partial class BBDownApiServer
 {
     private WebApplication? app;
     private readonly object _taskLock = new();
@@ -37,6 +37,16 @@ public class BBDownApiServer
     /// </summary>
     private readonly HashSet<Task> _inFlightTasks = [];
     private readonly object _inFlightLock = new();
+
+    /// <summary>
+    /// 认证失败限速状态：来源 IP → 最近失败时间戳。serve 是长驻进程，token 校验无
+    /// 任何限速/锁定会让攻击者（同机进程、或非回环部署时的局域网/公网客户端）无限次
+    /// 猜测 X-Serve-Token 而不触发任何告警或冷却。按来源 IP 在 1 分钟窗口内失败超过
+    /// 阈值后返回 429，令暴力枚举失效。
+    /// </summary>
+    private readonly Dictionary<string, List<DateTime>> _authFailures = [];
+    private readonly object _authFailuresLock = new();
+    private const int MaxAuthFailuresPerMinute = 5;
 
     /// <summary>
     /// 接受队列上限：正在处理 + 排队等待的任务总数上限。
@@ -112,27 +122,63 @@ public class BBDownApiServer
         });
         // 服务器就绪信号：Kestrel 实际开始监听后触发，测试据此等待可连接
         app.Lifetime.ApplicationStarted.Register(() => Ready.TrySetResult());
-        // 可选 token 认证：serve 配置了 --serve-token 后所有任务/查询端点要求
-        // X-Serve-Token 匹配，否则 401。非回环监听（0.0.0.0/具体网卡 IP）在 Run 阶段
-        // 强制要求 token（见 Run 内的回环检查），本地回环监听未配置 token 时保持
-        // 向后兼容（仅本机信任环境）。
-        if (!string.IsNullOrEmpty(_serveToken))
+        // 认证与 CSRF 防护中间件（无条件安装）：
+        // 1) token 认证（可选）：serve 配置了 --serve-token 后所有任务/查询端点要求
+        //    X-Serve-Token 匹配，否则 401。非回环监听（0.0.0.0/具体网卡 IP）在 Run 阶段
+        //    强制要求 token（见 Run 内的回环检查），本地回环监听未配置 token 时保持
+        //    向后兼容（仅本机信任环境）。
+        // 2) CSRF/跨源防护（无条件，写端点）：浏览器对 http://127.0.0.1:23333 的跨源
+        //    POST 若用 text/plain（CORS 简单请求，不发预检）即可直接到达 /add-task——
+        //    攻击者网页可借此借用操作者本地 B 站凭据提交下载任务、刷满接受队列（DoS）
+        //    或取消任务；DNS rebinding（攻击者域名解析到 127.0.0.1）时 Origin 仍是攻击者
+        //    域名，同样被拒。这里对写端点（/add-task、/cancel、/remove-finished）校验
+        //    Origin 必须为回环来源，否则 403；/add-task 的请求体必须是 JSON Content-Type
+        //    （text/plain 正是"跨源可发但不触发预检"的载体，直接拒绝）。只读端点
+        //    （/get-tasks）不校验 Origin，本地管理页面/脚本可正常查询。
+        app.Use(async (context, next) =>
         {
-            app.Use(async (context, next) =>
+            var path = context.Request.Path;
+            bool isApi = path.StartsWithSegments("/get-tasks")
+                || path.StartsWithSegments("/add-task")
+                || path.StartsWithSegments("/cancel")
+                || path.StartsWithSegments("/remove-finished");
+            if (isApi)
             {
-                var path = context.Request.Path;
-                bool isApi = path.StartsWithSegments("/get-tasks")
-                    || path.StartsWithSegments("/add-task")
-                    || path.StartsWithSegments("/cancel")
-                    || path.StartsWithSegments("/remove-finished");
-                if (isApi && !FixedTimeEquals(context.Request.Headers["X-Serve-Token"], _serveToken!))
+                if (!string.IsNullOrEmpty(_serveToken) && !FixedTimeEquals(context.Request.Headers["X-Serve-Token"], _serveToken!))
                 {
+                    var clientIp = context.Connection.RemoteIpAddress?.ToString() ?? "unknown";
+                    // 每次失败都记录日志：401 此前完全静默，暴力尝试对运维/用户不可见。
+                    Logger.LogWarn($"serve 认证失败（401）: {clientIp} {context.Request.Path}");
+                    if (IsAuthLockedOut(clientIp))
+                    {
+                        // 1 分钟窗口内失败超阈值：限速拒绝，令 X-Serve-Token 暴力枚举失效。
+                        Logger.LogWarn($"serve 认证失败过于频繁，已限速: {clientIp}");
+                        context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
+                        return;
+                    }
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     return;
                 }
-                await next();
-            });
-        }
+                bool isWriteApi = path.StartsWithSegments("/add-task")
+                    || path.StartsWithSegments("/cancel")
+                    || path.StartsWithSegments("/remove-finished");
+                if (isWriteApi)
+                {
+                    var origin = context.Request.Headers.Origin.ToString();
+                    if (!string.IsNullOrEmpty(origin) && !IsLoopbackOrigin(origin))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status403Forbidden;
+                        return;
+                    }
+                    if (path.StartsWithSegments("/add-task") && !IsJsonContentType(context.Request.ContentType))
+                    {
+                        context.Response.StatusCode = StatusCodes.Status415UnsupportedMediaType;
+                        return;
+                    }
+                }
+            }
+            await next();
+        });
         var taskStatusApi = app.MapGroup("/get-tasks");
         taskStatusApi.MapGet("/", handler: () =>
         {
@@ -326,6 +372,45 @@ public class BBDownApiServer
     }
 
     /// <summary>
+    /// 错误消息路径脱敏：IOException 等异常消息常含绝对路径（如
+    /// "Could not find file 'D:\data\video\xxx.mp4'"），经 /get-tasks 返回会泄露服务器
+    /// 文件系统布局。把 Windows/Unix 绝对路径替换为相对名（仅保留文件名/末段），
+    /// 供 <see cref="DownloadTask.ErrorMessage"/> 落盘/返回前调用。
+    /// </summary>
+    internal static string SanitizeErrorMessage(string? message)
+    {
+        if (string.IsNullOrEmpty(message)) return message ?? "";
+        return _absolutePathRegex().Replace(message, m => m.Groups["file"].Value);
+    }
+
+    /// <summary>匹配盘符/UNC/Unix 根绝对路径（含尾随文件名或目录段），保留路径最后一段。
+    /// 形如 D:\a\b\c.mp4、\\server\share\x、/home/u/x.mp4；交替三种根前缀，
+    /// 中间目录段任意、末尾段捕获为 file（含中文/空格等非分隔符字符）。</summary>
+    [System.Text.RegularExpressions.GeneratedRegex(@"(?:[A-Za-z]:\\|/|\\\\)(?:[^\\/\r\n]+[\\/])*(?<file>[^\\/\r\n]+)")]
+    private static partial System.Text.RegularExpressions.Regex _absolutePathRegex();
+
+    /// <summary>
+    /// 认证失败限速判定：1 分钟滑动窗口内失败次数达到阈值返回 true（拒绝服务）。
+    /// 每次失败都调用本方法登记；限速状态按来源 IP 隔离，同机合法客户端不受影响。
+    /// </summary>
+    private bool IsAuthLockedOut(string clientIp)
+    {
+        lock (_authFailuresLock)
+        {
+            var now = DateTime.UtcNow;
+            if (!_authFailures.TryGetValue(clientIp, out var list))
+            {
+                _authFailures[clientIp] = [now];
+                return false;
+            }
+            list.RemoveAll(t => now - t > TimeSpan.FromMinutes(1));
+            if (list.Count >= MaxAuthFailuresPerMinute) return true;
+            list.Add(now);
+            return false;
+        }
+    }
+
+    /// <summary>
     /// OperationCanceledException 归类：token 已请求取消 → 用户/服务关停主动取消（Cancelled）；
     /// token 未取消 → HttpClient 超时等内部中断（真实失败，Failed）。HttpClient 超时抛的
     /// TaskCanceledException 其 token 未取消，若一律按取消处理会把超时失败误标"已取消"，
@@ -335,6 +420,35 @@ public class BBDownApiServer
         => cancellationRequested
             ? (DownloadTaskStatus.Cancelled, "已取消")
             : (DownloadTaskStatus.Failed, failureMessage);
+
+    /// <summary>
+    /// 写端点的跨源防护：Origin 头必须解析为回环来源（127.0.0.1/localhost/[::1]）。
+    /// 浏览器跨源请求一定携带 Origin；DNS rebinding（攻击者域名解析到 127.0.0.1）下
+    /// Origin 仍是攻击者域名而非回环来源，在此被拒。非浏览器客户端（curl/HttpClient）
+    /// 不携带 Origin 头，字符串为空即放行，保持向后兼容。
+    /// </summary>
+    private static bool IsLoopbackOrigin(string origin)
+    {
+        if (!Uri.TryCreate(origin, UriKind.Absolute, out var uri)) return false;
+        var host = uri.DnsSafeHost;
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)) return true;
+        if (IPAddress.TryParse(host, out var ip)) return IPAddress.IsLoopback(ip);
+        return false;
+    }
+
+    /// <summary>
+    /// /add-task 请求体必须为 JSON：text/plain 是 CORS 简单请求的合法 Content-Type，
+    /// 浏览器跨源可"不发预检"直接发出，正是攻击者网页驱动本机 serve 提交任务的载体。
+    /// 仅接受 application/json 或 application/*+json；无 Content-Type（空 body 或旧客户端）
+    /// 放行交由绑定层返回 400/422。
+    /// </summary>
+    private static bool IsJsonContentType(string? contentType)
+    {
+        if (string.IsNullOrWhiteSpace(contentType)) return true;
+        var mediaType = contentType.Split(';')[0].Trim();
+        return mediaType.Equals("application/json", StringComparison.OrdinalIgnoreCase)
+            || mediaType.EndsWith("+json", StringComparison.OrdinalIgnoreCase);
+    }
 
     /// <summary>
     /// 监听地址是否属于本机回环：127.0.0.1、localhost、[::1]、::1。
@@ -811,7 +925,9 @@ public class BBDownApiServer
             // Aid 没有可信值：保留原始 Url 便于用户在查询结果里辨认。
             if (slotAcquired) _concurrencyLimiter.Release();
             task.SetAid(option.Url);
-            task.ErrorMessage = e.Message;
+            // 异常消息可能含绝对路径（IOException 等）：脱敏后再返回，避免经 /get-tasks
+            // 泄露服务器文件系统布局（M2 路径泄露）。服务端日志保留原始消息便于排查。
+            task.ErrorMessage = SanitizeErrorMessage(e.Message);
             task.TaskFinishTime = DateTimeOffset.Now.ToUnixTimeSeconds();
             task.SetStatus(DownloadTaskStatus.Failed);
             lock (_taskLock)
@@ -861,7 +977,8 @@ public class BBDownApiServer
         {
             bool debugMode = option.Debug || Config.Current.DebugLog;
             var displayMsg = debugMode ? e.ToString() : e.Message;
-            task.ErrorMessage = displayMsg;
+            // 异常消息可能含绝对路径：脱敏后再作为任务错误返回（服务端日志保留原文）。
+            task.ErrorMessage = SanitizeErrorMessage(displayMsg);
             task.SetStatus(DownloadTaskStatus.Failed);
             Logger.LogError($"{aid} 下载失败: {e.Message}");
             Logger.LogDebug("异常详情: {0}", displayMsg);

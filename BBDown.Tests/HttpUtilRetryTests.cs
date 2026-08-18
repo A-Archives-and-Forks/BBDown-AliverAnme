@@ -168,16 +168,18 @@ public class HttpUtilRetryTests
     }
 
     [Fact]
-    public async Task GetPostResponse_Timeout_IsRetriedThenThrows()
+    public async Task GetPostResponse_Timeout_NotRetried_Throws()
     {
-        // F5：grpc API 的超时同样参与有界重试（timeoutCts 触发、用户 token 未取消）
+        // F5：grpc API 的 POST 请求不幂等（Widevine 许可证），超时后服务端可能已成功处理，
+        // 重发会造成服务端重复签发。因此 POST 超时只发出一次请求便以 TimeoutException 抛出，
+        // 不参与 GET 的有界超时重试。
         using var server = new StallingServer();
         try
         {
             Config.ApplyToCurrentAsyncFlow(Config.Current with { MaxRetryCount = 3, RetryDelayMs = 10, ApiTimeoutMs = 100 });
             await Assert.ThrowsAnyAsync<TimeoutException>(() =>
                 HTTPUtil.GetPostResponseAsync($"http://127.0.0.1:{server.Port}/grpc", new byte[] { 0x00 }, token: CancellationToken.None));
-            Assert.Equal(3, server.RequestCount);
+            Assert.Equal(1, server.RequestCount); // POST 超时不重试，只有初始请求
         }
         finally
         {

@@ -48,14 +48,14 @@ public class ClockCalibrationTests
     }
 
     [Fact]
-    public void CalibrateClock_MalformedDate_Beyond24h_Rejected()
+    public void CalibrateClock_MalformedDate_Beyond1h_Rejected()
     {
         var original = Config.Current;
         try
         {
             Config.Apply(Config.Current with { ServerClockOffsetSeconds = 0 });
             using var response = new HttpResponseMessage();
-            response.Headers.Date = DateTimeOffset.UtcNow.AddDays(3); // 超过 ±24h clamp
+            response.Headers.Date = DateTimeOffset.UtcNow.AddHours(3); // 超过 ±1h clamp
 
             HTTPUtil.CalibrateClock(response);
 
@@ -111,18 +111,18 @@ public class ClockCalibrationTests
     }
 
     [Fact]
-    public async Task GetWebSource_CalibratesClock_FromServerDate()
+    public async Task GetWebSource_NonAuthoritativeHost_DoesNotOverwriteClockOffset()
     {
-        // 端到端：真实请求（本机 HttpListener 的 Date 头≈本地 UTC）后偏移被校准。
-        // ScriptedServer 用 HttpListener 自动带 Date 头（本机时间），断言偏移落在小容差内。
+        // 端到端：非权威主机（本机 HttpListener）的 Date 头不得覆盖已校准的偏移——
+        // 防止边缘/本地服务器时钟抖动 WBI 签名基准（CalibrateClock 只对 api.bilibili.com 校准）。
         using var server = new ScriptedServer((200, """{"code":0}"""));
         var original = Config.Current;
         try
         {
-            Config.Apply(Config.Current with { ServerClockOffsetSeconds = 0 });
+            Config.Apply(Config.Current with { ServerClockOffsetSeconds = 3600 });
             await HTTPUtil.GetWebSourceAsync($"http://127.0.0.1:{server.Port}/api", token: CancellationToken.None);
-            // 本机服务器的 Date 头即本机 UTC：校准后偏移应 ≈0（秒级容差）
-            Assert.InRange(Config.Current.ServerClockOffsetSeconds, -3, 3);
+            // 本机 127.0.0.1 非权威主机：偏移保持 3600 不被本机 Date 覆盖
+            Assert.Equal(3600, Config.Current.ServerClockOffsetSeconds);
         }
         finally { Config.Apply(original); }
     }

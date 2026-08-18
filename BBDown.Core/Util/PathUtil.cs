@@ -58,6 +58,16 @@ public static class PathUtil
         var nameWithoutExt = Path.GetFileNameWithoutExtension(title);
         if (ReservedNames.Contains(title) || ReservedNames.Contains(nameWithoutExt))
             title = "_" + title;
+        // Windows 不允许文件/目录名以点或空格结尾（会静默剥离/创建失败）：
+        // 标题 "video." 或 "video " 在 Windows 上 File.Create/目录创建直接失败。
+        // 仅当去掉尾随点/空格后名称仍非空时裁剪（纯 "." / ".." / "..." 已在上方
+        // 无效字符替换中处理，不会到达这里；防御性再兜底）。去掉后若为空（如
+        // 输入全为点），前缀下划线保证有合法基名。
+        var trimmed = title.TrimEnd('.', ' ');
+        if (trimmed.Length == 0)
+            title = "_" + title;
+        else if (trimmed != title)
+            title = trimmed;
         return title;
     }
 

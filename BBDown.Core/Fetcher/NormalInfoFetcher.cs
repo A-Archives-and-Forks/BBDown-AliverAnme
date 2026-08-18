@@ -70,7 +70,18 @@ public partial class NormalInfoFetcher : IFetcher
             var playerSoApi = $"https://api.bilibili.com/x/player.so?bvid={bvid}&id=cid:{cid}";
             var playerSoText = await HTTPUtil.GetWebSourceAsync(playerSoApi, token: cancellationToken, rejectHtml: false);
             var playerSoXml = new XmlDocument();
-            playerSoXml.LoadXml($"<root>{playerSoText}</root>");
+            try
+            {
+                playerSoXml.LoadXml($"<root>{playerSoText}</root>");
+            }
+            catch (XmlException ex)
+            {
+                // player.so 是互动视频的装饰性分P信息来源：rejectHtml:false 让风控 HTML 页
+                // 直达此处，HTML 未闭合标签会让 LoadXml 抛 XmlException；响应含 XML 声明
+                //（<?xml ...?>）包在 <root> 内同样非法。与同文件其它装饰性抓取一致，
+                // 降级为可读错误而非裸 XmlException 崩溃（其它 fetcher 均有 try/catch 降级）。
+                throw new InvalidOperationException($"互动视频 player.so 解析失败: {ex.Message}");
+            }
 
             var interactionNode = playerSoXml.SelectSingleNode("//interaction");
 

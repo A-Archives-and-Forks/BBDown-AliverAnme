@@ -180,13 +180,15 @@ public static partial class UrlResolver
             }
             avid = $"cheese:{epId}";
         }
-        else if (input.StartsWith("ep"))
+        else if (input.StartsWith("ep") && input.Length > 2 && (char.IsAsciiDigit(input[2]) || input[2] == ':'))
         {
-            // 兼容 "ep123" 与 "ep:123" 两种写法（sub add 会原样保存用户输入）
+            // 兼容 "ep123" 与 "ep:123" 两种写法（sub add 会原样保存用户输入）。
+            // 前置校验 ep 后跟数字/冒号：否则 "episode"/"epoxy" 之类会被解析为 ep:isode
+            // 并发起对 B 站接口的请求。
             string epId = input[2..].TrimStart(':');
             avid = $"ep:{epId}";
         }
-        else if (input.StartsWith("ss"))
+        else if (input.StartsWith("ss") && input.Length > 2 && (char.IsAsciiDigit(input[2]) || input[2] == ':'))
         {
             try
             {
@@ -200,7 +202,7 @@ public static partial class UrlResolver
                 avid = $"cheese:{epId}";
             }
         }
-        else if (input.StartsWith("md"))
+        else if (input.StartsWith("md") && input.Length > 2 && (char.IsAsciiDigit(input[2]) || input[2] == ':'))
         {
             string mdId = input[2..].TrimStart(':');
             if (mdId == "")
@@ -217,7 +219,9 @@ public static partial class UrlResolver
 
     private static async Task<string> FixAvidAsync(string avid, CancellationToken token = default)
     {
-        if (!avid.All(char.IsDigit))
+        // 空串（如裸 "av"/"bv" 输入剥离前缀后）的 All(char.IsDigit) 是真空真，会让
+        // 下方对 "https://www.bilibili.com/video/av/" 发起一次无意义网络请求。先判空。
+        if (string.IsNullOrEmpty(avid) || !avid.All(char.IsDigit))
             return avid;
         try
         {

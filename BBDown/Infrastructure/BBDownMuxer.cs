@@ -206,11 +206,19 @@ static partial class BBDownMuxer
 
         if (audioMaterial.Any())
         {
-            int audioCount = 0;
+            // 素材元数据下标起点依赖主音轨是否存在：有主音轨时输出音频流 0 是主音轨、
+            // 素材从 1 起；主音轨缺失时输出音频流 0 就是首个素材，必须从 0 起，
+            // 否则素材 0 的 title 会错位写到素材 1 的流上。
+            int audioCount = string.IsNullOrEmpty(audioPath) ? -1 : 0;
+            // 仅当存在主音轨（audioPath 非空）时才标记输出音频流 0 为"原音频"：
+            // 主音轨缺失时输出音频流 0 实际是 audioMaterial[0]，会被错标。
             // ffmpeg 的 stream specifier 必须与选项名粘连成单个 argv（-metadata:s:a:0），
             // 拆成 "-metadata" + "s:a:0" 会把 s:a:0 当成非法 key=value、后续参数被误当输入文件。
-            args.Add("-metadata:s:a:0");
-            args.Add("title=原音频");
+            if (!string.IsNullOrEmpty(audioPath))
+            {
+                args.Add("-metadata:s:a:0");
+                args.Add("title=原音频");
+            }
             foreach (var audio in audioMaterial)
             {
                 inputCount++;

@@ -161,6 +161,11 @@ internal partial class Program
             {
                 // 用户取消或超时：进程仍在运行，必须 Kill 掉，避免留下孤儿 mp4decrypt。
                 try { proc.Kill(true); } catch { /* 进程可能已自行退出 */ }
+                // Kill 后 stderr 管道断裂，ReadToEndAsync 会结束；带超时兜底地等待并观察
+                // stderrTask，避免它成为未观察的 faulted Task（旧实现直接 throw 跳过等待，
+                // Kill 产生的 IOException 会在终结器/后续 GC 时以 UnobservedTaskException 泄漏）。
+                // 清理路径的任何异常都不应掩盖主路径的取消异常，一律忽略。
+                try { await stderrTask.WaitAsync(TimeSpan.FromSeconds(5)); } catch (Exception) { }
                 throw;
             }
 
@@ -189,7 +194,7 @@ internal partial class Program
                     File.Delete(keyFile);
                 }
             }
-            catch (IOException) { /* best effort */ }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* best effort */ }
         }
     }
 

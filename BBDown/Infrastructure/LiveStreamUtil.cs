@@ -524,7 +524,7 @@ public static class LiveStreamUtil
 
             return true;
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or TimeoutException)
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or TimeoutException or System.ComponentModel.Win32Exception)
         {
             Logger.LogDebug("直播分段合成失败: {0}", ex.Message);
             return false;

@@ -40,7 +40,7 @@ public static class ExternalToolHelper
                 return true;
             }
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or FormatException)
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or FormatException or OverflowException)
         {
             Logger.LogDebug("检测ffmpeg版本失败: {0}", ex.Message);
         }
@@ -50,8 +50,29 @@ public static class ExternalToolHelper
     public static string? FindExecutable(string name)
     {
         var fileExt = OperatingSystem.IsWindows() ? ".exe" : "";
-        var searchPath = new[] { Environment.CurrentDirectory, Program.APP_DIR };
+        // 只在 PATH 与程序目录（APP_DIR）中查找，绝不搜索当前工作目录：
+        // BBDown 是下载器，常被放在任意视频/下载目录运行，该目录里若有先前植入的
+        // ffmpeg.exe/aria2c.exe/mp4box.exe（或误入的伪造二进制），会静默执行本地
+        // 伪造文件（可执行文件劫持）。PATH 与程序目录是用户/包管理器建立的可信位置。
         var envPath = Environment.GetEnvironmentVariable("PATH")?.Split(Path.PathSeparator) ?? [];
-        return searchPath.Concat(envPath).Select(p => Path.Combine(p, name + fileExt)).FirstOrDefault(File.Exists);
+        var searchPath = envPath.Concat(new[] { Program.APP_DIR });
+        return searchPath.Select(p => Path.Combine(p, name + fileExt)).FirstOrDefault(IsExecutableFile);
+    }
+
+    /// <summary>文件存在且可执行：Unix 上校验执行位（File.Exists 对无执行位的文件也返回 true，
+    /// 若不校验会被选中后到 Process.Start 才失败）。</summary>
+    private static bool IsExecutableFile(string path)
+    {
+        if (!File.Exists(path)) return false;
+        if (OperatingSystem.IsWindows()) return true;
+        try
+        {
+            var mode = File.GetUnixFileMode(path);
+            return (mode & (UnixFileMode.UserExecute | UnixFileMode.GroupExecute | UnixFileMode.OtherExecute)) != 0;
+        }
+        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
     }
 }

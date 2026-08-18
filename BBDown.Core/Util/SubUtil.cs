@@ -13,12 +13,18 @@ public static partial class SubUtil
     //https://i0.hdslb.com/bfs/subtitle/subtitle_lan.json
     public static (string, string) GetSubtitleCode(string key)
     {
-        //zh-hans => zh-Hans
-        if (NonCapsRegex().Match(key) is { Success: true } result)
+        // BCP-47 大小写规范化：语言子标签保持小写，连字符后的子标签按语义恢复标准大小写——
+        // 地区子标签（2 字母，zh-tw/yue-hk/en-us）整体大写（zh-TW/yue-HK/en-US），
+        // 脚本子标签（hans/hant）首字母大写（zh-Hans/zh-Hant），ai 前缀特例同样首字母大写（ai-Zh/ai-En）。
+        // 原实现只把连字符后首个字母大写（zh-tw→zh-Tw），匹配不上 switch 里的 zh-TW，
+        // 小写输入的语言码会被错误标记为 und（Undetermined）。
+        key = SubTagRegex().Replace(key, m =>
         {
-            var v = result.Value;
-            key = key.Replace(v, v.ToUpperInvariant());
-        }
+            var sub = m.Groups[1].Value.ToLowerInvariant();
+            if (sub.Length == 2 && sub is not ("hans" or "hant"))
+                return "-" + sub.ToUpperInvariant();
+            return "-" + char.ToUpperInvariant(sub[0]) + sub[1..];
+        });
 
         return key switch
         {
@@ -514,6 +520,6 @@ public static partial class SubUtil
         return string.Join('\n', keptLines);
     }
 
-    [GeneratedRegex("-[a-z]")]
-    private static partial Regex NonCapsRegex();
+    [GeneratedRegex(@"-([a-zA-Z0-9]+)")]
+    private static partial Regex SubTagRegex();
 }

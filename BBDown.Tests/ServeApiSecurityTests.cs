@@ -192,4 +192,18 @@ public class ServeApiSecurityTests
     {
         _ = new BBDownApiServer(0);
     }
+
+    [Theory]
+    [InlineData("Could not find file 'D:\\data\\video\\xxx.mp4'", "Could not find file 'xxx.mp4'")]
+    [InlineData("Could not find file '/home/user/downloads/xxx.mp4'", "Could not find file 'xxx.mp4'")]
+    [InlineData("Could not find a part of the path 'C:\\temp\\dir'", "Could not find a part of the path 'dir'")]
+    [InlineData("Could not find a part of the path '\\\\server\\share\\dir'", "Could not find a part of the path 'dir'")]
+    [InlineData("磁盘空间不足", "磁盘空间不足")] // 无路径消息原样保留
+    [InlineData(null, "")]
+    public void SanitizeErrorMessage_HidesAbsolutePathLeaksFilename(string? input, string expected)
+    {
+        // 绝对路径（盘符/UNC/Unix 根）在错误消息中应被替换为末段，防止经 /get-tasks
+        // 泄露服务器文件系统布局；消息其余部分保留；无路径消息不受影响。
+        Assert.Equal(expected, BBDownApiServer.SanitizeErrorMessage(input));
+    }
 }

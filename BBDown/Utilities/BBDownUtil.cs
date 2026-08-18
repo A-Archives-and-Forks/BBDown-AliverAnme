@@ -326,6 +326,15 @@ public static partial class BBDownUtil
             27, 43, 5, 49, 33, 9, 42, 19, 29, 28, 14, 39, 12, 38, 41, 13
         ];
 
+        // 越界保护：mixinKeyEncTab 最大下标是 57，要求 orig 至少 58 字符。B 站 nav
+        // 响应（或中间人）返回短文件名时 orig 可能不足，裸 index 会抛
+        // IndexOutOfRangeException，且 ExtractWbiKey 的 catch 过滤器不含它——
+        // 异常会穿透 CheckLoginWithDetails 的 catch 直接崩溃。这里显式防御：
+        // 长度不足时抛 InvalidOperationException（在 ExtractWbiKey 的 catch 范围内），
+        // 由调用方降级为"保持原密钥"。
+        if (orig.Length < 58)
+            throw new InvalidOperationException($"wbi 密钥材料过短（{orig.Length} 字符，需要至少 58）");
+
         var tmp = new StringBuilder(32);
         foreach (var index in mixinKeyEncTab)
         {

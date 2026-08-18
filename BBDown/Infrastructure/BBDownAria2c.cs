@@ -24,8 +24,13 @@ static class BBDownAria2c
             Arguments = CommandLineSplitter.Split(args),
             StandardInput = stdinContent,
             ToolDisplayName = command,
-            // aria2c 的进度输出走 stdout，量很大，这里不转发（保持原行为：不重定向）
-            TimeoutMs = null,
+            // aria2c 的进度输出走 stdout，量很大，这里不转发（保持原行为：不重定向）。
+            // 进程级兜底超时 6 小时：aria2c 自带网络层超时（--timeout 默认 60s 读超时 +
+            // --max-tries 默认 5 次）会在网络挂死后自行退出，正常大文件下载远小于此值；
+            // 但极端场景（aria2c 进程完全挂死/僵死）下无兜底会永久阻塞 CLI、并在 serve
+            // 模式下永久占住并发下载槽（SemaphoreSlim 槽位释放只发生在任务结束）。此值
+            // 只作"进程僵死"的最后防线，不构成正常下载的时限。
+            TimeoutMs = 6 * 60 * 60 * 1000,
         };
         return await ProcessRunner.RunAsync(spec, token);
     }

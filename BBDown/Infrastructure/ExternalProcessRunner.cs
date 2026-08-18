@@ -233,7 +233,17 @@ internal static class CommandLineSplitter
             }
             current.Append(c);
         }
-        if (current.Length > 0) tokens.Add(current.ToString());
+        if (inQuotes)
+        {
+            // 未闭合引号：--aria2c-args 这类整串配置里出现畸形引号会把后续整串吞成一个
+            // token（inQuotes 永不复位），静默改义难以定位。把未闭合引号内的剩余内容
+            // 作为最后一个 token（尽力恢复），而非丢弃整段配置。
+            if (current.Length > 0) tokens.Add(current.ToString());
+        }
+        else if (current.Length > 0)
+        {
+            tokens.Add(current.ToString());
+        }
         return tokens;
     }
 }

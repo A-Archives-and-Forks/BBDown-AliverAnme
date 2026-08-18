@@ -13,7 +13,7 @@ public static class SensitiveDataMasker
     private static readonly HashSet<string> SensitiveKeys = new(StringComparer.OrdinalIgnoreCase)
     {
         "access_key", "access_token", "refresh_token", "token",
-        "SESSDATA", "bili_jct", "DedeUserID__ckMd5", "sid",
+        "SESSDATA", "bili_jct", "DedeUserID", "DedeUserID__ckMd5", "sid",
     };
 
     /// <summary>值为 <c>k=v; k=v</c> 结构、需要逐项脱敏的请求头。</summary>

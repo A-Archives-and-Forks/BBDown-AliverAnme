@@ -90,7 +90,7 @@ internal partial class Program
                 succeeded = await DownloadPageAsync(p, myOption, vInfo, pagesInfo, encodingPriority, dfnPriority, firstEncoding,
                     downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, apiType, relatedTask, cancellationToken);
             }
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TaskCanceledException)
+            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException or TaskCanceledException)
             {
                 // 真正的用户取消/服务关停（token 已取消）必须正常中止整批，不能进失败分支续跑；
                 // HTTP 超时抛的 TaskCanceledException 其 token 未取消，会进入下方"记录失败后继续"分支。
@@ -162,7 +162,10 @@ internal partial class Program
         }
         catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or UriFormatException or InvalidOperationException)
         {
-            // 回调必须不影响下载结果：URL 畸形（UriFormatException）或内容构造失败都不能把成功任务变失败
+            // 回调必须不影响下载结果：URL 畸形（UriFormatException）或内容构造失败都不能把成功任务变失败。
+            // 但真正的用户取消必须向上传播：HttpClient 超时抛的 TaskCanceledException 其 token 未取消，
+            // 按失败降级；token 已取消时吞掉会让"任务完成"在 Ctrl+C 后仍被打印，取消信号丢失。
+            if (token.IsCancellationRequested) throw;
             Logger.LogDebug("通知回调失败: {0}", ex.Message);
         }
     }
@@ -221,9 +224,13 @@ internal partial class Program
         // 此前直接写最终路径，非零退出/取消后只返回 Failed 不删除半成品，下次运行发现
         // "存在且非空"就跳过，可能永久保留截断视频并报告成功。临时产物成功且校验通过后
         // 才原子替换到最终路径；失败/取消清理临时产物，绝不留半成品当成品。
-        // 取消/超时可能让 MuxAV 抛异常（await 之后的清理无法执行），因此用 try/finally
-        // 覆盖"混流→验证→移动"全程，finally 删除仍存在的临时产物，避免遗留大文件占用磁盘。
+        // 轨道文件（已下载的音视频/字幕）清理必须覆盖"成功/失败/异常"全部路径：
+        // 此前只在成功路径清理，混流失败或 MuxAV 抛异常（超时/取消/进程失败）时，
+        // GB 级的视频/音频轨道文件残留在 aid 工作目录，多 P 批量反复失败会累积大量磁盘占用。
+        // 因此这里把轨道清理并入 finally（见 CleanupDownloadedTracks），与 .muxing-*
+        // 临时产物一并兜底。
         var muxingPath = savePath + $".muxing-{Guid.NewGuid():N}";
+        bool muxSucceeded = false;
         try
         {
             int code = await BBDownMuxer.MuxAV(useMp4box, p.bvid, videoPath, audioPath, audioMaterial, muxingPath,
@@ -236,13 +243,19 @@ internal partial class Program
                 subtitleInfo, audioOnly, videoOnly, p.points, p.pubTime, myOption.SimplyMux, isHevc, cancellationToken);
             if (code != 0 || !File.Exists(muxingPath) || new FileInfo(muxingPath).Length == 0)
             {
-                // 混流失败/取消：返回失败（finally 会清理半成品临时产物）
+                // 混流失败/取消：返回失败（finally 会清理半成品临时产物与已下载轨道）
                 return MuxOutcome.Failed;
             }
             // 产物合法：原子替换到最终路径。File.Move(overwrite) 在 Windows 上是"删除目标+改名"，
             // 但目标原本不存在（fastSkipChecked 已判定），不会破坏已有文件。
             File.Move(muxingPath, savePath, true);
             muxingPath = null; // 已移动成功，finally 无需清理
+            muxSucceeded = true;
+            Logger.Log("清理临时文件...");
+            // 短暂等待外部进程释放输出文件句柄后，finally 再删除轨道文件。
+            // 取消在这里正常传播（不吞 OCE）：混流已成功、产物已保存，轨道可以清理，
+            // 但取消必须中止整批下载，而不是继续处理剩余分 P。
+            await Task.Delay(200, cancellationToken);
         }
         finally
         {
@@ -253,20 +266,61 @@ internal partial class Program
                 try { if (File.Exists(muxingPath)) File.Delete(muxingPath); }
                 catch (IOException) { /* 清理失败不影响主流程 */ }
             }
+            // 轨道文件清理纳入 finally：成功/失败/异常（MuxAV 抛超时/取消/进程失败）都执行，
+            // 杜绝混流失败时已下载的 GB 级音视频/字幕文件残留在 aid 工作目录。
+            CleanupDownloadedTracks(parsedResult, p, videoPath, audioPath, subtitleInfo, audioMaterial, selectedPagesInfo, coverPath);
         }
-        Logger.Log("清理临时文件...");
-        try { await Task.Delay(200, cancellationToken); } catch (OperationCanceledException) { }
-        if (parsedResult.VideoTracks.Any()) File.Delete(videoPath);
+        return muxSucceeded ? MuxOutcome.Succeeded : MuxOutcome.Failed;
+    }
+
+    /// <summary>
+    /// 清理已下载但未被混流消耗的轨道临时文件（视频/音频/字幕/封面/章节），并删除
+    /// 变空的 aid 工作目录。供 <see cref="MuxAndFinalizeAsync"/> 的 finally 兜底调用，
+    /// 保证混流成功、失败或抛异常（超时/取消）路径都不残留大文件。
+    /// 单文件清理失败不影响整体（磁盘占用/句柄异常不该掩盖主流程结果）。
+    /// </summary>
+    private static void CleanupDownloadedTracks(ParsedResult parsedResult, Page p, string videoPath, string audioPath,
+        List<Subtitle> subtitleInfo, List<AudioMaterial> audioMaterial, List<Page> selectedPagesInfo, string coverPath)
+    {
+        if (parsedResult.VideoTracks.Any() && File.Exists(videoPath))
+        {
+            try { File.Delete(videoPath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
         // 仅删除非空音轨路径：flv 分支 audioPath 为空串，File.Delete("") 会抛异常。
-        // 原 flv 清理本就只删 videoPath，这里用守卫保持行为一致。
-        if (!string.IsNullOrEmpty(audioPath) && parsedResult.AudioTracks.Any()) File.Delete(audioPath);
-        if (p.points.Any()) File.Delete(Path.Combine(Path.GetDirectoryName(string.IsNullOrEmpty(videoPath) ? audioPath : videoPath)!, "chapters"));
-        foreach (var s in subtitleInfo) File.Delete(s.path);
-        foreach (var a in audioMaterial) File.Delete(a.path);
+        if (!string.IsNullOrEmpty(audioPath) && parsedResult.AudioTracks.Any() && File.Exists(audioPath))
+        {
+            try { File.Delete(audioPath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        if (p.points.Any())
+        {
+            var dir = Path.GetDirectoryName(string.IsNullOrEmpty(videoPath) ? audioPath : videoPath);
+            if (dir is not null)
+            {
+                try { if (File.Exists(Path.Combine(dir, "chapters"))) File.Delete(Path.Combine(dir, "chapters")); }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+            }
+        }
+        foreach (var s in subtitleInfo)
+        {
+            try { if (File.Exists(s.path)) File.Delete(s.path); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        foreach (var a in audioMaterial)
+        {
+            try { if (File.Exists(a.path)) File.Delete(a.path); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
         if (selectedPagesInfo.Count == 1 || p.index == selectedPagesInfo.Last().index || p.aid != selectedPagesInfo.Last().aid)
-            File.Delete(coverPath);
-        if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0) Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
-        return MuxOutcome.Succeeded;
+        {
+            try { if (File.Exists(coverPath)) File.Delete(coverPath); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
+        var aidDir = PathUtil.ResolveWorkPath(p.aid);
+        if (Directory.Exists(aidDir))
+        {
+            try { if (Directory.GetFiles(aidDir).Length == 0) Directory.Delete(aidDir, true); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+        }
     }
 
     private static async Task<bool> DownloadPageAsync(Page p, MyOption myOption, VInfo vInfo, List<Page> selectedPagesInfo, Dictionary<string, byte> encodingPriority, Dictionary<string, int> dfnPriority,
@@ -627,6 +681,17 @@ internal partial class Program
                         Logger.Log($"{savePath}已存在, 跳过下载...");
                         relatedTask?.AddSavePath(savePath);
                         File.Delete(coverPath);
+                        // 清理本次已下载但未被消费的装饰性文件（字幕/章节）：它们下载于
+                        // 跳过判定之前（GetSubtitlesAsync 在提取轨道前执行），若不清理，
+                        // 每次重跑已下载的视频都会残留字幕/章节文件，且 Directory 非空
+                        // 时 aid 目录也删不掉。与 flv 分支的跳过清理行为保持一致。
+                        foreach (var s in subtitleInfo)
+                        {
+                            try { if (File.Exists(s.path)) File.Delete(s.path); }
+                            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
+                        }
+                        try { if (File.Exists(Path.Combine(PathUtil.ResolveWorkPath(p.aid), "chapters"))) File.Delete(Path.Combine(PathUtil.ResolveWorkPath(p.aid), "chapters")); }
+                        catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                         if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
                         {
                             Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true);
@@ -959,7 +1024,7 @@ internal partial class Program
                 }
                 return true; // success, exit retry loop
             }
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException
+            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException
                               || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
             {
                 // 风控页（200+HTML 的 RiskControlResponseException，继承 JsonException）也参与

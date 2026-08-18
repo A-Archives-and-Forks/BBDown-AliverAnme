@@ -69,8 +69,9 @@ public static partial class HTTPUtil
     /// <summary>
     /// 从响应头 Date 校准服务器时钟偏移（秒），写入 Config（流内 + 全局双写，
     /// 见 <see cref="Config.SET_CLOCK_OFFSET"/>）。RFC 7231 要求所有 HTTP 响应携带
-    /// Date（GMT），读不到时直接跳过。仅当偏移在 ±24h 内才写入：畸形/恶意 Date 头
-    /// 不污染时钟。偏移为 0 时不写（无变化）。
+    /// Date（GMT），读不到时直接跳过。仅当偏移在 ±1h 内才写入：畸形/恶意 Date 头
+    /// 不污染时钟。只对 WBI 签名权威主机 api.bilibili.com 校准：其它主机（番剧/国际版
+    /// 等边缘服务器）的 Date 是各自时钟，写入全局偏移会抖动签名基准。偏移为 0 时不写。
     /// 必须在 EnsureSuccessStatusCode 之前调用：4xx/5xx 错误响应同样带 Date——本地时钟
     /// 偏差导致签名被拒的请求，其错误响应恰好能校准下一次重试的 wts/ts。
     /// internal 供测试直接调用验证校准逻辑。
@@ -78,8 +79,18 @@ public static partial class HTTPUtil
     internal static void CalibrateClock(HttpResponseMessage response)
     {
         if (response.Headers.Date is not { } serverDate) return;
+        // 只对 WBI 签名权威主机 api.bilibili.com（含子域）校准：WBI 签名经 Parser.WbiSign
+        // 只发给该主机，其它主机（bangumi.bilibili.com、api.bilibili.tv、api.biliintl.com
+        // 或 serve 本地回调）的 Date 是各自边缘服务器时钟，写入全局偏移会抖动 WBI 签名
+        // 基准。直接构造的 HttpResponseMessage（单元测试）无 RequestMessage，放行。
+        if (response.RequestMessage?.RequestUri?.Host is { } host
+            && !host.Equals("api.bilibili.com", StringComparison.OrdinalIgnoreCase)
+            && !host.EndsWith(".api.bilibili.com", StringComparison.OrdinalIgnoreCase))
+            return;
         long offset = serverDate.ToUnixTimeSeconds() - DateTimeOffset.UtcNow.ToUnixTimeSeconds();
-        if (Math.Abs(offset) > 24 * 3600) return; // 畸形/不可信 Date 头
+        // 阈值收紧到 ±1 小时：WBI 签名 wts 时效窗口约 60s，正常偏差远小于 1h；
+        // 超过 1h 的 Date 头只可能是畸形/恶意值或系统时钟被大幅改动，写入反而有害。
+        if (Math.Abs(offset) > 3600) return;
         if (offset != Config.Current.ServerClockOffsetSeconds)
             Config.SET_CLOCK_OFFSET(offset);
     }
@@ -168,27 +179,61 @@ public static partial class HTTPUtil
     public static async Task<(string Body, List<string> SetCookies)> GetWebSourceWithSetCookiesAsync(
         string url, string? userAgent = null, CancellationToken token = default)
     {
-        using var webRequest = new HttpRequestMessage(HttpMethod.Get, url);
-        webRequest.Headers.TryAddWithoutValidation("User-Agent", GetUserAgent(userAgent));
-        webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
-        if (!string.IsNullOrEmpty(Config.Current.Cookie))
-            webRequest.Headers.TryAddWithoutValidation("Cookie", Config.Current.Cookie);
-        webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
-        webRequest.Headers.Connection.Clear();
+        // 登录轮询（扫码后轮询二维码状态）是 GET，幂等，可安全参与与 GetWebSourceCoreAsync
+        // 一致的有界重试：此前零重试会让任一次瞬时 5xx/超时直接中止整个扫码登录流程，
+        // 用户必须重新扫码。有界次数 min(MaxRetryCount,3) + 指数退避，见 GetWebSourceCoreAsync。
+        int maxRetry = Math.Max(1, Math.Min(Config.Current.MaxRetryCount, 3));
+        for (int attempt = 1; ; attempt++)
+        {
+            try
+            {
+                using var webRequest = new HttpRequestMessage(HttpMethod.Get, url);
+                webRequest.Headers.TryAddWithoutValidation("User-Agent", GetUserAgent(userAgent));
+                webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
+                if (!string.IsNullOrEmpty(Config.Current.Cookie))
+                    webRequest.Headers.TryAddWithoutValidation("Cookie", Config.Current.Cookie);
+                webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
+                webRequest.Headers.Connection.Clear();
 
-        Logger.LogDebug("获取网页内容: Url: {0}", SensitiveDataMasker.MaskUrl(url));
-        using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
-        timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
-        using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
-        webResponse.EnsureSuccessStatusCode();
+                Logger.LogDebug("获取网页内容: Url: {0}", SensitiveDataMasker.MaskUrl(url));
+                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
+                using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                // 登录接口同样参与服务器时钟校准（响应头 Date）：与其它 API 调用保持一致，
+                // 否则依赖签名时间戳的后续请求在校准缺失下可能因时钟偏差被拒。
+                CalibrateClock(webResponse);
+                // 5xx 显式抛错走下方退避；4xx 交给 EnsureSuccessStatusCode 立即抛出（不重试）
+                if (!webResponse.IsSuccessStatusCode && (int)webResponse.StatusCode >= 500)
+                    throw new HttpRequestException($"服务器返回 {(int)webResponse.StatusCode} {webResponse.ReasonPhrase}", null, webResponse.StatusCode);
+                webResponse.EnsureSuccessStatusCode();
 
-        string htmlCode = await webResponse.Content.ReadAsStringAsync(timeoutCts.Token);
-        // 截断实参含 `htmlCode[..1024]` 的子串分配：DebugLog 关闭时跳过求值，
-        // 避免为每次元数据响应（可达数 MB）白白分配 1KB 截断串
-        if (Config.Current.DebugLog)
-            Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
-        List<string> setCookies = webResponse.Headers.TryGetValues("Set-Cookie", out var vals) ? vals.ToList() : [];
-        return (htmlCode, setCookies);
+                string htmlCode = await webResponse.Content.ReadAsStringAsync(timeoutCts.Token);
+                // 截断实参含 `htmlCode[..1024]` 的子串分配：DebugLog 关闭时跳过求值，
+                // 避免为每次元数据响应（可达数 MB）白白分配 1KB 截断串
+                if (Config.Current.DebugLog)
+                    Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
+                List<string> setCookies = webResponse.Headers.TryGetValues("Set-Cookie", out var vals) ? vals.ToList() : [];
+                return (htmlCode, setCookies);
+            }
+            catch (HttpRequestException ex) when (attempt < maxRetry && (ex.StatusCode is null || (int)ex.StatusCode >= 500))
+            {
+                int backoffMs = ExponentialBackoffMs(attempt);
+                Logger.LogDebug("登录轮询失败(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(url));
+                await Task.Delay(backoffMs, token);
+            }
+            catch (OperationCanceledException) when (attempt < maxRetry && !token.IsCancellationRequested)
+            {
+                // 超时（timeoutCts 触发）：瞬时传输层故障，参与有界重试。
+                // 真正的用户取消（token 已取消）不重试，直接向上传播。
+                int backoffMs = ExponentialBackoffMs(attempt);
+                Logger.LogDebug("登录轮询超时(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(url));
+                await Task.Delay(backoffMs, token);
+            }
+            catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
+            {
+                throw new TimeoutException($"登录轮询超时 ({Config.Current.ApiTimeoutMs}ms): {SensitiveDataMasker.MaskUrl(url)}", ex);
+            }
+        }
     }
 
     /// <summary>
@@ -303,8 +348,18 @@ public static partial class HTTPUtil
                 // 剥离 UTF-8 BOM（char.IsWhiteSpace 不认 U+FEFF，ReadAsStringAsync 通常已剥离，
                 // 此处兜底）。用 AsSpan 避免为每条响应分配截断串。此为业务性拦截，不参与上面的
                 // 5xx 重试。
-                if (rejectHtml && htmlCode.AsSpan().TrimStart('\uFEFF').TrimStart().StartsWith("<"))
-                    throw new RiskControlResponseException(url);
+                if (rejectHtml)
+                {
+                    // 200+HTML 风控页识别：JSON 响应不可能以 '<' 开头，因此这一定是 HTML 页面。
+                    // 给出可读的"疑似风控页"异常，替代下游 JsonDocument.Parse 的裸 JsonException
+                    //（难定位、看似偶发）。先剥前导空白，再剥 BOM，再剥一次空白：
+                    // char.IsWhiteSpace 不认 U+FEFF，部分 WAF/风控页在 BOM 前还带换行/空白
+                    //（"\n\uFEFF<html"），只剥 BOM 或只剥空白都会漏检而让裸 JsonException 回潮。
+                    // 用 AsSpan 避免为每条响应分配截断串。此为业务性拦截，不参与上面的 5xx 重试。
+                    var htmlSpan = htmlCode.AsSpan().TrimStart().TrimStart('\uFEFF').TrimStart();
+                    if (htmlSpan.StartsWith("<"))
+                        throw new RiskControlResponseException(url);
+                }
                 // 响应体可达数 MB（如 intl 回退抓取的整张 HTML 页面），翻页类 fetcher 会放大几十倍，
                 // 全部落盘会把日志文件灌满；截断到前 1KB 即可排查问题。
                 // 截断实参含子串分配，DebugLog 关闭时跳过求值（见 GetWebSourceWithSetCookiesAsync）。
@@ -540,23 +595,19 @@ public static partial class HTTPUtil
                     throw new RiskControlResponseException(Url);
                 return bytes;
             }
-            catch (HttpRequestException ex) when (attempt < maxRetry && (ex.StatusCode is null || (int)ex.StatusCode >= 500))
+            catch (HttpRequestException ex) when (attempt < maxRetry && ex.StatusCode is null)
             {
+                // 仅重试连接级失败（StatusCode null = 请求未到达服务器，如连接被拒/DNS 失败）：
+                // POST 不幂等（此函数用于 Widevine gRPC 许可证请求），服务端收到 5xx 或发生超时
+                // 时请求可能已被处理，重发会造成服务端重复签发/放大风控请求数。
                 int backoffMs = ExponentialBackoffMs(attempt);
                 Logger.LogDebug("API POST 失败(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(Url));
                 await Task.Delay(backoffMs, token);
             }
-            catch (OperationCanceledException) when (attempt < maxRetry && !token.IsCancellationRequested)
-            {
-                // timeoutCts 超时抛的 OperationCanceledException 其用户 token 未取消：
-                // 超时是最常见的瞬时传输层故障，与 5xx 同权参与有界重试。
-                // 真正的用户取消（token 已取消）不重试，直接向上传播。
-                int backoffMs = ExponentialBackoffMs(attempt);
-                Logger.LogDebug("API POST 超时(第{0}次重试, {1}ms后): {2}", attempt, backoffMs, SensitiveDataMasker.MaskUrl(Url));
-                await Task.Delay(backoffMs, token);
-            }
             catch (OperationCanceledException ex) when (!token.IsCancellationRequested)
             {
+                // 超时（timeoutCts 触发）：POST 不幂等，超时后服务端可能已成功处理，
+                // 不重试，直接以可读超时错误抛出（token 已取消的真实取消向上传播）。
                 throw new TimeoutException($"API POST 超时 ({Config.Current.ApiTimeoutMs}ms): {SensitiveDataMasker.MaskUrl(Url)}", ex);
             }
         }

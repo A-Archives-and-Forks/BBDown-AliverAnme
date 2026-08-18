@@ -41,6 +41,13 @@ public sealed class WidevineCdm : IDisposable
         {
             return await cdm.GetKeysInternalAsync(psshB64, token);
         }
+        catch (OperationCanceledException)
+        {
+            // 用户取消（Ctrl+C / serve 关停）必须向上传播：GetKeysInternalAsync 内部的
+            // 许可证请求用调用方 token，取消时抛 OCE——若被下方 catch (Exception) 吞掉
+            // 会误报"解密失败"，取消信号丢失导致上层继续执行已无意义的下载流程。
+            throw;
+        }
         catch (Exception ex)
         {
             Logger.LogWarn($"Widevine 解密失败: {ex.Message}");
@@ -200,6 +207,7 @@ public sealed class WidevineCdm : IDisposable
             // 不含吊销/证书这类可定位信息）。错误体通常很短且不含密钥材料。
             string errorBody;
             try { errorBody = await resp.Content.ReadAsStringAsync(token); }
+            catch (OperationCanceledException) { throw; } // 用户取消向上传播，不吞
             catch (Exception) { errorBody = ""; }
             throw new HttpRequestException(
                 $"许可证请求失败 (HTTP {(int)resp.StatusCode})" +
