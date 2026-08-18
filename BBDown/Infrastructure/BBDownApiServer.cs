@@ -581,7 +581,7 @@ public partial class BBDownApiServer
 
     // 连续持久化失败计数：磁盘满等持续性故障升级为 LogError（单次瞬时失败 LogWarn 即可）。
     // 写盘成功时清零。磁盘满时任务记录会静默消失，必须留下可观测痕迹。
-    private static int _persistFailures;
+    private int _persistFailures;
 
     // 保留策略：已完成任务列表最多保留条数 / 最大保留天数。
     // serve 是长驻进程，任务记录无限累积会让 bbdown-tasks.json 无限膨胀。
@@ -775,10 +775,6 @@ public partial class BBDownApiServer
         return host.Trim();
     }
 
-    /// <summary>B 站官方域名后缀白名单（含子域）。</summary>
-    private static readonly string[] OfficialHostSuffixes =
-        { "bilibili.com", "b23.tv", "biliapi.net", "biliapi.com", "bilibili.tv", "biliintl.com", "aisee.tv", "bilivideo.com", "hdslb.com" };
-
     /// <summary>
     /// host 字段是否指向 B 站官方域名。空值视为合法（回落默认）；
     /// 支持 "api.bilibili.com" 与 "https://api.bilibili.com" 两种写法。
@@ -808,9 +804,7 @@ public partial class BBDownApiServer
             return false;
         }
 
-        return OfficialHostSuffixes.Any(s =>
-            hostname.Equals(s, StringComparison.OrdinalIgnoreCase)
-            || hostname.EndsWith("." + s, StringComparison.OrdinalIgnoreCase));
+        return HTTPUtil.IsOfficialBilibiliHost(hostname);
     }
 
     /// <summary>

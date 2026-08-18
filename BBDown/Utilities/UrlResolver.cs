@@ -259,14 +259,6 @@ public static partial class UrlResolver
         }
     }
 
-    /// <summary>
-    /// 解析器泛抓取分支的域名白名单：B 站官方域名（含子域）与 b23.tv 短链域名。
-    /// 泛抓取会用匿名请求抓取该 URL 的整页 HTML，必须是用户输入唯一可能触发的
-    /// 对任意主机的出站请求，因此只放行可信域名，防止向攻击者服务器发请求。
-    /// </summary>
-    private static readonly string[] TrustedBilibiliHosts =
-        { "bilibili.com", "b23.tv", "bilivideo.com", "hdslb.com", "biliapi.net", "biliapi.com", "bilibili.tv", "biliintl.com", "aisee.tv" };
-
     internal static bool IsTrustedBilibiliUrl(string url)
     {
         if (!Uri.TryCreate(url, UriKind.Absolute, out var uri)) return false;
@@ -280,10 +272,7 @@ public static partial class UrlResolver
         if (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps) return false;
         // Uri.Host 对标准 http/https 返回规范化主机名（不含端口/用户信息），
         // 直接比对主机名本身，杜绝 "evil.com/bilibili.com" 这类后缀字符串混淆。
-        var host = uri.Host;
-        return TrustedBilibiliHosts.Any(h =>
-            host.Equals(h, StringComparison.OrdinalIgnoreCase)
-            || host.EndsWith("." + h, StringComparison.OrdinalIgnoreCase));
+        return HTTPUtil.IsOfficialBilibiliHost(uri.Host);
     }
 
     private static async Task<string> GetEpidBySSIdAsync(string ssid, CancellationToken token = default)

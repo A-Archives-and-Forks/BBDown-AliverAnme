@@ -332,10 +332,8 @@ public static partial class HTTPUtil
         if (host == "localhost" || host == "127.0.0.1" || host == "::1")
             return true;
         // 官方域名（含子域）放行
-        foreach (var h in CookieTrustedHosts)
-            if (host.Equals(h, StringComparison.OrdinalIgnoreCase)
-                || host.EndsWith("." + h, StringComparison.OrdinalIgnoreCase))
-                return true;
+        if (IsOfficialBilibiliHost(host))
+            return true;
         // 操作者显式配置的后台主机放行（BiliPlus/镜像站；位于 URL 的 Host 字段映射）
         if (IsConfiguredHost(host, Config.Current.Host)
             || IsConfiguredHost(host, Config.Current.EpHost)
@@ -351,9 +349,23 @@ public static partial class HTTPUtil
         return host.Equals(uri.DnsSafeHost, StringComparison.OrdinalIgnoreCase);
     }
 
-    /// <summary>允许携带登录 Cookie 外发的官方域名（与 UrlResolver.TrustedBilibiliHosts 同步）。</summary>
-    private static readonly string[] CookieTrustedHosts =
+    /// <summary>
+    /// B 站官方及其关联业务域名后缀白名单（含子域）。
+    /// 作为全项目（HTTP 凭据外发校验、UrlResolver 泛解析重定向校验、serve API host 净化等）的唯一定义源。
+    /// </summary>
+    public static readonly string[] OfficialHostSuffixes =
         { "bilibili.com", "b23.tv", "bilivideo.com", "hdslb.com", "biliapi.net", "biliapi.com", "bilibili.tv", "biliintl.com", "aisee.tv" };
+
+    /// <summary>
+    /// 检查指定主机名是否匹配 B 站官方域名白名单（精确匹配或为其子域）。
+    /// </summary>
+    public static bool IsOfficialBilibiliHost(string? host)
+    {
+        if (string.IsNullOrWhiteSpace(host)) return false;
+        return OfficialHostSuffixes.Any(s =>
+            host.Equals(s, StringComparison.OrdinalIgnoreCase)
+            || host.EndsWith("." + s, StringComparison.OrdinalIgnoreCase));
+    }
 
     private static async Task<string> GetWebSourceCoreAsync(string url, bool sendCookie, string? userAgent, CancellationToken token, bool rejectHtml = false)
     {

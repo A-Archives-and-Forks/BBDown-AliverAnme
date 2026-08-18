@@ -47,13 +47,7 @@ public class ServeCommand : Command<ServeSettings>
             // --serve-token 经 CLI 参数传入时，多用户系统的 ps//proc/*/cmdline 会暴露令牌。
             // 环境变量 BBDOWN_SERVE_TOKEN 优先：令牌不出现在进程命令行，且 CI/脚本部署更安全。
             // 显式 CLI 参数仍保留（向后兼容），但环境变量已设置时以环境变量为准。
-            var serveToken = settings.ServeToken
-                ?? Environment.GetEnvironmentVariable("BBDOWN_SERVE_TOKEN");
-            if (settings.ServeToken is not null && !string.IsNullOrEmpty(serveToken) && serveToken != settings.ServeToken)
-            {
-                // 两者都存在且不同：以环境变量优先是安全决策，但差异值得提示避免运维困惑
-                Logger.LogWarn("--serve-token 与 BBDOWN_SERVE_TOKEN 均已设置，使用环境变量值（更高优先级）");
-            }
+            var serveToken = ResolveServeToken(settings.ServeToken, Environment.GetEnvironmentVariable("BBDOWN_SERVE_TOKEN"));
             // 默认安全边界的前置校验：非回环监听（0.0.0.0 / :: / 具体网卡 IP）会把任务
             // 端点暴露到局域网/公网，必须显式配置 --serve-token 才能启动。
             // 这里给出可读错误；BBDownApiServer.Run 内还有兜底防御（InvalidOperationException）。
@@ -76,6 +70,21 @@ public class ServeCommand : Command<ServeSettings>
             Logger.LogError($"服务器启动失败: {e.Message}");
             return 1;
         }
+    }
+
+    /// <summary>
+    /// 解析 serve 访问令牌。环境变量 BBDOWN_SERVE_TOKEN 优先于 CLI --serve-token 选项。
+    /// 当两者均设置且值不同时记录警告日志。
+    /// </summary>
+    internal static string? ResolveServeToken(string? cliToken, string? envToken)
+    {
+        var serveToken = !string.IsNullOrEmpty(envToken) ? envToken : cliToken;
+        if (!string.IsNullOrEmpty(cliToken) && !string.IsNullOrEmpty(envToken) && envToken != cliToken)
+        {
+            // 两者都存在且不同：以环境变量优先是安全决策，但差异值得提示避免运维困惑
+            Logger.LogWarn("--serve-token 与 BBDOWN_SERVE_TOKEN 均已设置，使用环境变量值（更高优先级）");
+        }
+        return serveToken;
     }
 
     /// <summary>监听 URL 是否属于本机回环（127.0.0.1 / localhost / [::1] / ::1）。</summary>
