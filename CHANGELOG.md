@@ -2,7 +2,7 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
-## [Unreleased]
+## [1.6.15] - 2026-08-19
 
 ### 修复与安全性加固
 
@@ -11,6 +11,7 @@
 - **serve 并发限流与测试隔离**：`/get-tasks` 族查询端点引入并发信号量限流（上限 8），防止高并发深拷贝任务快照耗尽 CPU/GC；将 `BBDownApiServer._persistFailures` 改为实例字段，杜绝并发测试实例间的状态串扰；新增 `--trusted-proxy` 选项以支持反代 XFF 客户端 IP 计键限速。
 - **凭据外发与传输层纵深防御**：带 Cookie 的请求在发送前强制校验目标是否为官方或显式配置的信任域名，拦截非可信凭据外发；`--insecure` 不安全连接的 Date 响应头不再参与全局时钟校准（防跨流 WBI 扰动）；gRPC POST 拦截 3xx 重定向防凭据随跳转外发；媒体下载切换至禁用自动跳转的 `MediaDownloadClient`；gzip 解压设定 48MB 安全上限防解压炸弹；gRPC 帧首字节合法性校验；异常消息回显前剥离控制字符。
 - **解析与格式化修复**：强制数字解析使用 `CultureInfo.InvariantCulture` 避免特定区域设置下解析异常；完善 gRPC 必填参数校验；拦截负数分 P 参数；修复国际站（biliintl/bilibili.tv）域名匹配与解析容错；修复弹幕 ASS 格式化及分 P 别名缺陷。
+- **分片清理一致性**：统一轨道分片类型判定全部走 `IsVideoClipPath`（不区分大小写），修复 `DownloadClipsAsync` 返回分片路径处仍使用大小写敏感 `EndsWith(".mp4")` 判断的漏网，消除极端文件名下视频/音频分片 `.vclip`/`.aclip` 分类与清理规则错位的可能。
 
 ### 测试增强
 
