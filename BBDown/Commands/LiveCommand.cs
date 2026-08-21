@@ -64,11 +64,15 @@ public class LiveCommand : Command<LiveSettings>
                 Logger.Log($"正在解析直播间 {settings.RoomId}...");
                 var info = await LiveStreamUtil.ResolveAsync(settings.RoomId, cancellationToken);
                 Logger.Log($"直播间: {info.Title} (UP: {info.Uname})，画质: {LiveStreamUtil.QualityName(info.Quality)} (qn={info.Quality})");
-                // 直播录制默认输出目录尊重 --work-dir（与主下载命令一致）；
-                // 显式 --output 为绝对路径时不受影响。用纯函数 ResolveWorkDir：
-                // 仅解析/建目录，不切进程 CWD（.segs 分段目录随输出路径派生，也同步落 workDir）。
+                // 直播录制默认输出目录尊重 --work-dir（与主下载命令一致）。
+                // 相对 --output 同样相对 --work-dir 解析（Path.Combine 对已根化第二参数
+                // 直接透传，绝对路径不受影响）；workDir 为空串时保持 CWD 语义。
+                // 用纯函数 ResolveWorkDir：仅解析/建目录，不切进程 CWD（无全局副作用），
+                // .segs 分段目录随输出路径派生，也同步落 workDir。
                 string workDir = Program.ResolveWorkDir(settings.WorkDir);
-                string path = settings.Output ?? Path.Combine(workDir, $"{LiveStreamUtil.SanitizeFileName(info.Title)}_直播录制_{DateTime.Now:yyyyMMdd_HHmmss}.flv");
+                string path = settings.Output is null
+                    ? Path.Combine(workDir, $"{LiveStreamUtil.SanitizeFileName(info.Title)}_直播录制_{DateTime.Now:yyyyMMdd_HHmmss}.flv")
+                    : Path.Combine(workDir, settings.Output);
                 Logger.Log($"开始录制直播流: {path} (Ctrl+C 停止；断流/网络中断自动重连续录)");
 
                 DateTime lastLog = DateTime.MinValue;

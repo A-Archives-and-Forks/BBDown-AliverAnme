@@ -182,6 +182,10 @@ public static class LiveStreamUtil
     /// <summary>短段中断连续达到该次数后套用退避：否则病态 CDN 下无退避紧循环每秒数次
     /// 调 getRoomPlayInfo，长时间可能触发 B 站风控。</summary>
     private const int MaxConsecutiveShortSegments = 3;
+    /// <summary>最小完整 FLV 文件头长度：FLV 头 9 字节 + PreviousTagSize0 恒 4 字节。
+    /// 不足该长度的段连文件头都不完整——TrimFlvTail 无法裁剪（扫描起点就在 13），
+    /// 喂给 ffmpeg concat demuxer 会报 Invalid data 中止整场合成，必须与零字节段同等丢弃。</summary>
+    private const int MinCompleteFlvHeaderBytes = 13;
 
     /// <summary>
     /// 录制直播流到文件。如果发生断流且房间仍在直播，会自动重连并生成多个分段，
@@ -258,7 +262,10 @@ public static class LiveStreamUtil
                     var (segBytes, readInterrupted) = await StreamToFileAsync(url, segPath, total, onProgress, token, readStallTimeout);
                     if (readInterrupted) Logger.LogDebug("直播流连接在读取时中断，已写入 {0} 字节", segBytes);
 
-                    if (segBytes > 0)
+                    // 段有效下限 = MinCompleteFlvHeaderBytes：< 13 字节的段连 FLV 文件头都不完整
+                    // （TrimFlvTail 无法裁剪、concat 必然失败），与零字节段同等处理。
+                    // 取消场景同理：丢弃的至多是 < 13 字节的垃圾字节，不影响"已录内容照常保存"。
+                    if (segBytes >= MinCompleteFlvHeaderBytes)
                     {
                         // 本段有内容（含"读到数据后中断"的部分段与取消时已写段）：计入已录内容。
                         segmentFiles.Add(segPath);
@@ -290,11 +297,11 @@ public static class LiveStreamUtil
                         break;
                     }
 
-                    // 零字节段：连接刚建立就结束。若直播仍进行，这是连接到期/CDN 切换，
+                    // 零字节/头部不完整段：连接刚建立就结束。若直播仍进行，这是连接到期/CDN 切换，
                     // 退避后重连，避免高速轮询。
-                    try { File.Delete(segPath); } catch (IOException) { }
+                    try { File.Delete(segPath); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                     if (!await IsRoomLiveAsync()) break; // 确认下播：结束录制
-                    Logger.LogWarn("直播流连接立即结束但直播间仍在直播，正在退避后重连...");
+                    Logger.LogWarn($"直播流连接立即结束（收到 {segBytes} 字节，不足完整 FLV 头）但直播间仍在直播，正在退避后重连...");
                     await BackoffAsync(new IOException("直播流零字节 EOF"));
                 }
                 catch (OperationCanceledException) when (token.IsCancellationRequested)

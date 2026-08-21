@@ -412,6 +412,31 @@ public class LiveStreamUtilTests
     }
 
     /// <summary>
+    /// 不足完整 FLV 头（&lt;13 字节）的垃圾段：TrimFlvTail 无法裁剪（扫描起点就在 13）、
+    /// ffmpeg concat demuxer 会报 Invalid data 中止整场合成。该类段必须与零字节段同等
+    /// 丢弃并退避重连，不能进入分段列表毁掉整场录制。
+    /// </summary>
+    [Fact]
+    public async Task DownloadToFile_TinyHeaderSegment_DeletesGarbageSegmentThenRecordsValidData()
+    {
+        using var server = new FakeLiveServer();
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.TinyHeader); // 首段只有 8 字节
+        server.StreamModes.Enqueue(FakeLiveServer.StreamMode.Normal);     // 退避后重连续录
+        server.OfflineAfterStreams = 2;                                   // 录到有效段后下播
+
+        var (result, outPath, dir) = await RunWithServerAsync(server, null, (cts, task) => task);
+
+        Assert.Equal(LiveStreamUtil.LiveRecordResult.Success, result);
+        // 只重连了一次（垃圾段→正常段）
+        Assert.Equal(2, server.StreamRequestCount);
+        // 最终产物只含正常段内容，8 字节垃圾不得并入
+        var saved = await File.ReadAllBytesAsync(outPath);
+        long expected = (long)server.StreamChunkCount * server.StreamChunkBytes;
+        Assert.Equal(expected, saved.Length);
+        try { Directory.Delete(dir, true); } catch { }
+    }
+
+    /// <summary>
     /// 画质请求必须带 qn=30000（最高档，按账号权限回落），而不是低档位——
     /// 配合登录凭据（BBDown.data）才能拿到账号可看的最高画质。
     /// </summary>
@@ -752,6 +777,9 @@ public class LiveStreamUtilTests
             Stall,
             /// <summary>连接建立后立即 EOF、不写任何字节（模拟 CDN 到期/零字节段）。</summary>
             ZeroByte,
+            /// <summary>只写几个字节（不足完整 FLV 头的 13 字节）就 EOF——
+            /// TrimFlvTail 无法裁剪、concat 必然失败的垃圾段。</summary>
+            TinyHeader,
         }
 
         private readonly HttpListener _listener = new();
@@ -842,6 +870,12 @@ public class LiveStreamUtilTests
                             // 零字节 EOF：连接建立后立即结束，不写任何字节。
                             // 客户端应删除空 seg 文件并在直播仍在时退避重连，不能把
                             // “空段”当有效内容并入（F10 未覆盖分支）。
+                            resp.Close();
+                            break;
+                        case StreamMode.TinyHeader:
+                            // 不足完整 FLV 头（13 字节）的垃圾段：响应头后正文被 RST 掐断。
+                            // 客户端必须与零字节段同等丢弃，否则 concat 中止整场合成。
+                            await resp.OutputStream.WriteAsync(new byte[8], _cts.Token);
                             resp.Close();
                             break;
                         case StreamMode.Stall:
