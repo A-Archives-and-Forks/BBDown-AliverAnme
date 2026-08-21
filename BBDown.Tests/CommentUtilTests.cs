@@ -51,4 +51,28 @@ public class CommentUtilTests
             if (Directory.Exists(tempRoot)) Directory.Delete(tempRoot, true);
         }
     }
+
+    /// <summary>
+    /// 截断判定回归：末页不满页（如 385 条评论的第 20 页只有 5 条）本身就是末页，
+    /// 不得误标 truncated——否则 UI 对完整数据警告"结果不完整"。
+    /// </summary>
+    [Fact]
+    public void IsTruncated_PartialLastPage_IsNotTruncated()
+    {
+        // 385 条 / 每页 20 条：第 20 页仅 5 条，是自然末页
+        Assert.False(CommentUtil.IsTruncated(pageNumber: 20, maxPages: 20, lastPageItemCount: 5, pageSize: 20));
+    }
+
+    [Fact]
+    public void IsTruncated_FullLastPage_MayHaveMoreComments()
+    {
+        // 第 20 页仍是满页：无法确认后面没有更多，必须标记截断
+        Assert.True(CommentUtil.IsTruncated(pageNumber: 20, maxPages: 20, lastPageItemCount: 20, pageSize: 20));
+    }
+
+    [Fact]
+    public void IsTruncated_BeforeMaxPage_NeverTruncated()
+    {
+        Assert.False(CommentUtil.IsTruncated(pageNumber: 7, maxPages: 20, lastPageItemCount: 20, pageSize: 20));
+    }
 }

@@ -204,6 +204,11 @@ public static partial class HTTPUtil
     public static async Task<(string Body, List<string> SetCookies)> GetWebSourceWithSetCookiesAsync(
         string url, string? userAgent = null, CancellationToken token = default)
     {
+        // B3-S1 纵深防御与 GetWebSourceCoreAsync(sendCookie:true) 同源收口：本方法携带
+        // 操作者 Cookie（且响应 Set-Cookie 是最敏感的新凭证下发通道），URL 不可信时
+        // 必须在发起任何网络请求前拒绝，防止未来调用方把用户可控 URL 传入导致凭据外发。
+        if (!IsTrustedCookieHost(url))
+            throw new InvalidOperationException($"拒绝向非可信主机发送登录 Cookie: {SensitiveDataMasker.MaskUrl(url)}");
         // 登录轮询（扫码后轮询二维码状态）是 GET，幂等，可安全参与与 GetWebSourceCoreAsync
         // 一致的有界重试：此前零重试会让任一次瞬时 5xx/超时直接中止整个扫码登录流程，
         // 用户必须重新扫码。有界次数 min(MaxRetryCount,3) + 指数退避，见 GetWebSourceCoreAsync。

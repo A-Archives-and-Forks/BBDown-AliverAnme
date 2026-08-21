@@ -31,11 +31,12 @@ public static class CommentUtil
     /// </summary>
     public static async Task<CommentPage> FetchAsync(long aid, int maxPages = 20, CancellationToken token = default)
     {
+        const int pageSize = 20;
         var result = new List<CommentItem>();
         bool truncated = false;
         for (int pn = 1; pn <= maxPages; pn++)
         {
-            string api = $"https://api.bilibili.com/x/v2/reply?type=1&oid={aid}&sort=0&ps=20&pn={pn}";
+            string api = $"https://api.bilibili.com/x/v2/reply?type=1&oid={aid}&sort=0&ps={pageSize}&pn={pn}";
             string json = await HTTPUtil.GetWebSourceAsync(api, token: token);
             using var doc = JsonDocument.Parse(json);
             var root = doc.RootElement;
@@ -46,6 +47,7 @@ public static class CommentUtil
             if (dataElem is null) break;
             var replies = dataElem.Value.EnumerateArraySafe("replies");
             if (!replies.Any()) break;
+            int addedThisPage = 0;
             foreach (var r in replies)
             {
                 var member = r.TryGetPropertySafe("member");
@@ -55,12 +57,21 @@ public static class CommentUtil
                     r.GetInt64Safe("ctime"),
                     r.GetInt64Safe("like"),
                     content.Trim()));
+                addedThisPage++;
             }
-            // 已达到分页上限但当前页仍有回复：说明还有更多评论未抓取
-            if (pn == maxPages) truncated = true;
+            // 已达分页上限且最后一页是满页：才可能还有更多评论。不满页（如 385 条的第 20 页
+            // 只有 5 条）本身就是末页——按页序号判定会把完整结果误标为截断。
+            if (IsTruncated(pn, maxPages, addedThisPage, pageSize)) truncated = true;
         }
         return new CommentPage(result, truncated);
     }
+
+    /// <summary>
+    /// 截断判定（internal 供回归测试）：仅当到达分页上限且最后一页是满页时，
+    /// 才可能存在未抓取的后续评论；末页不满页即数据自然耗尽，不算截断。
+    /// </summary>
+    internal static bool IsTruncated(int pageNumber, int maxPages, int lastPageItemCount, int pageSize)
+        => pageNumber == maxPages && lastPageItemCount >= pageSize;
 
     /// <summary>评论抓取结果：列表 + 是否因达到分页上限而被截断（存在未抓取的更多评论）。</summary>
     public record CommentPage(List<CommentItem> Items, bool Truncated);

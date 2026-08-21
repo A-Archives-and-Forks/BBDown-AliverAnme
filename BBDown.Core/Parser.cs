@@ -15,6 +15,10 @@ public static partial class Parser
 
     public static string WbiSign(string api)
     {
+        // 空 key 产出的 w_rid 必被服务端以 -352 拒绝，而该错误会被上游呈现为"风控"，
+        // 用户无从得知根因是 nav 接口失败导致密钥从未取得——签名前显式告警定位真因。
+        if (string.IsNullOrEmpty(Config.Current.Wbi))
+            Logger.LogWarn("wbi 密钥为空（nav 接口未成功获取），本次签名将被服务端拒绝(-352)，请检查网络后重试");
         return $"{api}&w_rid=" + Convert.ToHexStringLower(MD5.HashData(Encoding.UTF8.GetBytes(api + Config.Current.Wbi)));
     }
 
