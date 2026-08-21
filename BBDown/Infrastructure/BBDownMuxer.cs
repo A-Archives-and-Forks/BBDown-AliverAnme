@@ -52,7 +52,11 @@ static partial class BBDownMuxer
             ? File.Exists(tool)
             : ExternalToolHelper.FindExecutable(tool) is not null;
         if (!available)
-            throw new FileNotFoundException(
+            // InvalidOperationException 而非 FileNotFoundException：本异常可能从
+            // MergeFLV/MuxByMp4box 冒泡到分P批量循环，页面级与批级的失败上报 catch 过滤器
+            // 均不含 FileNotFoundException——用工具缺失逃逸会跳过剩余分P、webhook 与
+            // failedPages 汇总；InvalidOperationException 已在两处过滤器内，走统一失败上报。
+            throw new InvalidOperationException(
                 $"找不到可执行的{tool}文件（{purpose}）。请安装并加入 PATH，或使用 {toolFlag} 指定路径。");
     }
 
@@ -66,7 +70,7 @@ static partial class BBDownMuxer
             : str.Replace("\\", "\\\\").Replace("\"", "\\\"").Replace("\r", " ").Replace("\n", " ");
     }
 
-    private static async Task<int> MuxByMp4box(string url, string videoPath, string audioPath, string outPath, string desc, string title, string author, string episodeId, string pic, string lang, List<Subtitle>? subs, bool audioOnly, bool videoOnly, List<ViewPoint>? points, CancellationToken cancellationToken)
+    private static async Task<int> MuxByMp4box(string url, string videoPath, string audioPath, List<AudioMaterial>? audioMaterial, string outPath, string desc, string title, string author, string episodeId, string pic, string lang, List<Subtitle>? subs, bool audioOnly, bool videoOnly, List<ViewPoint>? points, CancellationToken cancellationToken)
     {
         // 杜比视界自动切 mp4box 时 FindBinaries 只探了 ffmpeg（初始 UseMP4box=false），
         // MP4BOX 从未探测：这里运行时守卫给出清晰报错，替代原生 Win32Exception。
@@ -102,6 +106,22 @@ static partial class BBDownMuxer
             args.Add("-add");
             args.Add($"{audioPath}:lang={(lang == "" ? "und" : lang)}");
             nowId++;
+        }
+        // 配音/背景音轨与 ffmpeg 分支对齐：必须进入 -add 链。否则杜比视界自动切 mp4box
+        // （ffmpeg<5.0）时这些已下载的轨道被静默丢弃，且随后被 CleanupDownloadedTracks
+        // 删除——数据永久丢失且无任何警告。
+        foreach (var material in audioMaterial ?? [])
+        {
+            args.Add("-add");
+            args.Add($"{material.path}:lang=und");
+            nowId++;
+            var name = !string.IsNullOrWhiteSpace(material.title) ? material.title : material.personName;
+            if (!string.IsNullOrWhiteSpace(name))
+            {
+                // 轨道名走 -udta（与下方字幕轨道同机制）；mp4box 的值语法要求转义。
+                args.Add("-udta");
+                args.Add($"{nowId}:type=name:str=\"{EscapeString(name)}\"");
+            }
         }
         string? metaFile = null;
         try
@@ -189,7 +209,7 @@ static partial class BBDownMuxer
 
         if (useMp4box)
         {
-            return await MuxByMp4box(url, videoPath, audioPath, outPath, desc, title, author, episodeId, pic, lang, subs, audioOnly, videoOnly, points, cancellationToken);
+            return await MuxByMp4box(url, videoPath, audioPath, audioMaterial, outPath, desc, title, author, episodeId, pic, lang, subs, audioOnly, videoOnly, points, cancellationToken);
         }
 
         string? metaFile = null;

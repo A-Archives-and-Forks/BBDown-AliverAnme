@@ -36,11 +36,14 @@ public class ArticleCommand : Command<ArticleSettings>
                 string cvId = ArticleUtil.ExtractCvId(settings.CvId);
                 Logger.Log($"正在获取专栏 cv{cvId}...");
                 var article = await ArticleUtil.FetchAsync(cvId, cancellationToken);
-                // 专栏默认输出目录尊重 --work-dir（与主下载命令一致）；
-                // 显式 --output 为绝对路径时不受影响（Path.Combine 对已根化第二参数直接透传）。
+                // 专栏默认输出目录尊重 --work-dir（与主下载命令一致）。
+                // 相对 --output 同样相对 --work-dir 解析（Path.Combine 对已根化第二参数
+                // 直接透传，绝对路径不受影响）；workDir 为空串时保持 CWD 语义。
                 // 用纯函数 ResolveWorkDir：仅解析/建目录，不切进程 CWD（无全局副作用）。
                 string workDir = Program.ResolveWorkDir(settings.WorkDir);
-                string path = settings.Output ?? Path.Combine(workDir, $"{LiveStreamUtil.SanitizeFileName(article.Title)}.md");
+                string path = settings.Output is null
+                    ? Path.Combine(workDir, $"{LiveStreamUtil.SanitizeFileName(article.Title)}.md")
+                    : Path.Combine(workDir, settings.Output);
                 await ArticleUtil.SaveAsMarkdownAsync(article, path);
                 Logger.Log($"专栏已保存: {path}");
                 return 0;

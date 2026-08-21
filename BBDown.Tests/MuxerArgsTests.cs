@@ -162,6 +162,59 @@ public class MuxerArgsTests
     }
 
     /// <summary>
+    /// mp4box 分支必须把配音/背景音轨编入 -add 链：杜比视界 + ffmpeg&lt;5.0 自动切 mp4box 时
+    /// （Download.cs 的 UseMP4box 自动切换），audioMaterial 若不参与混流会被静默丢弃、
+    /// 随后被 CleanupDownloadedTracks 删除——数据永久丢失。轨道名经 -udta 写入。
+    /// </summary>
+    [Fact]
+    public async Task MuxAV_Mp4boxBranch_IncludesAudioMaterialTracks()
+    {
+        var fake = new FakeProcessRunner(exitCode: 0);
+        var original = BBDownMuxer.ProcessRunner;
+        var tempDir = NewTempDir();
+        try
+        {
+            BBDownMuxer.ProcessRunner = fake;
+
+            var videoPath = Path.Combine(tempDir, "video.mp4");
+            var audioPath = Path.Combine(tempDir, "audio.m4a");
+            var bgPath = Path.Combine(tempDir, "bg.m4a");
+            var rolePath = Path.Combine(tempDir, "role.m4a");
+            File.WriteAllText(videoPath, "v");
+            File.WriteAllText(audioPath, "a");
+            File.WriteAllText(bgPath, "b");
+            File.WriteAllText(rolePath, "r");
+            var outPath = Path.Combine(tempDir, "out.mp4");
+
+            var audioMaterial = new List<AudioMaterial>
+            {
+                new("背景音频", "", bgPath),
+                new("", "配音演员", rolePath), // 无 title 时回落 personName 作轨道名
+            };
+
+            // useMp4box: true 走 mp4box 分支（假 runner 下 EnsureToolAvailable 跳过校验）
+            await BBDownMuxer.MuxAV(true, "BVtest", videoPath, audioPath, audioMaterial, outPath);
+
+            var args = fake.Specs.Single(s => s.FileName == "mp4box").Arguments;
+
+            // 每个素材都必须以 -add <path>:lang=und 进入混流链
+            Assert.Contains("-add", args);
+            Assert.Contains($"{bgPath}:lang=und", args);
+            Assert.Contains($"{rolePath}:lang=und", args);
+
+            // 轨道名：title 优先，缺失时回落 personName；-udta 值按加入顺序编号
+            // 输入序列 video(1) / audio(2) / bg(3) / role(4)
+            Assert.Equal("3:type=name:str=\"背景音频\"", args[args.IndexOf("-udta") + 1]);
+            Assert.Contains("4:type=name:str=\"配音演员\"", args);
+        }
+        finally
+        {
+            BBDownMuxer.ProcessRunner = original;
+            CleanupDir(tempDir);
+        }
+    }
+
+    /// <summary>
     /// 字幕下标快照测试：跳过空/缺失字幕文件后，-metadata:s:s:N 的 N 应连续递增
     /// （第一条有效字幕为 s:0、第二条为 s:1），不得沿用原列表下标——首项被跳过时
     /// 沿用 i 会把元数据写到 s:1/s:2，与真实字幕流错位。

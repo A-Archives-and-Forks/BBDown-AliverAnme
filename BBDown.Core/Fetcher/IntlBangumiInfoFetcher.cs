@@ -1,5 +1,6 @@
 using BBDown.Core.Entity;
 using BBDown.Core.Util;
+using System.Globalization;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using static BBDown.Core.Entity.Entity;
@@ -52,7 +53,9 @@ public partial class IntlBangumiInfoFetcher : IFetcher
         }
 
         string pubTimeStr = result.TryGetPropertySafe("publish")?.GetValueAsStringSafe("pub_time") ?? "";
-        long pubTime = !string.IsNullOrEmpty(pubTimeStr) && DateTimeOffset.TryParse(pubTimeStr, out var dto) ? dto.ToUnixTimeSeconds() : 0;
+        // InvariantCulture：pub_time 形如 "2021-07-15 11:00:00"，用 CurrentCulture 解析在
+        // 非公历默认历法（fa-IR/ar-SA 等）locale 下会错乱或失败（pubTime 静默归 0）。
+        long pubTime = !string.IsNullOrEmpty(pubTimeStr) && DateTimeOffset.TryParse(pubTimeStr, CultureInfo.InvariantCulture, DateTimeStyles.AllowWhiteSpaces, out var dto) ? dto.ToUnixTimeSeconds() : 0;
         var pages = new List<JsonElement>();
         if (result.TryGetProperty("episodes", out JsonElement episodes))
         {
