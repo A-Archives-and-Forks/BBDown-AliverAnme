@@ -607,11 +607,11 @@ internal static class BBDownDownloadUtil
                 {
                     Logger.LogDebug("文件已下载过, 跳过下载");
                     DeleteResumeManifest(path);
-                    var vclipDir = path + ".vclip";
-                    if (Directory.Exists(vclipDir))
-                    {
-                        try { Directory.Delete(vclipDir, true); } catch { }
-                    }
+                    // 成品已完整时，历史中断遗留的合并临时文件（GB 级）与分片不再有任何
+                    // 消费者——CleanStaleClipsFor 只清 *_<stem>.vclip/.aclip 分片文件，
+                    // .merging 不在其匹配范围内，必须在此显式清理，否则永久泄漏磁盘。
+                    CleanStaleClipsFor(path);
+                    DeleteStaleMergeTmp(path);
                     return;
                 }
                 Logger.LogDebug("探测大小({0})与权威大小({1})不符，既有文件不可信，删除后完整重下", fileSize, known);
@@ -864,6 +864,18 @@ internal static class BBDownDownloadUtil
             try { clip.Delete(); }
             catch (IOException) { /* 并发占用时跳过，下次运行再清理 */ }
         }
+    }
+
+    /// <summary>
+    /// 删除历史中断遗留的合并临时文件（<paramref name="path"/> + ".merging"）。
+    /// 成品路径已完整时该文件无任何消费者（重下会经 File.Create 截断自愈），
+    /// 但"跳过下载"路径不会走到合并步骤——不显式清理就永久泄漏磁盘。
+    /// </summary>
+    private static void DeleteStaleMergeTmp(string path)
+    {
+        var merging = path + ".merging";
+        try { if (File.Exists(merging)) File.Delete(merging); }
+        catch (IOException) { /* 占用中：下次运行再清理 */ }
     }
 
     //此函数主要是切片下载逻辑

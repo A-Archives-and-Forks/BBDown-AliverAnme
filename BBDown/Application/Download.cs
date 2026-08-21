@@ -630,7 +630,10 @@ internal partial class Program
                                     relatedTask?.AddSavePath(danmakuAssPath);
                                     danmakuProduced = true;
                                 }
-                                if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
+                                // 只清理空目录：非空意味着存在上次中断留下的可续传分片
+                                // （.vclip/.aclip 等，设计上保留）或并发任务的产物，
+                                // 递归删除会把它们一起毁掉（与 SubOnly/CoverOnly 同一守卫语义）。
+                                if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
                                 {
                                     try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
                                 }
@@ -909,7 +912,8 @@ internal partial class Program
                                     relatedTask?.AddSavePath(danmakuAssPath);
                                     danmakuProduced = true;
                                 }
-                                if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
+                                // 只清理空目录（守卫语义同上方 DanmakuOnly 第一处：保留可续传分片）
+                                if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
                                 {
                                     try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
                                 }
@@ -944,7 +948,9 @@ internal partial class Program
                         {
                             Logger.Log($"{savePath}已存在, 跳过下载...");
                             relatedTask?.AddSavePath(savePath);
-                            if (selectedPagesInfo.Count == 1 && Directory.Exists(PathUtil.ResolveWorkPath(p.aid)))
+                            // 只清理空目录：目录里的可续传分片可能属于其它分P的上次中断下载
+                            // （aid 工作目录按稿件共享），不能因本P跳过而连带删除。
+                            if (selectedPagesInfo.Count == 1 && Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
                             {
                                 try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
                             }
