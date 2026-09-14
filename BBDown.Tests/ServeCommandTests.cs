@@ -1,9 +1,13 @@
+using BBDown;
 using BBDown.Commands;
+using BBDown.Core;
 using BBDown.Core.Util;
+using Spectre.Console.Cli;
 using Xunit;
 
 namespace BBDown.Tests;
 
+[Collection("ServeApiCollection")]
 public class ServeCommandTests
 {
     [Fact]
@@ -80,5 +84,41 @@ public class ServeCommandTests
     public void HTTPUtil_IsOfficialBilibiliHost_ValidatesCorrectly(string? host, bool expected)
     {
         Assert.Equal(expected, HTTPUtil.IsOfficialBilibiliHost(host));
+    }
+
+    /// <summary>
+    /// 用户主动关停（根 token 已取消）→ 返回 0（RF-38）：经 StartServerAsync →
+    /// WebApplication.RunAsync 的真实关停路径，钉住"取消 → 0"主干不被重构破坏。
+    /// 注意（对抗审查指出）：预取消 token 下修复前的无守卫 catch 同样返回 0，
+    /// 本用例不判别 when 守卫本身——"未取消 OCE → 1"的判别性回归需向
+    /// StartServerAsync 注入非根 token 的 OCE，命令层无此注入缝，以代码走查为证。
+    /// ServeCommand.ExecuteAsync 为 protected，子类暴露直调。与 ServeApiCollection
+    /// 串行：StartServerAsync 会触碰进程级静态（IsServeMode/Logger.LogFilePath），
+    /// try/finally 快照恢复，避免与其它用例并发互扰。
+    /// </summary>
+    [Fact]
+    public async Task ExecuteAsync_UserCanceled_ReturnsZero()
+    {
+        var wasServeMode = Program.IsServeMode;
+        var originalLogPath = Logger.LogFilePath;
+        try
+        {
+            using var cts = new CancellationTokenSource();
+            cts.Cancel();
+            var command = new ExposedServeCommand();
+            Assert.Equal(0, await command.ExecutePublicAsync(null!, new ServeSettings(), cts.Token));
+        }
+        finally
+        {
+            Program.IsServeMode = wasServeMode;
+            Logger.LogFilePath = originalLogPath;
+        }
+    }
+
+    /// <summary>ServeCommand.ExecuteAsync 是 protected：子类暴露以供测试直调。</summary>
+    private sealed class ExposedServeCommand : ServeCommand
+    {
+        public Task<int> ExecutePublicAsync(CommandContext context, ServeSettings settings, CancellationToken cancellationToken)
+            => ExecuteAsync(context, settings, cancellationToken);
     }
 }

@@ -664,13 +664,21 @@ public static class LiveStreamUtil
         .Distinct()
         .ToArray();
 
-    /// <summary>把非法文件名字符替换为下划线，返回安全的文件名。</summary>
+    /// <summary>
+    /// 把非法文件名字符替换为下划线，返回安全的文件名。
+    /// Windows 保留名防护（RF-36）：直播标题来自服务器，恰为 CON/NUL/COM1 等设备名时，
+    /// 产物名以设备名语义无法作为普通文件创建——按基名匹配（con.md 同样保留），
+    /// 复用 PathUtil.IsReservedDeviceName 与 GetValidFileName 同一规则，前缀下划线避开。
+    /// </summary>
     public static string SanitizeFileName(string name)
     {
         var sb = new StringBuilder(name.Length);
         foreach (var ch in name)
             sb.Append(InvalidFileNameChars.Contains(ch) ? '_' : ch);
         var s = sb.ToString().Trim();
-        return string.IsNullOrEmpty(s) ? "直播" : s;
+        if (string.IsNullOrEmpty(s)) return "直播";
+        if (BBDown.Core.Util.PathUtil.IsReservedDeviceName(s))
+            s = "_" + s;
+        return s;
     }
 }

@@ -139,13 +139,46 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
             UseAppApi = settings.UseAppApi,
             UseIntlApi = settings.UseIntlApi,
         };
-        // 统一初始化请求会话：订阅枚举（mid: 空间/收藏夹/合集等）经 SpaceVideoFetcher →
-        // Parser.WbiSign 签名，必须先取得 wbi，否则空 wbi 的 w_rid 会被 B 站拒绝。
-        // 返回的完整会话（含本地凭据与新 wbi）在父流程（SubCheck 自身异步流）内显式应用——
-        // 子方法内 AsyncLocal 写入不会回流，只应用 newWbi 会让本地凭据丢失。
-        var session = await Program.InitializeRequestSessionAsync(sessionOption, cancellationToken);
-        if (session is not null) Core.Config.Apply(session);
+        try
+        {
+            // 统一初始化请求会话：订阅枚举（mid: 空间/收藏夹/合集等）经 SpaceVideoFetcher →
+            // Parser.WbiSign 签名，必须先取得 wbi，否则空 wbi 的 w_rid 会被 B 站拒绝。
+            // 返回的完整会话（含本地凭据与新 wbi）在父流程（SubCheck 自身异步流）内显式应用——
+            // 子方法内 AsyncLocal 写入不会回流，只应用 newWbi 会让本地凭据丢失。
+            // 会话初始化纳入 try：Ctrl+C 落在此处按"已取消"处理，而非穿透全局
+            // handler 返回 130（RF-32 路径②）。
+            var session = await Program.InitializeRequestSessionAsync(sessionOption, cancellationToken);
+            if (session is not null) Core.Config.Apply(session);
 
+            int failedSubs = await CheckSubscriptionsAsync(subs, settings, cancellationToken);
+            if (failedSubs > 0)
+            {
+                Logger.LogWarn($"订阅检查完成，{failedSubs} 个订阅失败");
+                return 1;
+            }
+            return 0;
+        }
+        // 用户取消语义（RF-32）：与 watchlater 及文档契约（CLI-Reference 退出码表）对齐——
+        // Ctrl+C / 关停属主动取消返回 0；token 未取消的 OCE（HttpClient 超时已在上层过滤器
+        // 按 TCE 分类，到这里的多为内部联动 CTS）是真实失败，返回 1 而非以 0 掩盖。
+        catch (OperationCanceledException ex)
+        {
+            if (cancellationToken.IsCancellationRequested)
+            {
+                Logger.LogWarn("已取消");
+                return 0;
+            }
+            Logger.LogError($"订阅检查超时或被中断: {ex.Message}");
+            return 1;
+        }
+    }
+
+    /// <summary>
+    /// 逐订阅检查并增量下载新内容，返回失败的订阅数。用户取消与订阅数据损坏异常原样上抛，
+    /// 由 <see cref="SubCheckCommand.ExecuteAsync"/> 分类为退出码（RF-30/RF-32）。
+    /// </summary>
+    private static async Task<int> CheckSubscriptionsAsync(List<Subscription> subs, SubCheckSettings settings, CancellationToken cancellationToken)
+    {
         int failedSubs = 0;
         foreach (var sub in subs)
         {
@@ -182,6 +215,15 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
                     {
                         throw;
                     }
+                    // 订阅数据损坏（RecordDownloaded 隔离历史文件后抛出）必须终止整个
+                    // sub check（RF-30）：SubscriptionDataCorruptException 继承自
+                    // InvalidOperationException，会被下方含基类的过滤器吞掉——历史文件已被
+                    // 隔离移走，下一个 aid 的 RecordDownloaded 会静默重建仅含自身的空历史
+                    // 并原子写回，全部订阅下载历史就此清零、下次 check 全量重下。
+                    catch (SubscriptionDataCorruptException)
+                    {
+                        throw;
+                    }
                     catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
                                                 or InvalidOperationException or IOException or ArgumentException
                                                 or TimeoutException or TaskCanceledException)
@@ -199,6 +241,14 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
                 // 当作新增重新下载，并覆盖一份不完整的历史。
                 throw;
             }
+            // 用户取消（RF-32 路径①）：从 per-aid 重抛上来的取消不能被下方含
+            // TaskCanceledException 的过滤器吞成"订阅检查失败"——否则后续每个订阅都在
+            // 已取消的 token 上立刻失败，最终以"N 个订阅失败"+退出码 1 掩盖主动取消。
+            // 上抛由 ExecuteAsync 分类为 0。
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
             catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
                                         or InvalidOperationException or IOException or ArgumentException
                                         or TimeoutException or TaskCanceledException)
@@ -209,12 +259,7 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
                 Logger.LogWarn($"  订阅检查失败: {ex.Message}");
             }
         }
-        if (failedSubs > 0)
-        {
-            Logger.LogWarn($"订阅检查完成，{failedSubs} 个订阅失败");
-            return 1;
-        }
-        return 0;
+        return failedSubs;
     }
 
     private static MyOption BuildOption(string url, SubCheckSettings s) => new()

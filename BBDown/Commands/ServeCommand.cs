@@ -61,8 +61,12 @@ public class ServeCommand : AsyncCommand<ServeSettings>
             await Program.StartServerAsync(settings.ListenUrl, settings.MaxConcurrent, serveToken, settings.NotifyWebhook, cancellationToken, settings.TrustedProxy);
             return 0;
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
+            // 用户主动关停（Ctrl+C / 关停信号，根 token 已取消）：与文档契约一致返回 0。
+            // token 未取消的 OCE（内部超时联动 CTS 等）是真实失败：落到下方 catch 记日志
+            // 并返回 1——否则异常退出以 0 收场，Docker restart 策略/systemd/CI 全部丢失
+            // 崩溃信号（RF-38）。
             return 0;
         }
         catch (Exception e)

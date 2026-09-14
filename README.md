@@ -94,7 +94,7 @@ BBDown --help
 | `--video-only` / `--audio-only` | 仅下载视频 / 音频轨 |
 | `--sub-only` | 仅下载字幕 |
 | `--cover-only` | 仅下载封面 |
-| `--show-all` | 显示全部可用音视频流 |
+| `--show-all` | 展示所有分 P 标题（默认仅展示前 5 个分 P 标题） |
 | `--save-archives-to-file` | 记录已下载 aid，重复运行时自动跳过 |
 | `--allow-preview` | 允许下载充电专属视频的试看片段（见下） |
 
@@ -156,6 +156,7 @@ BBDown 会在开始下载前识别这种情况并中止，避免产出一个被�
 | | `--max-concurrent` | 最大并发下载数（默认 3） |
 | | `--serve-token` | 可选认证令牌，配置后所有任务/查询端点要求 `X-Serve-Token` 请求头，否则 401。优先使用环境变量 `BBDOWN_SERVE_TOKEN` 注入（避免令牌出现在进程命令行；两者冲突时环境变量胜出并告警） |
 | | `--trusted-proxy` | 信任直连反代追加的 X-Forwarded-For（认证失败限速按客户真实 IP 计键）。仅在 serve 前方确有可信反代时启用，否则客户端可伪造 XFF 绕过限速 |
+| | `--notify-webhook` | 任务完成时向该固定地址发送 HTTP POST 回调（服务端配置，不接受客户端指定） |
 
 > 安全提示：CLI 默认仅监听回环地址且无认证（安全默认），需要对外提供时请显式指定 `-l http://0.0.0.0:<port>` 并务必配置 `--serve-token`。多用户环境下建议用环境变量 `BBDOWN_SERVE_TOKEN` 注入令牌，避免 `ps` 等进程列表暴露。`/add-task` 请求体中可能引发命令执行、凭据外泄或路径穿越的字段会被一律忽略（如 `ffmpegPath`、`aria2cArgs`、`host` 白名单、`filePattern`、`insecure` 等），详见 [API.md](./API.md)。
 

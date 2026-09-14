@@ -246,4 +246,23 @@ public class ExternalProcessRunnerTests
             return Task.FromResult(_exitCode);
         }
     }
+
+    [Fact]
+    public async Task CheckFFmpegDOVIAsync_MissingBinary_ReturnsFalseInsteadOfThrowing()
+    {
+        // RF-34：--skip-mux 时 FindBinaries 刻意跳过 ffmpeg 解析，FFMPEG 保持默认
+        // "ffmpeg"（或用户指向不存在的路径）。Process.Start 对不存在的可执行文件抛
+        // Win32Exception——探针语义是"探测失败 → false → 走 mp4box"，必须吞掉该异常，
+        // 否则无 ffmpeg 环境下下载任意杜比视界视频会让整批中止。
+        var original = BBDownMuxer.FFMPEG;
+        try
+        {
+            BBDownMuxer.FFMPEG = Path.Combine(Path.GetTempPath(), "bbdown-missing-ffmpeg-" + Guid.NewGuid().ToString("N"));
+            Assert.False(await ExternalToolHelper.CheckFFmpegDOVIAsync());
+        }
+        finally
+        {
+            BBDownMuxer.FFMPEG = original;
+        }
+    }
 }

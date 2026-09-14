@@ -1,3 +1,4 @@
+using System.Globalization;
 using BBDown;
 
 namespace BBDown.Tests;
@@ -74,5 +75,32 @@ public class CommentUtilTests
     public void IsTruncated_BeforeMaxPage_NeverTruncated()
     {
         Assert.False(CommentUtil.IsTruncated(pageNumber: 7, maxPages: 20, lastPageItemCount: 20, pageSize: 20));
+    }
+
+    /// <summary>
+    /// 评论 JSON 是数据文件导出，时间戳必须文化无关（第 13 轮 Info①）：自定义格式的
+    /// `:` 是时间分隔符占位符，fi-FI 等区域会产出 "12.00.00" 造成跨机产物漂移。
+    /// </summary>
+    [Fact]
+    public async Task SaveToJsonAsync_TimeStampIsCultureInvariant()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bbdown-cmt-cult-{Guid.NewGuid():N}.json");
+        var originalCulture = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("fi-FI");
+            var comments = new List<CommentItem> { new("用户", 1700000000, 1, "内容") };
+            await CommentUtil.SaveToJsonAsync(comments, path);
+            var text = await File.ReadAllTextAsync(path);
+            // time 字段必须以冒号分隔的 HH:mm:ss 结尾（fi-FI 缺陷形态是 12.00.00）
+            var time = System.Text.RegularExpressions.Regex.Match(text, @"""time"": ""([^""]+)""").Groups[1].Value;
+            Assert.True(System.Text.RegularExpressions.Regex.IsMatch(time, @"\d{2}:\d{2}:\d{2}$"),
+                $"时间戳应文化无关（冒号分隔），实际: {time}");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
+            if (File.Exists(path)) File.Delete(path);
+        }
     }
 }

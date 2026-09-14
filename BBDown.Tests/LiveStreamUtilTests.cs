@@ -18,6 +18,21 @@ public class LiveStreamUtilTests
         => Assert.Equal(expected, LiveStreamUtil.SanitizeFileName(input));
 
     /// <summary>
+    /// Windows 保留名防护（RF-36）：直播标题来自服务器，恰为 CON/NUL/COM1 等设备名时，
+    /// 产物名在 Windows 上无法作为普通文件创建。与 PathUtil.GetValidFileName 同规则
+    /// 前缀下划线避开（含 con.md 这类带扩展名变体）。
+    /// </summary>
+    [Theory]
+    [InlineData("CON", "_CON")]
+    [InlineData("con", "_con")]
+    [InlineData("con.md", "_con.md")]
+    [InlineData("COM1", "_COM1")]
+    [InlineData("lpt9.txt", "_lpt9.txt")]
+    [InlineData("正常标题", "正常标题")]
+    public void SanitizeFileName_WindowsReservedName_IsPrefixedWithUnderscore(string input, string expected)
+        => Assert.Equal(expected, LiveStreamUtil.SanitizeFileName(input));
+
+    /// <summary>
     /// concat 合成必须使用 BBDownMuxer.FFMPEG（用户 --ffmpeg-path / PATH 探测的路径），
     /// 而非硬编码 "ffmpeg"。此前硬编码会让用户的显式指定失效，且 PATH 未配置时
     /// 静默失败。

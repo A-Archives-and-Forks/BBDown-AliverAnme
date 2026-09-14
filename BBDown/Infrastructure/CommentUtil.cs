@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -89,9 +90,12 @@ public static class CommentUtil
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             Directory.CreateDirectory(dir);
 
+        // 评论 JSON 是数据文件导出：自定义格式的 `:` 是时间分隔符占位符而非字面字符，
+        // fi-FI 等区域设置下产出 "12.00.00" 形态、产物跨机漂移——固定 InvariantCulture
+        //（与 ffmpeg creation_time 的 RF-5 收口同族，第 13 轮 Info①）。
         var payload = comments.Select(c => new CommentExport(
             c.User,
-            DateTimeOffset.FromUnixTimeSeconds(c.Time).LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss"),
+            DateTimeOffset.FromUnixTimeSeconds(c.Time).LocalDateTime.ToString("yyyy-MM-dd HH:mm:ss", CultureInfo.InvariantCulture),
             c.Likes,
             c.Content)).ToList();
 

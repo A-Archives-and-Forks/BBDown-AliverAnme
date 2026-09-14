@@ -45,7 +45,7 @@ internal partial class Program
                             : FindTool("device.wvd") ?? Path.Combine(AppContext.BaseDirectory, "device.wvd");
                         if (File.Exists(wvd))
                         {
-                            var keyResult = await DrmDecryptor.GetKeyWidevineAsync(parsed.PsshBase64, wvd);
+                            var keyResult = await DrmDecryptor.GetKeyWidevineAsync(parsed.PsshBase64, wvd, token);
                             if (keyResult != null)
                             {
                                 parsed.KeyHex = keyResult.Value.keyHex;
@@ -130,9 +130,10 @@ internal partial class Program
         // Write key to a temp file to avoid exposing it on the command line
         // (visible via ps aux / /proc/<pid>/cmdline to other local users)
         var keyFile = Path.GetTempFileName();
+        var keyLine = $"{kid}:{key}";
         try
         {
-            await File.WriteAllTextAsync(keyFile, $"{kid}:{key}", token);
+            await File.WriteAllTextAsync(keyFile, keyLine, token);
 
             var psi = new ProcessStartInfo
             {
@@ -191,8 +192,10 @@ internal partial class Program
             {
                 if (File.Exists(keyFile))
                 {
-                    // Overwrite before delete to prevent recovery
-                    await File.WriteAllTextAsync(keyFile, new string('\0', 64));
+                    // Overwrite before delete to prevent recovery。覆写长度必须与写入载荷一致
+                    //（第 13 轮 Info②）：kid:key 行为 32+1+32=65 字节，固定写 64 个 NUL 时
+                    // FileMode.Create 截断后最后 1 个字符仍留在盘上，"安全覆写"名不副实。
+                    await File.WriteAllTextAsync(keyFile, new string('\0', keyLine.Length));
                     File.Delete(keyFile);
                 }
             }

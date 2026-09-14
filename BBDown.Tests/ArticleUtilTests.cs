@@ -1,3 +1,4 @@
+using System.Globalization;
 using BBDown;
 
 namespace BBDown.Tests;
@@ -33,6 +34,33 @@ public class ArticleUtilTests
         }
         finally
         {
+            if (File.Exists(path)) File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// 专栏 Markdown 是数据文件导出，发布时间必须文化无关（第 13 轮 Info①）：
+    /// fi-FI 下 `:` 被替换为本地时间分隔符，导出产物跨机漂移。
+    /// </summary>
+    [Fact]
+    public async Task SaveAsMarkdownAsync_PublishTimeIsCultureInvariant()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bbdown-art-cult-{Guid.NewGuid():N}.md");
+        var originalCulture = CultureInfo.CurrentCulture;
+        try
+        {
+            CultureInfo.CurrentCulture = new CultureInfo("fi-FI");
+            var article = new ArticleInfo("标题", "作者", 1700000000, "正文");
+            await ArticleUtil.SaveAsMarkdownAsync(article, path);
+            var text = await File.ReadAllTextAsync(path);
+            var m = System.Text.RegularExpressions.Regex.Match(text, @"发布时间: (\S+ \S+)");
+            Assert.True(m.Success, "应包含发布时间行");
+            Assert.True(System.Text.RegularExpressions.Regex.IsMatch(m.Groups[1].Value, @"\d{2}:\d{2}$"),
+                $"时间应文化无关（冒号分隔），实际: {m.Groups[1].Value}");
+        }
+        finally
+        {
+            CultureInfo.CurrentCulture = originalCulture;
             if (File.Exists(path)) File.Delete(path);
         }
     }

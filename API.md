@@ -13,6 +13,8 @@
 
 **Response:** JSON格式的`DownloadTaskCollection`。
 
+> 注：所有 `/get-tasks*` 查询端点共享 8 个并发查询槽位；占用满时返回 **429 Too Many Requests** 并附带 `Retry-After: 60` 响应头，客户端应按该头部提示延迟后重试。
+
 ### 获取正在运行的任务列表
 **Endpoint:** `/get-tasks/running`
 
@@ -128,7 +130,9 @@
 - `DownloadSpeed` `<double>`: 下载速度, 单位为Byte/s。下载中时为最后一次更新的实时速度，下载完成后为平均速度。
 - `TotalDownloadedBytes` `<double>`: 总下载字节(Byte)数，完成后的数字比实际文件偏小。
 - `IsSuccessful` `<bool>`: 标识任务是否成功完成。
-- `Status` `<string>`: 任务状态，取值 `Queued`（排队等待） / `Running`（下载中） / `Succeeded`（成功） / `Failed`（失败） / `Cancelled`（被取消）。
+- `Status` <string>: 任务状态，取值 `Queued`（排队等待） / `Running`（下载中） / `Succeeded`（成功） / `Failed`（失败） / `Cancelled`（被取消）。
+- `ErrorMessage` <string?>: 任务失败原因（成功/排队/下载中时为空）。文本已经过单行化净化，可直接展示。
+- `SavePaths` <List<string>>: 任务产物在**服务器本地**的绝对路径列表（多 P / 分离音视频时多条）。注意这是服务端文件系统路径，客户端通常无法直接访问。
 
 ### `DownloadTaskCollection` 数据结构
 `DownloadTaskCollection` 数据结构包含两个列表，分别表示正在运行的任务和已完成的任务。

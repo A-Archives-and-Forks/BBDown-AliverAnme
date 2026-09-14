@@ -66,7 +66,7 @@ hevc,av1,avc,flac,eac3,m4a
 
 ## 2. 输出文件名变量模板
 
-通过 `-F`（`--file-pattern`）和 `-M`（`--multi-file-pattern`），你可以使用预置的 18 种变量占位符自定义文件名和多层级子目录。
+通过 `-F`（`--file-pattern`）和 `-M`（`--multi-file-pattern`），你可以使用预置的 19 种变量占位符自定义文件名和多层级子目录。
 
 ### 2.1 内置占位符对照表
 
@@ -89,6 +89,7 @@ hevc,av1,avc,flac,eac3,m4a
 | `<ownerName>` | 视频 UP 主昵称（番剧/电影模式下为空） | `老师好我叫何同学` |
 | `<ownerMid>` | 视频 UP 主 UID（番剧/电影模式下为空） | `163637592` |
 | `<publishDate>` | 视频发布时间戳（`yyyy-MM-dd_HH-mm-ss`） | `2024-05-01_12-00-00` |
+| `<videoDate>` | 当前分 P 的发布时间戳（多 P 稿件各分 P 可不同；接受与 `<publishDate>` 相同的日期格式后缀） | `2024-05-01_12-00-00` |
 | `<apiType>` | 本次解析调用的接口类型 | `WEB`、`TV`、`APP`、`INTL` |
 
 ---

@@ -49,8 +49,8 @@ BBDown [选项] <URL或标识符>
 | | `--danmaku-only` | `bool (false)` | 仅下载弹幕文件 |
 | | `--cover-only` | `bool (false)` | 仅下载封面图片 |
 | | `--sub-only` | `bool (false)` | 仅下载外挂字幕文件 |
-| `-d` | `--download-danmaku` | `bool (false)` | 开启弹幕下载（默认保存为 XML） |
-| | `--download-danmaku-formats` | `string?` | 弹幕格式列表（如 `xml,protobuf`） |
+| `-d` | `--download-danmaku` | `bool (false)` | 开启弹幕下载（默认同时保存 XML 与 ASS 两种格式） |
+| | `--download-danmaku-formats` | `string?` | 弹幕格式列表，仅支持 `xml`/`ass`（如 `xml,ass`） |
 | | `--danmaku-filter` | `string?` | 弹幕关键词黑名单过滤（逗号分隔） |
 | | `--danmaku-filter-user` | `string?` | 弹幕发送者 midHash 黑名单过滤（逗号分隔） |
 | | `--comments` | `bool (false)` | 同时下载视频评论区，保存为 JSON |

@@ -37,19 +37,19 @@
 | RF-27 | FindBinaries 进程级静态工具路径（serve 并发理论面） | Low | 待议（倾向维持现状：Sanitize 已清零路径字段） | ⭕ 维持现状（第 12 轮定案） |
 | RF-28 | HTTP 响应体无大小上限 | Low | 采纳（逐块读取设总量上限） | ✅ 已修复（第 12 轮） |
 | RF-29 | .editorconfig 存量违规 4 文件（BOM/末尾换行） | Low | 采纳（重存文件；可补轻量检查） | ✅ 已修复（第 12 轮） |
- | RF-30 | sub check 逐 aid 过滤器吞 `SubscriptionDataCorruptException`（历史清零→全量重下） | Medium | 采纳（补专用重抛守卫） | ⏳ 待排期（第 13 轮登记） |
- | RF-31 | `SortTracks` 裸 `Convert.ToInt32(v.id)` 异常穿透两级过滤器（整批中止） | Medium | 采纳（TryParse + 过滤器补 FormatException/OverflowException） | ⏳ 待排期（第 13 轮登记） |
- | RF-32 | sub check 用户取消语义违约（吞取消记失败→1 / 穿透→130，文档约定 0） | Medium | 采纳（补 token 守卫 + 方法级 OCE catch） | ⏳ 待排期（第 13 轮登记） |
- | RF-33 | API.md `DownloadTask` 字段清单缺 `ErrorMessage`/`SavePaths`（承诺的错误原因无字段可查） | Medium（文档） | 采纳（补 2 行） | ⏳ 待排期（第 13 轮登记） |
- | RF-34 | DOVI 探针 `Win32Exception` 未捕获（--skip-mux + 无 ffmpeg + 杜比视界→整批死） | Low | 采纳（过滤器补 Win32Exception 或 SkipMux 跳过探针） | ⏳ 待排期（第 13 轮登记） |
- | RF-35 | DRM 取钥链缺 `CancellationToken`（serve /cancel 最长约 6 分钟不可中断） | Low | 采纳（DrmDecryptor 透传 token） | ⏳ 待排期（第 13 轮登记） |
- | RF-36 | `ArticleCommand` 用弱净化 `SanitizeFileName`（Windows 保留名未防护→CON.md） | Low | 采纳（改 `GetValidFileName`） | ⏳ 待排期（第 13 轮登记） |
- | RF-37 | TV 登录轮询仍自动跟随重定向（RF-4/RF-13 收口族残留） | Low | 采纳（NoRedirect + 3xx 拦截） | ⏳ 待排期（第 13 轮登记） |
- | RF-38 | `ServeCommand` OCE 无 token 守卫（内部超时取消→退出码 0 掩盖失败） | Low | 采纳（补 when 守卫） | ⏳ 待排期（第 13 轮登记） |
- | RF-39 | CLI-Reference 弹幕格式文档错误（`protobuf` 示例不可用 + 默认值描述错） | Low（文档） | 采纳（改 `xml,ass` / 默认双格式） | ⏳ 待排期（第 13 轮登记） |
- | RF-40 | README `--show-all` 描述错误（实为展示所有分 P 标题） | Low（文档） | 采纳（对齐 MyOption） | ⏳ 待排期（第 13 轮登记） |
- | RF-41 | 模板文档缺 `<videoDate>` 占位符且计数 18→19 | Low（文档） | 采纳（补行 + 改计数） | ⏳ 待排期（第 13 轮登记） |
- | RF-42 | README serve 子选项表缺 `--notify-webhook`（与同页 :333 自相矛盾） | Low（文档） | 采纳（补一行） | ⏳ 待排期（第 13 轮登记） |
+| RF-30 | sub check 逐 aid 过滤器吞 `SubscriptionDataCorruptException`（历史清零→全量重下） | Medium | 采纳（补专用重抛守卫） | ✅ 已修复（第 13 轮消纳批） |
+| RF-31 | `SortTracks` 裸 `Convert.ToInt32(v.id)` 异常穿透两级过滤器（整批中止） | Medium | 采纳（TryParse + 过滤器补 FormatException/OverflowException） | ✅ 已修复（第 13 轮消纳批） |
+| RF-32 | sub check 用户取消语义违约（吞取消记失败→1 / 穿透→130，文档约定 0） | Medium | 采纳（补 token 守卫 + 方法级 OCE catch） | ✅ 已修复（第 13 轮消纳批） |
+| RF-33 | API.md `DownloadTask` 字段清单缺 `ErrorMessage`/`SavePaths`（承诺的错误原因无字段可查） | Medium（文档） | 采纳（补 2 行） | ✅ 已修复（第 13 轮消纳批） |
+| RF-34 | DOVI 探针 `Win32Exception` 未捕获（--skip-mux + 无 ffmpeg + 杜比视界→整批死） | Low | 采纳（过滤器补 Win32Exception 或 SkipMux 跳过探针） | ✅ 已修复（第 13 轮消纳批） |
+| RF-35 | DRM 取钥链缺 `CancellationToken`（serve /cancel 最长约 6 分钟不可中断） | Low | 采纳（DrmDecryptor 透传 token） | ✅ 已修复（第 13 轮消纳批） |
+| RF-36 | `ArticleCommand` 用弱净化 `SanitizeFileName`（Windows 保留名未防护→CON.md） | Low | 采纳（改 `GetValidFileName`） | ✅ 已修复（第 13 轮消纳批） |
+| RF-37 | TV 登录轮询仍自动跟随重定向（RF-4/RF-13 收口族残留） | Low | 采纳（NoRedirect + 3xx 拦截） | ✅ 已修复（第 13 轮消纳批） |
+| RF-38 | `ServeCommand` OCE 无 token 守卫（内部超时取消→退出码 0 掩盖失败） | Low | 采纳（补 when 守卫） | ✅ 已修复（第 13 轮消纳批） |
+| RF-39 | CLI-Reference 弹幕格式文档错误（`protobuf` 示例不可用 + 默认值描述错） | Low（文档） | 采纳（改 `xml,ass` / 默认双格式） | ✅ 已修复（第 13 轮消纳批） |
+| RF-40 | README `--show-all` 描述错误（实为展示所有分 P 标题） | Low（文档） | 采纳（对齐 MyOption） | ✅ 已修复（第 13 轮消纳批） |
+| RF-41 | 模板文档缺 `<videoDate>` 占位符且计数 18→19 | Low（文档） | 采纳（补行 + 改计数） | ✅ 已修复（第 13 轮消纳批） |
+| RF-42 | README serve 子选项表缺 `--notify-webhook`（与同页 :333 自相矛盾） | Low（文档） | 采纳（补一行） | ✅ 已修复（第 13 轮消纳批） |
 
 ---
 
@@ -79,6 +79,7 @@
   - 各命令原有 catch/退出码语义**逐字保留**（cancel→0、超时→1、批量失败计数→1）。原建议中的 `ExitCodeFor` 评估后**不抽取**：四个命令的取消/超时/部分失败分支消息与过滤条件各不相同，强行共享 helper 会掩盖差异。
   - 计划外残留：`ExternalToolHelper` 一处 `GetAwaiter().GetResult()` 为短进程探针的 stdout/stderr 同步读取，非命令生命周期阻塞，维持现状。
   - 测试适配：`ServeApiHttpTests.RunningServer` 直用 `RunAsync`（去 `Task.Run` 包装）；`NonLoopbackListen_WithoutToken_Throws` 改断言 `ValidateListenUrl` 同步异常语义（真实回环启动路径由各 RunningServer 用例继续覆盖）。
+  - **勘误（第 13 轮，RF-32）**：本条"逐字保留（cancel→0）"对 SubCheck 当时并不成立——SubCheckCommand 在第 13 轮前没有任何取消语义处理（Ctrl+C 被记为订阅失败/穿透全局 handler 返回 130）。已在第 13 轮消纳批补齐，与 watchlater/文档契约对齐。
 
 ---
 
@@ -354,123 +355,123 @@
 - **发现**：`dotnet format` 不检查 charset BOM 与 `insert_final_newline`，故 pr.yml 的 format 硬门禁拦不住。RF-8~13 涉及的源/测试文件全部干净，此为存量。
 - **结论**：采纳——按 .editorconfig 重存 4 个文件；可选补一个轻量检查（挂 format job 前置步骤）。
 - **状态**：✅ 已修复（2026-08-30，第 12 轮消纳批：代码修复 + 回归测试 + CHANGELOG 未发布条目）。
- 
- ---
- 
- ## RF-30：sub check 逐 aid 过滤器吞 `SubscriptionDataCorruptException`（订阅历史清零→全量重下）
- 
- - **位置**：`BBDown/Commands/SubCommand.cs:179`（`RecordDownloaded` 在 per-aid try 内）、`:185-187`（per-aid 过滤器白名单含 `InvalidOperationException`）；`BBDown/Infrastructure/SubscriptionStore.cs:18`（`SubscriptionDataCorruptException : InvalidOperationException`）、`:198-231`（`RecordDownloaded` 损坏路径：`IsolateCorruptFile` 把历史文件**移走**后抛专用异常）。
- - **发现**：`SubscriptionStore` 的文档化中止契约（SubscriptionStore.cs:14-16、:190-191 注释 + SubCommand.cs:195-201 专用重抛 catch）要求损坏异常必须终止整个 `sub check`。`LoadHistory`（:162）在专用 catch 保护内正确；但 `RecordDownloaded`（:179）在 **per-aid try** 内，其过滤器（:185-187）含 `InvalidOperationException`——专用异常是其子类被匹配吞掉，记为 `av{aid} 下载失败（继续下一个）`，外层专用重抛（:195）对此调用点不可达。后果正是契约注释描述的场景：历史文件已被隔离移走，下一个 aid 的 `RecordDownloaded` 见 `File.Exists == false` **静默重建仅含当前 aid 的历史并原子写回——全部订阅的下载历史清零，下次 check 全量重下**。触发面：`sub check` 运行中历史文件损坏（磁盘故障/并发写者）。
- - **结论**：采纳——per-aid catch 前补 `catch (SubscriptionDataCorruptException) { throw; }`（与外层同款），或过滤器改 `... and ex is not SubscriptionDataCorruptException`；补 1 个回归测试（损坏历史 + RecordDownloaded 路径断言专用异常外抛、后续订阅不再执行）。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-31：`SortTracks` 裸 `Convert.ToInt32(v.id)` 异常穿透两级过滤器（RF-14 同族逃逸）
- 
- - **位置**：`BBDown/Application/TrackSort.cs:19`（`.ThenByDescending(v => Convert.ToInt32(v.id))`）；id 来源 `BBDown.Core/Parser.cs:398`（dash `video[].id`）/`:222-223`（intl）/`:604`（flv quality），均 `GetValueAsStringSafe`（缺失/非字符串返回 `""`）；过滤器 `BBDown/Application/Download.cs:1084-1085`（页面级）、`:94`（批级）。
- - **发现**：`v.id` 是服务器可控字符串直进 `Convert.ToInt32`：缺失→`FormatException`、超 int32→`OverflowException`。两级过滤器白名单均无这两个类型（同仓库 `ExternalToolHelper.cs:53` 的探针过滤器都显式含 FormatException/OverflowException，此处没有），单个畸形 dash 节点即穿透两级过滤器中止整批多 P——剩余分 P 全弃、webhook/failedPages 丢失，与 RF-14 修复的"单 P 失败隔离"矛盾。触发面：降级/风控/`--ep-host` 镜像站响应中 `video[].id` 缺失或非数字。
- - **结论**：采纳——(a) `int.TryParse(v.id, out var q) ? q : 0`（id 仅作优先级并列时的 tie-break，降级 0 无行为损失）；(b) 两级过滤器补 `FormatException or OverflowException` 作纵深（修复 (a) 后通常不触发）。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-32：sub check 用户取消语义违约（吞取消记失败→1 / 穿透→130，文档约定 0）
- 
- - **位置**：`BBDown/Commands/SubCommand.cs:202-204`（per-sub 过滤器白名单含 `TaskCanceledException` 且无 token 守卫）、`:121-218`（`SubCheckCommand.ExecuteAsync` 无方法级 OCE catch）、`:146`（`InitializeRequestSessionAsync` 在任何 try 之外）；正确对照 `BBDown/Commands/WatchLaterCommand.cs:105-116`；全局 handler `BBDown/Program.cs:162-167`（→130）；文档约定 `docs/wiki/CLI-Reference.md:122`（子命令取消→0）；RF-2 记录（"cancel→0 逐字保留"）。
- - **发现**（两条路径均违反契约）：① Ctrl+C 落在 HttpClient 调用（`DoWorkAsync`/`ResolveAsync`/`FetchAsync`）→ `TaskCanceledException` 被 per-aid :181-183 正确重抛后，又被 **per-sub 过滤器 :202-204（含 TaskCanceledException、无 token 守卫）吞掉**记"订阅检查失败"，后续每个订阅在已取消 token 上立即失败 → `failedSubs>0` → **退出码 1** + "N 个订阅失败"误导日志；② 取消落在 `ThrowIfCancellationRequested`（抛基类 `OperationCanceledException`，不匹配 :202 的 `TaskCanceledException`）或 :146 初始化段 → 直达全局 handler → **退出码 130**。结构性相同的 `watchlater` 用方法级 catch 区分 token 状态返回 0/1，`sub check` 是漏网。
- - **结论**：采纳——per-sub 过滤器补 `&& !cancellationToken.IsCancellationRequested` 语义（或专用 OCE 重抛守卫前置），并对照 watchlater 补方法级 `catch (OperationCanceledException)`（token 已取消→"已取消"+0；未取消→1）；若产品判定 sub check 应与主命令同为 130，则改 wiki 行 + RF-2 记录勘误——二者取一，现状不一致是确定的。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-33：API.md `DownloadTask` 字段清单缺 `ErrorMessage`/`SavePaths`（承诺的错误原因无字段可查）
- 
- - **位置**：`API.md:118-131`（字段清单 12 项，无此二者）、`API.md:60`（承诺"凭 JobId 查询到失败任务及其错误原因"）；代码 `BBDown/Infrastructure/BBDownApiServer.cs:1131/:1153`（`task.ErrorMessage` 写入，经 `SanitizeErrorMessage` :480-482 净化）、`:263`（`SavePaths` 深拷贝入快照），随 `Snapshot()` 全量序列化。
- - **发现**：`DownloadTask` 实际序列化含 `ErrorMessage`（失败原因）与 `SavePaths`（解析后的服务器本地绝对产物路径，RF-15 记录明确其信息泄露敏感面），API.md 字段清单两者均缺——按文档开发的客户端拿不到失败原因与产物路径，与同文件 :60 的承诺直接矛盾。属 RF-16 文档正确性族漏网（当时只修了 wiki 退出码表/README，未对照 API.md 字段清单）。
- - **结论**：采纳——补 2 行：`ErrorMessage <string?>`（失败原因，成功时为空）、`SavePaths <List<string>>`（服务器本地绝对路径，注意非客户端路径）。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-34：DOVI 探针 `Win32Exception` 未捕获（--skip-mux + 无 ffmpeg + 杜比视界 → 整批死）
- 
- - **位置**：`BBDown/Utilities/ExternalToolHelper.cs:53`（探针过滤器无 `Win32Exception`）、`BBDown/Application/Options.cs:166-189`（ffmpeg 解析被 `if (!SkipMux)` 门控）、`BBDown/Application/Download.cs:747`（探针调用无 SkipMux 门控）、`BBDown/Infrastructure/BBDownMuxer.cs:17`（`FFMPEG` 默认 `"ffmpeg"`）。
- - **发现**：`--skip-mux` 时 `FindBinaries` 跳过 ffmpeg 解析（刻意：不混流不需要），但杜比视界（dfn 126）分 P 的版本探测仍无条件运行；ffmpeg 不在 PATH 时 `Process.Start` 抛 `Win32Exception`（找不到文件），探针过滤器与两级 catch 过滤器均不含该类型 → 整批中止。探针语义应是"探测失败 → return false → 走 mp4box"，异常逃逸使其变成致命错误。触发面：`--skip-mux`（含 serve 任务 `skip-mux:true`）+ 无 ffmpeg + 任意杜比视界视频。
- - **结论**：采纳——过滤器补 `System.ComponentModel.Win32Exception`（return false），或 `SkipMux` 时直接跳过探针（更省一次进程启动）。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-35：DRM 取钥链缺 `CancellationToken`（serve /cancel 最长约 6 分钟不可中断）
- 
- - **位置**：`BBDown/Application/Decrypt.cs:48`（调用未传 token；`DecryptDrmAsync` 自 :19 起持有 `token` 且 mp4decrypt 阶段已用）、`BBDown.Core/DRM/CkcDecryptor.cs:5/:13`（`DrmDecryptor.GetKeyWidevineAsync` 无 token 形参）、`BBDown.Core/DRM/WidevineCdm.cs:26`（`GetKeysAsync` **已有** `CancellationToken token = default`，下游全链支持）。
- - **发现**：取钥这一环在 `DrmDecryptor` 薄封装处丢令牌：许可证客户端 2 分钟超时 × 3 次尝试 + 退避（HTTPUtil.cs:135），Ctrl+C / serve `/cancel` 期间取钥不可中断（约最长 6 分钟占住 `--max-concurrent` 槽位）。属 RF-17 取消吞没族的新位置（这里是"从未传递"而非"过滤器吞掉"）。
- - **结论**：采纳——`GetKeyWidevineAsync` 补 `CancellationToken token = default` 形参并在 Decrypt.cs:48 传入（3 行改动，下游管道现成）。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-36：`ArticleCommand` 用弱净化 `SanitizeFileName`（Windows 保留名未防护 → CON.md）
- 
- - **位置**：`BBDown/Commands/ArticleCommand.cs:42`；`BBDown/Infrastructure/LiveStreamUtil.cs:668-675`（`SanitizeFileName` 仅替换非法字符 + Trim，空名兜底"直播"）；对照 `BBDown.Core/Util/PathUtil.cs:55-60`（`GetValidFileName` 有保留名基名匹配 + `_` 前缀，含带扩展名变体 `CON.md` 的判定）。
- - **发现**：专栏标题是服务器可控字符串（`data.title`），恰为 `CON`/`NUL`/`PRN`/`COM1`… 时产出 `CON.md`——Windows 上设备名语义无法作为普通文件创建，`SaveAsMarkdownAsync` 抛异常 → 命令以误导性"专栏获取失败"退出 1。`PathUtil.GetValidFileName` 的保留名防护未被用上。
- - **结论**：采纳——:42 改 `BBDownUtil.GetValidFileName(article.Title)`（保留名自动 `_` 前缀）；LiveStreamUtil 内部消费 `SanitizeFileName` 的直播文件名同属此面，随批一并评估。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-37：TV 登录轮询仍用自动跟随重定向客户端（RF-4/RF-13 收口族残留）
- 
- - **位置**：`BBDown/Infrastructure/BBDownLoginUtil.cs:243`（`HTTPUtil.AppHttpClient.PostAsync(pollUrl, ...)`）。
- - **发现**：TV 登录轮询的 POST 携带按 appsecret 签名的参数体（auth_code/sign/ts），响应含新下发的 `access_token`，却走自动跟随重定向的 `AppHttpClient`——被攻破端点/开放重定向可把签名请求体重放到跨主机。WEB 登录轮询已按 RF-13 切 `NoRedirectClient` + 每跳 `IsTrustedCookieHost` 校验，gRPC POST（B3-F2）/Widevine 许可证（RF-4）同构收口，唯 TV 轮询漏网。入口 URL 硬编码可信端点、恒校验 TLS，无当前可利用面——与 RF-4/RF-13 同级的一致性/纵深防御项。
- - **结论**：采纳——切 `NoRedirectClient` + 3xx 显式拦截（或逐跳校验），与 RF-13 修法同构。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-38：`ServeCommand` OCE 无 token 守卫（内部超时取消 → 退出码 0 掩盖异常退出）
- 
- - **位置**：`BBDown/Commands/ServeCommand.cs:64-67`（`catch (OperationCanceledException) { return 0; }`）。
- - **发现**：仓库自有的取消分类规则（LiveCommand.cs:100-103、WatchLaterCommand.cs:107-115、ArticleCommand.cs:48-58、BBDownApiServer.cs:1185-1188 四处同款注释）要求区分"token 已取消的用户取消"与"token 未取消的真实取消"（内部超时联动 CTS 等）；serve 此处无守卫，任何非根 token 的 OCE 从 `StartServerAsync` 逃出都以退出码 0"成功"结束——Docker `restart: unless-stopped`/systemd `on-failure`/CI 包装全部丢失崩溃信号。优雅关停（根 token）保持 0 不受影响。
- - **结论**：采纳——补 `when (cancellationToken.IsCancellationRequested)`，未取消的 OCE 落到既有 `catch (Exception)`（:68-71）记日志 + 1。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-39：CLI-Reference 弹幕格式文档错误（`protobuf` 示例不可用 + 默认值描述错）
- 
- - **位置**：`docs/wiki/CLI-Reference.md:52-53`；代码 `BBDown/Models/BBDownEnums.cs:6-10,15`（枚举仅 `Xml`/`Ass`；`DefaultFormats = [Xml, Ass]`）、`BBDown/Application/Options.cs:115`（未知格式报"包含不支持的下载弹幕格式"）。
- - **发现**：:53 示例 `xml,protobuf` 按文档操作即触发错误路径（1.6.16 已修正 README 与帮助文本为"仅支持 xml,ass"，wiki 总表漏改）；:52"默认保存为 XML"与默认值 `[Xml, Ass]` 不符（默认双格式）。
- - **结论**：采纳——:53 示例改 `xml,ass`；:52 改"默认同时保存 XML 与 ASS"。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-40：README `--show-all` 描述错误（实为展示所有分 P 标题）
- 
- - **位置**：`README.md:97`（"显示全部可用音视频流"）；代码 `BBDown/Configuration/MyOption.cs:42-44`（"展示所有分P标题"）、`BBDown/Application/Workflow.cs:166-180`（不带 flag 只打印前 5 个分 P 标题 + "......"）；`docs/wiki/CLI-Reference.md:40` 描述正确。
- - **发现**：README 把 `--show-all` 与 `--hide-streams` 的反面混为一谈；实际控制的是分 P 标题打印截断。按 README 期望"列出全部流"的用户会得到完全不同的行为。
- - **结论**：采纳——README:97 改"展示所有分 P 标题"（与 MyOption/CLI-Reference 对齐）。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-41：模板文档缺 `<videoDate>` 占位符且计数 18→19
- 
- - **位置**：`docs/wiki/Configuration-and-Templates.md:69`（"18 种变量占位符"）及 `:73-92`（18 行表，无 videoDate）；代码 `BBDown/Application/PathHelper.cs:73`（`"videoDate"` 分支，随 RF-19 修复过格式化与净化）。
- - **发现**：`PathHelper` 占位符 switch 实际 19 个键，文档表漏 `<videoDate>`（分 P 发布时间，与 `<publishDate>` 同格式）——该占位符正是 RF-19 修复对象，是活功能非死条目。计数与表格双重失实。
- - **结论**：采纳——补 `<videoDate>` 行（分 P 发布时间，接受与 `<publishDate>` 相同的日期格式串），计数改 19。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
- 
- ---
- 
- ## RF-42：README serve 子选项表缺 `--notify-webhook`（与同页 :333 自相矛盾）
- 
- - **位置**：`README.md:151-158`（表仅 4 行：`-l`/`--max-concurrent`/`--serve-token`/`--trusted-proxy`）；`BBDown/Commands/ServeCommand.cs:29`（`--notify-webhook` 定义）、`README.md:333`（RF-16 修正处已列举）。
- - **发现**：`ServeSettings` 共 5 个选项，README serve 子选项表漏 `--notify-webhook`（任务完成回调 URL）；同页后文 :333 已列出它，前后自相矛盾。RF-16 修的是 :333 括号列举，此表是独立漏网点。
- - **结论**：采纳——表补一行 `--notify-webhook`（任务完成回调 URL，受服务器侧 allowlist 校验）。
- - **状态**：⏳ 待排期（第 13 轮登记，未修复）。
+
+---
+
+## RF-30：sub check 逐 aid 过滤器吞 `SubscriptionDataCorruptException`（订阅历史清零→全量重下）
+
+- **位置**：`BBDown/Commands/SubCommand.cs:179`（`RecordDownloaded` 在 per-aid try 内）、`:185-187`（per-aid 过滤器白名单含 `InvalidOperationException`）；`BBDown/Infrastructure/SubscriptionStore.cs:18`（`SubscriptionDataCorruptException : InvalidOperationException`）、`:198-231`（`RecordDownloaded` 损坏路径：`IsolateCorruptFile` 把历史文件**移走**后抛专用异常）。
+- **发现**：`SubscriptionStore` 的文档化中止契约（SubscriptionStore.cs:14-16、:190-191 注释 + SubCommand.cs:195-201 专用重抛 catch）要求损坏异常必须终止整个 `sub check`。`LoadHistory`（:162）在专用 catch 保护内正确；但 `RecordDownloaded`（:179）在 **per-aid try** 内，其过滤器（:185-187）含 `InvalidOperationException`——专用异常是其子类被匹配吞掉，记为 `av{aid} 下载失败（继续下一个）`，外层专用重抛（:195）对此调用点不可达。后果正是契约注释描述的场景：历史文件已被隔离移走，下一个 aid 的 `RecordDownloaded` 见 `File.Exists == false` **静默重建仅含当前 aid 的历史并原子写回——全部订阅的下载历史清零，下次 check 全量重下**。触发面：`sub check` 运行中历史文件损坏（磁盘故障/并发写者）。
+- **结论**：采纳——per-aid catch 前补 `catch (SubscriptionDataCorruptException) { throw; }`（与外层同款），或过滤器改 `... and ex is not SubscriptionDataCorruptException`；补 1 个回归测试（损坏历史 + RecordDownloaded 路径断言专用异常外抛、后续订阅不再执行）。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批：per-aid 专用重抛守卫落地。登记结论所提的回归测试未交付——命令层无注入缝（DoWorkAsync/ResolveAsync 静态直连网络，无法在单测中触达 RecordDownloaded 的损坏路径），以代码走查 + 全量编译验证，测试缝待 OPTIMIZATION_PLAN P0-1 拆分后补）。
+
+---
+
+## RF-31：`SortTracks` 裸 `Convert.ToInt32(v.id)` 异常穿透两级过滤器（RF-14 同族逃逸）
+
+- **位置**：`BBDown/Application/TrackSort.cs:19`（`.ThenByDescending(v => Convert.ToInt32(v.id))`）；id 来源 `BBDown.Core/Parser.cs:398`（dash `video[].id`）/`:222-223`（intl）/`:604`（flv quality），均 `GetValueAsStringSafe`（缺失/非字符串返回 `""`）；过滤器 `BBDown/Application/Download.cs:1084-1085`（页面级）、`:94`（批级）。
+- **发现**：`v.id` 是服务器可控字符串直进 `Convert.ToInt32`：缺失→`FormatException`、超 int32→`OverflowException`。两级过滤器白名单均无这两个类型（同仓库 `ExternalToolHelper.cs:53` 的探针过滤器都显式含 FormatException/OverflowException，此处没有），单个畸形 dash 节点即穿透两级过滤器中止整批多 P——剩余分 P 全弃、webhook/failedPages 丢失，与 RF-14 修复的"单 P 失败隔离"矛盾。触发面：降级/风控/`--ep-host` 镜像站响应中 `video[].id` 缺失或非数字。
+- **结论**：采纳——(a) `int.TryParse(v.id, out var q) ? q : 0`（id 仅作优先级并列时的 tie-break，降级 0 无行为损失）；(b) 两级过滤器补 `FormatException or OverflowException` 作纵深（修复 (a) 后通常不触发）。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批）。
+
+---
+
+## RF-32：sub check 用户取消语义违约（吞取消记失败→1 / 穿透→130，文档约定 0）
+
+- **位置**：`BBDown/Commands/SubCommand.cs:202-204`（per-sub 过滤器白名单含 `TaskCanceledException` 且无 token 守卫）、`:121-218`（`SubCheckCommand.ExecuteAsync` 无方法级 OCE catch）、`:146`（`InitializeRequestSessionAsync` 在任何 try 之外）；正确对照 `BBDown/Commands/WatchLaterCommand.cs:105-116`；全局 handler `BBDown/Program.cs:162-167`（→130）；文档约定 `docs/wiki/CLI-Reference.md:122`（子命令取消→0）；RF-2 记录（"cancel→0 逐字保留"）。
+- **发现**（两条路径均违反契约）：① Ctrl+C 落在 HttpClient 调用（`DoWorkAsync`/`ResolveAsync`/`FetchAsync`）→ `TaskCanceledException` 被 per-aid :181-183 正确重抛后，又被 **per-sub 过滤器 :202-204（含 TaskCanceledException、无 token 守卫）吞掉**记"订阅检查失败"，后续每个订阅在已取消 token 上立即失败 → `failedSubs>0` → **退出码 1** + "N 个订阅失败"误导日志；② 取消落在 `ThrowIfCancellationRequested`（抛基类 `OperationCanceledException`，不匹配 :202 的 `TaskCanceledException`）或 :146 初始化段 → 直达全局 handler → **退出码 130**。结构性相同的 `watchlater` 用方法级 catch 区分 token 状态返回 0/1，`sub check` 是漏网。
+- **结论**：采纳——per-sub 过滤器补 `&& !cancellationToken.IsCancellationRequested` 语义（或专用 OCE 重抛守卫前置），并对照 watchlater 补方法级 `catch (OperationCanceledException)`（token 已取消→"已取消"+0；未取消→1）；若产品判定 sub check 应与主命令同为 130，则改 wiki 行 + RF-2 记录勘误——二者取一，现状不一致是确定的。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批：拆 `CheckSubscriptionsAsync` + 方法级 OCE 分类 + per-sub 取消守卫 + 会话初始化纳入 try。同 RF-30：命令层无注入缝，回归以代码走查 + 全量编译验证，四条异常路径——损坏/Ctrl+C×2/超时——逐条推演确认）。
+
+---
+
+## RF-33：API.md `DownloadTask` 字段清单缺 `ErrorMessage`/`SavePaths`（承诺的错误原因无字段可查）
+
+- **位置**：`API.md:118-131`（字段清单 12 项，无此二者）、`API.md:60`（承诺"凭 JobId 查询到失败任务及其错误原因"）；代码 `BBDown/Infrastructure/BBDownApiServer.cs:1131/:1153`（`task.ErrorMessage` 写入，经 `SanitizeErrorMessage` :480-482 净化）、`:263`（`SavePaths` 深拷贝入快照），随 `Snapshot()` 全量序列化。
+- **发现**：`DownloadTask` 实际序列化含 `ErrorMessage`（失败原因）与 `SavePaths`（解析后的服务器本地绝对产物路径，RF-15 记录明确其信息泄露敏感面），API.md 字段清单两者均缺——按文档开发的客户端拿不到失败原因与产物路径，与同文件 :60 的承诺直接矛盾。属 RF-16 文档正确性族漏网（当时只修了 wiki 退出码表/README，未对照 API.md 字段清单）。
+- **结论**：采纳——补 2 行：`ErrorMessage <string?>`（失败原因，成功时为空）、`SavePaths <List<string>>`（服务器本地绝对路径，注意非客户端路径）。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批）。
+
+---
+
+## RF-34：DOVI 探针 `Win32Exception` 未捕获（--skip-mux + 无 ffmpeg + 杜比视界 → 整批死）
+
+- **位置**：`BBDown/Utilities/ExternalToolHelper.cs:53`（探针过滤器无 `Win32Exception`）、`BBDown/Application/Options.cs:166-189`（ffmpeg 解析被 `if (!SkipMux)` 门控）、`BBDown/Application/Download.cs:747`（探针调用无 SkipMux 门控）、`BBDown/Infrastructure/BBDownMuxer.cs:17`（`FFMPEG` 默认 `"ffmpeg"`）。
+- **发现**：`--skip-mux` 时 `FindBinaries` 跳过 ffmpeg 解析（刻意：不混流不需要），但杜比视界（dfn 126）分 P 的版本探测仍无条件运行；ffmpeg 不在 PATH 时 `Process.Start` 抛 `Win32Exception`（找不到文件），探针过滤器与两级 catch 过滤器均不含该类型 → 整批中止。探针语义应是"探测失败 → return false → 走 mp4box"，异常逃逸使其变成致命错误。触发面：`--skip-mux`（含 serve 任务 `skip-mux:true`）+ 无 ffmpeg + 任意杜比视界视频。
+- **结论**：采纳——过滤器补 `System.ComponentModel.Win32Exception`（return false），或 `SkipMux` 时直接跳过探针（更省一次进程启动）。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批）。
+
+---
+
+## RF-35：DRM 取钥链缺 `CancellationToken`（serve /cancel 最长约 6 分钟不可中断）
+
+- **位置**：`BBDown/Application/Decrypt.cs:48`（调用未传 token；`DecryptDrmAsync` 自 :19 起持有 `token` 且 mp4decrypt 阶段已用）、`BBDown.Core/DRM/CkcDecryptor.cs:5/:13`（`DrmDecryptor.GetKeyWidevineAsync` 无 token 形参）、`BBDown.Core/DRM/WidevineCdm.cs:26`（`GetKeysAsync` **已有** `CancellationToken token = default`，下游全链支持）。
+- **发现**：取钥这一环在 `DrmDecryptor` 薄封装处丢令牌：许可证客户端 2 分钟超时 × 3 次尝试 + 退避（HTTPUtil.cs:135），Ctrl+C / serve `/cancel` 期间取钥不可中断（约最长 6 分钟占住 `--max-concurrent` 槽位）。属 RF-17 取消吞没族的新位置（这里是"从未传递"而非"过滤器吞掉"）。
+- **结论**：采纳——`GetKeyWidevineAsync` 补 `CancellationToken token = default` 形参并在 Decrypt.cs:48 传入（3 行改动，下游管道现成）。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批）。
+
+---
+
+## RF-36：`ArticleCommand` 用弱净化 `SanitizeFileName`（Windows 保留名未防护 → CON.md）
+
+- **位置**：`BBDown/Commands/ArticleCommand.cs:42`；`BBDown/Infrastructure/LiveStreamUtil.cs:668-675`（`SanitizeFileName` 仅替换非法字符 + Trim，空名兜底"直播"）；对照 `BBDown.Core/Util/PathUtil.cs:55-60`（`GetValidFileName` 有保留名基名匹配 + `_` 前缀，含带扩展名变体 `CON.md` 的判定）。
+- **发现**：专栏标题是服务器可控字符串（`data.title`），恰为 `CON`/`NUL`/`PRN`/`COM1`… 时产出 `CON.md`——Windows 上设备名语义无法作为普通文件创建，`SaveAsMarkdownAsync` 抛异常 → 命令以误导性"专栏获取失败"退出 1。`PathUtil.GetValidFileName` 的保留名防护未被用上。
+- **结论**：采纳——:42 改 `BBDownUtil.GetValidFileName(article.Title)`（保留名自动 `_` 前缀）；LiveStreamUtil 内部消费 `SanitizeFileName` 的直播文件名同属此面，随批一并评估。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批）。
+
+---
+
+## RF-37：TV 登录轮询仍用自动跟随重定向客户端（RF-4/RF-13 收口族残留）
+
+- **位置**：`BBDown/Infrastructure/BBDownLoginUtil.cs:243`（`HTTPUtil.AppHttpClient.PostAsync(pollUrl, ...)`）。
+- **发现**：TV 登录轮询的 POST 携带按 appsecret 签名的参数体（auth_code/sign/ts），响应含新下发的 `access_token`，却走自动跟随重定向的 `AppHttpClient`——被攻破端点/开放重定向可把签名请求体重放到跨主机。WEB 登录轮询已按 RF-13 切 `NoRedirectClient` + 每跳 `IsTrustedCookieHost` 校验，gRPC POST（B3-F2）/Widevine 许可证（RF-4）同构收口，唯 TV 轮询漏网。入口 URL 硬编码可信端点、恒校验 TLS，无当前可利用面——与 RF-4/RF-13 同级的一致性/纵深防御项。
+- **结论**：采纳——切 `NoRedirectClient` + 3xx 显式拦截（或逐跳校验），与 RF-13 修法同构。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批：auth_code 与轮询两处均切 `NoRedirectClient` + 3xx 显式拦截。附带行为变化：这两个请求的客户端超时由 2 分钟收紧至 1 分钟（NoRedirectClient 池的既定语义，与 WEB 登录轮询一致），已在 CHANGELOG 记录）。
+
+---
+
+## RF-38：`ServeCommand` OCE 无 token 守卫（内部超时取消 → 退出码 0 掩盖异常退出）
+
+- **位置**：`BBDown/Commands/ServeCommand.cs:64-67`（`catch (OperationCanceledException) { return 0; }`）。
+- **发现**：仓库自有的取消分类规则（LiveCommand.cs:100-103、WatchLaterCommand.cs:107-115、ArticleCommand.cs:48-58、BBDownApiServer.cs:1185-1188 四处同款注释）要求区分"token 已取消的用户取消"与"token 未取消的真实取消"（内部超时联动 CTS 等）；serve 此处无守卫，任何非根 token 的 OCE 从 `StartServerAsync` 逃出都以退出码 0"成功"结束——Docker `restart: unless-stopped`/systemd `on-failure`/CI 包装全部丢失崩溃信号。优雅关停（根 token）保持 0 不受影响。
+- **结论**：采纳——补 `when (cancellationToken.IsCancellationRequested)`，未取消的 OCE 落到既有 `catch (Exception)`（:68-71）记日志 + 1。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批：取消 catch 补 when 守卫，未取消 OCE 落失败分支记日志返回 1。回归钉住"取消→0"主干；"未取消 OCE→1"的判别性用例需向 StartServerAsync 注入非根 token 的 OCE（无注入缝），该半边以代码走查为证）。
+
+---
+
+## RF-39：CLI-Reference 弹幕格式文档错误（`protobuf` 示例不可用 + 默认值描述错）
+
+- **位置**：`docs/wiki/CLI-Reference.md:52-53`；代码 `BBDown/Models/BBDownEnums.cs:6-10,15`（枚举仅 `Xml`/`Ass`；`DefaultFormats = [Xml, Ass]`）、`BBDown/Application/Options.cs:115`（未知格式报"包含不支持的下载弹幕格式"）。
+- **发现**：:53 示例 `xml,protobuf` 按文档操作即触发错误路径（1.6.16 已修正 README 与帮助文本为"仅支持 xml,ass"，wiki 总表漏改）；:52"默认保存为 XML"与默认值 `[Xml, Ass]` 不符（默认双格式）。
+- **结论**：采纳——:53 示例改 `xml,ass`；:52 改"默认同时保存 XML 与 ASS"。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批）。
+
+---
+
+## RF-40：README `--show-all` 描述错误（实为展示所有分 P 标题）
+
+- **位置**：`README.md:97`（"显示全部可用音视频流"）；代码 `BBDown/Configuration/MyOption.cs:42-44`（"展示所有分P标题"）、`BBDown/Application/Workflow.cs:166-180`（不带 flag 只打印前 5 个分 P 标题 + "......"）；`docs/wiki/CLI-Reference.md:40` 描述正确。
+- **发现**：README 把 `--show-all` 与 `--hide-streams` 的反面混为一谈；实际控制的是分 P 标题打印截断。按 README 期望"列出全部流"的用户会得到完全不同的行为。
+- **结论**：采纳——README:97 改"展示所有分 P 标题"（与 MyOption/CLI-Reference 对齐）。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批）。
+
+---
+
+## RF-41：模板文档缺 `<videoDate>` 占位符且计数 18→19
+
+- **位置**：`docs/wiki/Configuration-and-Templates.md:69`（"18 种变量占位符"）及 `:73-92`（18 行表，无 videoDate）；代码 `BBDown/Application/PathHelper.cs:73`（`"videoDate"` 分支，随 RF-19 修复过格式化与净化）。
+- **发现**：`PathHelper` 占位符 switch 实际 19 个键，文档表漏 `<videoDate>`（分 P 发布时间，与 `<publishDate>` 同格式）——该占位符正是 RF-19 修复对象，是活功能非死条目。计数与表格双重失实。
+- **结论**：采纳——补 `<videoDate>` 行（分 P 发布时间，接受与 `<publishDate>` 相同的日期格式串），计数改 19。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批）。
+
+---
+
+## RF-42：README serve 子选项表缺 `--notify-webhook`（与同页 :333 自相矛盾）
+
+- **位置**：`README.md:151-158`（表仅 4 行：`-l`/`--max-concurrent`/`--serve-token`/`--trusted-proxy`）；`BBDown/Commands/ServeCommand.cs:29`（`--notify-webhook` 定义）、`README.md:333`（RF-16 修正处已列举）。
+- **发现**：`ServeSettings` 共 5 个选项，README serve 子选项表漏 `--notify-webhook`（任务完成回调 URL）；同页后文 :333 已列出它，前后自相矛盾。RF-16 修的是 :333 括号列举，此表是独立漏网点。
+- **结论**：采纳——表补一行 `--notify-webhook`（任务完成回调 URL，受服务器侧 allowlist 校验）。
+- **状态**：✅ 已修复（2026-08-31，第 13 轮消纳批）。
 
 ---
 

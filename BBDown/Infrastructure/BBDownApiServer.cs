@@ -778,6 +778,10 @@ public partial class BBDownApiServer
         req.WvdPath = "";
         req.Mp4decryptPath = "";
         req.WorkDir = "";
+        // ConfigFile 是 DTO 从 MyOption 继承的死属性（--config-file 实际在 argv 层由
+        // BBDownConfigParser 处理，全库无消费点）：当前无害，但若未来接通"按任务合并
+        // 本地配置文件"，会是指向服务器任意本地文件的注入点。提前清零（第 13 轮 Info③）。
+        req.ConfigFile = null;
         // Insecure 会全局关闭 TLS 证书校验：serve 默认无 token，任意客户端 POST /add-task
         // 携带 {"insecure":true} 即可让携带操作者 SESSDATA 的请求跳过 TLS 校验被中间人截获。
         // serve 强制启用 TLS 校验，忽略该字段。
