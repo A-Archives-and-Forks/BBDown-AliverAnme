@@ -38,8 +38,11 @@ public class ArticleCommand : AsyncCommand<ArticleSettings>
             // 直接透传，绝对路径不受影响）；workDir 为空串时保持 CWD 语义。
             // 用纯函数 ResolveWorkDir：仅解析/建目录，不切进程 CWD（无全局副作用）。
             string workDir = Program.ResolveWorkDir(settings.WorkDir);
+            // 专栏标题是服务器可控字符串：用带 Windows 保留名防护的 GetValidFileName
+            //（标题恰为 CON/NUL/COM1 时产物 CON.md 在 Windows 上是设备名语义、无法
+            // 落盘）。LiveStreamUtil.SanitizeFileName 只替换非法字符、无保留名防护（RF-36）。
             string path = settings.Output is null
-                ? Path.Combine(workDir, $"{LiveStreamUtil.SanitizeFileName(article.Title)}.md")
+                ? Path.Combine(workDir, $"{BBDownUtil.GetValidFileName(article.Title)}.md")
                 : Path.Combine(workDir, settings.Output);
             await ArticleUtil.SaveAsMarkdownAsync(article, path);
             Logger.Log($"专栏已保存: {path}");

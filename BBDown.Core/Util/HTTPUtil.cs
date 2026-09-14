@@ -216,7 +216,12 @@ public static partial class HTTPUtil
     private static readonly Lazy<HttpClient> _insecureNoRedirectClient =
         new(() => CreateClient(allowRedirect: false, TimeSpan.FromMinutes(1), skipSslCheck: true), LazyThreadSafetyMode.ExecutionAndPublication);
 
-    private static HttpClient NoRedirectClient =>
+    /// <summary>
+    /// 禁自动跳转客户端的公开访问点：应用层登录轮询（TV）需要它做 3xx 显式拦截
+    /// （RF-37），与 gRPC POST / Widevine 许可证的凭据收口同构。仍按
+    /// <see cref="Config.Current"/> 的 SkipSslCheck 路由校验/不安全两个池。
+    /// </summary>
+    public static HttpClient NoRedirectClient =>
         Config.Current.SkipSslCheck ? _insecureNoRedirectClient.Value : _noRedirectClient.Value;
 
     /// <summary>手动逐跳重定向校验的最大跳数（防开放重定向无限循环）。</summary>

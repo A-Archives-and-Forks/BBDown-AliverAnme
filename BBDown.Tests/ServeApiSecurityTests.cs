@@ -257,6 +257,8 @@ public class ServeApiSecurityTests
             DrmKidHex = "42424242424242424242424242424242",
             // Interactive 会让任务阻塞在 Console.ReadLine：不可取消、占死并发槽（RF-24）
             Interactive = true,
+            // ConfigFile：serve DTO 继承的死属性，防御性清零（第 13 轮 Info③）
+            ConfigFile = "/tmp/evil-config",
         };
         BBDownApiServer.SanitizeUntrustedOptions(req);
         Assert.Equal("", req.Aria2cArgs);
@@ -277,6 +279,7 @@ public class ServeApiSecurityTests
         Assert.Equal("", req.DrmKeyHex);
         Assert.Equal("", req.DrmKidHex);
         Assert.False(req.Interactive);
+        Assert.Null(req.ConfigFile);
     }
 
     [Fact]

@@ -211,7 +211,14 @@ internal static class BBDownLoginUtil
             var parameters = BBDownUtil.GetTVLoginParms();
             Logger.Log("获取登录地址...");
             cancellationToken.ThrowIfCancellationRequested();
-            byte[] responseArray = await (await HTTPUtil.AppHttpClient.PostAsync(loginUrl, new FormUrlEncodedContent(parameters.ToDictionary()), cancellationToken)).Content.ReadAsByteArrayAsync(cancellationToken);
+            // 登录两个端点的 POST 体都携带按 appsecret 签名的参数（auth_code/sign/ts）：
+            // 改用禁自动跳转客户端 + 3xx 显式拦截——签名体不随 307/308 重放到非预期主机
+            //（RF-37，与 WEB 登录轮询 RF-13 / gRPC POST B3-F2 / Widevine 许可证 RF-4
+            // 的凭据收口同构）。
+            using var authResponse = await HTTPUtil.NoRedirectClient.PostAsync(loginUrl, new FormUrlEncodedContent(parameters.ToDictionary()), cancellationToken);
+            if ((int)authResponse.StatusCode is >= 300 and <= 399)
+                throw new InvalidOperationException($"TV 登录端点返回重定向({(int)authResponse.StatusCode})，已拒绝跟随");
+            byte[] responseArray = await authResponse.Content.ReadAsByteArrayAsync(cancellationToken);
             string web = Encoding.UTF8.GetString(responseArray);
             using var authDoc = JsonDocument.Parse(web);
             string url = authDoc.RootElement.GetPropertySafe("data").GetStringSafe("url")!;
@@ -240,7 +247,12 @@ internal static class BBDownLoginUtil
             {
                 await Task.Delay(1000, cancellationToken);
                 cancellationToken.ThrowIfCancellationRequested();
-                responseArray = await (await HTTPUtil.AppHttpClient.PostAsync(pollUrl, new FormUrlEncodedContent(parameters.ToDictionary()), cancellationToken)).Content.ReadAsByteArrayAsync(cancellationToken);
+                // TV 登录轮询的响应更是新下发 access_token 的通道：同款禁跳转 + 3xx
+                // 显式拦截（RF-37）。顺带以 using 释放响应（原实现不释放响应对象）。
+                using var pollResponse = await HTTPUtil.NoRedirectClient.PostAsync(pollUrl, new FormUrlEncodedContent(parameters.ToDictionary()), cancellationToken);
+                if ((int)pollResponse.StatusCode is >= 300 and <= 399)
+                    throw new InvalidOperationException($"TV 登录轮询遇到重定向({(int)pollResponse.StatusCode})，已拒绝跟随");
+                responseArray = await pollResponse.Content.ReadAsByteArrayAsync(cancellationToken);
                 web = Encoding.UTF8.GetString(responseArray);
                 using var pollDoc2 = JsonDocument.Parse(web);
                 // 该轮询接口的 code 是 JSON 数字，而 GetStringSafe 只接受字符串类型、

@@ -1,4 +1,5 @@
 using System;
+using System.ComponentModel;
 using BBDown.Core;
 using System.Diagnostics;
 using System.IO;
@@ -50,7 +51,11 @@ public static class ExternalToolHelper
                 return true;
             }
         }
-        catch (Exception ex) when (ex is IOException or InvalidOperationException or FormatException or OverflowException)
+        // Win32Exception（RF-34）：--skip-mux 时 FindBinaries 刻意跳过 ffmpeg 解析，
+        // FFMPEG 保持默认 "ffmpeg"；可执行文件不在 PATH 时 Process.Start 抛
+        // Win32Exception——探针语义是"探测失败 → return false → 走 mp4box"，
+        // 不能让该异常逃逸穿透页面级/批级过滤器中止整批下载。
+        catch (Exception ex) when (ex is IOException or InvalidOperationException or FormatException or OverflowException or Win32Exception)
         {
             Logger.LogDebug("检测ffmpeg版本失败: {0}", ex.Message);
         }

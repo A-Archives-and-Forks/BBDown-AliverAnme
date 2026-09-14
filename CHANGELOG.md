@@ -2,6 +2,40 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [Unreleased]
+
+### 修复
+
+- **订阅历史文件损坏时 `sub check` 静默清零全部下载历史**：历史损坏被隔离后，逐 aid 循环的异常过滤器会吞掉专用的损坏异常继续跑完当前订阅——下一个 aid 记录时发现历史文件不存在，静默重建仅含自身的空历史并写回，下次 check 把所有订阅内容当作新增全量重下。现损坏异常立即终止整个检查（与存储层文档化的中止契约对齐）。
+- **`sub check` 的 Ctrl+C 被记为订阅失败或退出码 130**：与文档"子命令取消返回 0"及 watchlater 的既有行为不一致。现与 watchlater 对齐——主动取消返回 0，token 未取消的中断按失败返回 1。
+- **畸形清晰度 id 中止整批多 P 下载**：轨道排序对服务器可控的清晰度 id 裸 `Convert.ToInt32`，缺失/非数字/超 int32 时 FormatException/OverflowException 穿透页面级与批级两级失败隔离过滤器（与 v1.6.17 修复的 NotSupportedException 同族逃逸面），单个畸形节点即放弃剩余分 P。现 TryParse 降级，两级过滤器同步扩充。
+- **`--skip-mux` 且无 ffmpeg 时下载杜比视界视频整批失败**：ffmpeg 版本探测的进程启动异常（Win32Exception）未被"探测失败"分支处理；且 SkipMux 下本就不需要探测。现过滤器兜底为走 mp4box + SkipMux 直接跳过探测。
+- **专栏标题为 Windows 保留名时保存失败**：标题恰为 CON/NUL/COM1 等设备名时产物 `CON.md` 以设备名语义无法落盘，报误导性的"专栏获取失败"。专栏与直播文件名净化均接入保留名防护（与下载管线的 `GetValidFileName` 同一规则）。
+- **serve 异常退出被记为退出码 0**：非用户取消的 OperationCanceledException（内部超时联动等）被取消分支吞掉，Docker restart 策略/systemd/CI 丢失崩溃信号。现取消分支补 token 守卫，未取消的异常落失败分支记日志并返回 1。
+- **DRM 密钥临时文件"安全覆写"少覆写 1 字节**：固定写 64 个 NUL 覆写 65 字节的 `kid:key` 行，`FileMode.Create` 截断后最后一个字符仍留在盘上。现按实际载荷长度覆写。
+
+### 改进
+
+- **DRM 取钥支持取消**：`GetKeyWidevineAsync` 透传 CancellationToken 至许可证请求链路（原在薄封装处断链）——serve `/cancel` 与 Ctrl+C 在取钥窗口（2 分钟超时 ×3 次尝试，最长约 6 分钟）内不再不可中断。
+- **评论 JSON / 专栏 Markdown 的时间戳固定 InvariantCulture**：自定义格式的 `:` 是时间分隔符占位符，fi-FI 等区域设置下产出 `12.00.00` 形态、产物跨机漂移；数据文件导出与控制台展示不同，必须文化无关。
+- **TV 登录两个端点禁跟随重定向**：auth_code 获取与扫码轮询的 POST 体携带按 appsecret 签名的参数、轮询响应更是新下发 access_token 的通道，原走自动跟随重定向的共享客户端。现改禁跳转客户端 + 3xx 显式拦截（与 WEB 登录轮询、gRPC POST、Widevine 许可证的凭据收口同构），并顺带修复响应对象不释放的问题。这两个请求的客户端超时随之由 2 分钟收紧至 1 分钟（禁跳转客户端池的既定语义，与 WEB 登录轮询一致；单次小 POST 影响可忽略）。
+
+### 安全性
+
+- **serve 请求体 `configFile` 字段防御性清零**：该字段是 DTO 从 MyOption 继承的死属性（实际由 argv 层处理、无消费点），若未来接通"按任务合并本地配置文件"会是指向服务器任意本地文件的注入点。提前清零。
+
+### 文档
+
+- API.md：`DownloadTask` 字段清单补 `ErrorMessage`（失败原因，已单行化净化）与 `SavePaths`（服务器本地产物绝对路径）两个实际已序列化的字段；补 `/get-tasks*` 查询并发限速说明（429 + `Retry-After: 60`）。
+- CLI-Reference：`--download-danmaku-formats` 示例 `xml,protobuf` 改为 `xml,ass`（枚举仅支持 xml/ass）；`--download-danmaku` 默认行为修正为同时保存 XML 与 ASS。
+- README：`--show-all` 描述修正为"展示所有分 P 标题"（并非列出全部音视频流）；serve 子选项表补 `--notify-webhook`。
+- 配置模板文档：占位符对照表补 `<videoDate>`（当前分 P 发布时间，接受与 `<publishDate>` 相同的格式后缀），计数 18→19。
+
+### 测试增强
+
+- 全库测试 678 例（新增 12 例）：轨道排序畸形 id 回归（缺失/非数字/超 int32 不再抛异常，`SortTracks` 提为 internal）；DOVI 探针缺失二进制回归（Win32Exception 按探测失败处理）；DRM 取钥取消透传（测试内自构造最小 wvd + PSSH，预取消 token 零网络即抛 OCE）；serve 用户取消退出码（经 `StartServerAsync` → `RunAsync` 全链返回 0）；评论 JSON/专栏 Markdown 时间戳文化无关（fi-FI 区域断言冒号分隔）各 1 例；直播文件名 Windows 保留名防护 6 断言。
+- `sub check` 的损坏异常重抛与取消分类为命令层语义：`DoWorkAsync`/`ResolveAsync` 静态直连网络无注入缝，回归以代码走查 + 全量编译验证，测试缝待 DownloadOrchestrator 拆分（OPTIMIZATION_PLAN P0-1）后补。
+
 ## [1.6.17] - 2026-08-30
 
 ### 修复

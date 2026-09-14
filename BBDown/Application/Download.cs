@@ -91,7 +91,9 @@ internal partial class Program
                 succeeded = await DownloadPageAsync(p, myOption, vInfo, pagesInfo, encodingPriority, dfnPriority, firstEncoding,
                     downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, apiType, relatedTask, cancellationToken);
             }
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException or TaskCanceledException or AggregateException)
+            // FormatException/OverflowException（RF-31）：与页面级过滤器同步扩充，
+            // 单 P 的确定性解析异常不中止整批（丢 webhook/failedPages 的同族逃逸面）。
+            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException or TaskCanceledException or AggregateException or FormatException or OverflowException)
             {
                 // 真正的用户取消/服务关停（token 已取消）必须正常中止整批，不能进失败分支续跑；
                 // HTTP 超时抛的 TaskCanceledException 其 token 未取消，会进入下方"记录失败后继续"分支。
@@ -743,8 +745,12 @@ internal partial class Program
 
                         if (selectedVideo != null)
                         {
-                            //杜比视界, 若ffmpeg版本小于5.0, 使用mp4box封装
-                            if (selectedVideo.dfn == AppSettings.QualityMap["126"] && !myOption.UseMP4box && !await ExternalToolHelper.CheckFFmpegDOVIAsync())
+                            //杜比视界, 若ffmpeg版本小于5.0, 使用mp4box封装。SkipMux 时跳过探测：
+                            // 一是不需要混流器版本信息，二是 FindBinaries 已刻意跳过 ffmpeg 解析
+                            //（Options.cs 的 if (!SkipMux) 门控），FFMPEG 可能仍是默认 "ffmpeg"，
+                            // 探针会白跑一次进程启动、甚至因可执行文件不存在抛 Win32Exception
+                            //（RF-34 已在探针过滤器兜底为 return false，这里再省一次无谓启动）。
+                            if (selectedVideo.dfn == AppSettings.QualityMap["126"] && !myOption.UseMP4box && !myOption.SkipMux && !await ExternalToolHelper.CheckFFmpegDOVIAsync())
                             {
                                 Logger.LogWarn($"检测到杜比视界清晰度且您的ffmpeg版本小于5.0,将使用mp4box混流...");
                                 myOption.UseMP4box = true;
@@ -1081,7 +1087,10 @@ internal partial class Program
                     }
                     return true; // success, exit retry loop
                 }
-                catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException or AggregateException
+                // FormatException/OverflowException（RF-31）：SortTracks 的服务器可控 id
+                // 解析（已改 TryParse 兜底）与各类 Convert 调用可能抛出——按"单 P 失败"
+                // 隔离重试，不让异常逃逸中止整批。
+                catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException or AggregateException or FormatException or OverflowException
                                   || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
                 {
                     // 风控页（200+HTML 的 RiskControlResponseException，继承 JsonException）也参与

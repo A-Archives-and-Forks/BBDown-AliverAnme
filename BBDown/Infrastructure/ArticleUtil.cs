@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -47,7 +48,9 @@ public static partial class ArticleUtil
         var sb = new StringBuilder();
         sb.AppendLine($"# {article.Title}");
         sb.AppendLine();
-        sb.AppendLine($"> 作者: {article.Author}  |  发布时间: {DateTimeOffset.FromUnixTimeSeconds(article.PubTime).LocalDateTime:yyyy-MM-dd HH:mm}");
+        // 专栏 Markdown 是数据文件导出：`:` 是时间分隔符占位符，fi-FI 等区域产出
+        // "12.00" 跨机漂移——固定 InvariantCulture（第 13 轮 Info①）。
+        sb.AppendLine($"> 作者: {article.Author}  |  发布时间: {DateTimeOffset.FromUnixTimeSeconds(article.PubTime).LocalDateTime.ToString("yyyy-MM-dd HH:mm", CultureInfo.InvariantCulture)}");
         sb.AppendLine();
         sb.AppendLine(article.MarkdownContent);
         sb.AppendLine();

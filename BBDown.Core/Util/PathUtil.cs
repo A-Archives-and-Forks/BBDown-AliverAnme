@@ -15,6 +15,17 @@ public static class PathUtil
     };
 
     /// <summary>
+    /// Windows 设备保留名判定：按基名匹配——CON.md / con.txt 等带扩展名变体同样保留
+    /// （在 Windows 上以任何扩展名出现都无法作为普通文件创建）。抽出供
+    /// <see cref="GetValidFileName"/> 与应用层文件名净化（直播/专栏文件名，RF-36）
+    /// 共用同一规则，避免各自维护保留名清单漂移。
+    /// </summary>
+    public static bool IsReservedDeviceName(string candidate)
+    {
+        var nameWithoutExt = Path.GetFileNameWithoutExtension(candidate);
+        return ReservedNames.Contains(candidate) || ReservedNames.Contains(nameWithoutExt);
+    }
+    /// <summary>
     /// 生成安全的文件名。除过滤非法字符/保留名外，还做基名长度截断：
     /// Windows 单组件上限 255 字符、整路径上限 260（未开启长路径支持的默认环境），
     /// 超长标题（如超长多P视频标题拼入 <videoTitle>/[P##]<pageTitle> 模板）会在
@@ -55,8 +66,7 @@ public static class PathUtil
         // Windows 保留名规则：CON/PRN/AUX/NUL/COM1..9/LPT1..9 后跟任意扩展名仍然保留
         // （CON.txt、CON.foo 在 Windows 上同样无法创建）。因此按基名匹配，
         // 而不是只匹配完整名称——否则 "CON.txt" 会漏过校验而在 Windows 上报错。
-        var nameWithoutExt = Path.GetFileNameWithoutExtension(title);
-        if (ReservedNames.Contains(title) || ReservedNames.Contains(nameWithoutExt))
+        if (IsReservedDeviceName(title))
             title = "_" + title;
         // Windows 不允许文件/目录名以点或空格结尾（会静默剥离/创建失败）：
         // 标题 "video." 或 "video " 在 Windows 上 File.Create/目录创建直接失败。
