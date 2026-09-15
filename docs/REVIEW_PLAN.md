@@ -331,3 +331,34 @@
 | Info 级观察（不登记 RF） | ① aria2c input-file UA 行未剥 CRLF（RF-21 旁支，仅 CLI 用户输入面）；② DanmakuUtil.SaveAsAssAsync/CommentUtil.SaveToJsonAsync 本地写盘无 token（毫秒级窗口）；③ ExternalProcessRunner 成功路径 5s 管道观察超时可误杀 exit 0（第 12 轮已定案维持现状，不重开）；④ FindBinaries 显式工具路径不存在时静默回退 PATH 无警告；⑤ quick-skip 路径不清 aid 目录遗留分片（延迟清理被无限推迟，触发面窄）；⑥ CoverOnly 产物扩展名取自服务器 URL 的 Path.GetExtension 未净化；⑦ Program.cs:82 stty 进程未释放、Archive 写入在两级过滤器外；⑧ serve /add-task 不校验 Url 非空（null → NRE 型失败任务占 accept 槽）；⑨ Language 未校验（mp4box -add 值 `:`/`=` token 注入，argv 无命令行注入，仅功能影响）；⑩ SubscriptionStore.AtomicWrite 无 flush-to-disk、公共 Load 不持 _ioLock；⑪ ServeCommand.IsLoopbackListenUrl 与 BBDownApiServer.IsLoopbackListenAddress 双实现漂移面；⑫ serve 测试覆盖缺口：webhook 端到端投递/trusted-proxy/Retry-After/Cache-Control 零断言；⑬ Widevine 许可证错误体未过控制字符剥离入日志（B3-L3 族残余）；⑭ 直播流读取用自动重定向 StreamingHttpClient（一致性）；⑮ Logger 时间戳 CurrentCulture（仅日志可读性）；⑯ SanitizeFileName 纯点号名（遗留观察②定案：唯一调用点拼固定后缀无触发面，建议统一 PathUtil.GetValidFileName 并修 :502 注释）；⑰ MAINTENANCE_PLAN/OPTIMIZATION_PLAN 部分锚点随提交漂移（历史计划文档可接受，建议加"锚点以撰写时点为准"声明）；⑱ README --show-all 括注"前 5 个"未提默认还展示最后一个分 P（微瑕） |
 | 无新发现面 | 认证/Host/CSRF/Content-Type 闸（大小写、IPv4-mapped、多值头、段感知路由全部 fail-closed）；持久化原子性与锁序（_persistLock→_taskLock 无环）；SanitizeUntrustedOptions 字段完备性（对照 MyOption 全 60+ 字段，仅 Area/Language 瑕疵已登记）；webhook SSRF 三重防护；HttpClient 池隔离矩阵；WBI 签名链；gRPC 帧防御；时钟校准；DRM 密钥处理（覆写/ZeroMemory/FixedTimeEquals）；RF-9/10/15/17/24/32/38/11/12/26/31/35 修复复核无旁支（RF-26/RF-28/E1 旁支已另立 RF-45/RF-51/RF-49）；直播循环其余面（看门狗/退避封顶/合成校验）；取消令牌透传主链路；测试卫生（failSkips 在位、零 Skip 残留、try/finally 恢复、Collection 串行、Category 纪律）；CI 门禁与 AGENTS.md 逐字一致；Release 工序；4 个 RF-29 文件字节复核仍干净；CLI-Reference 65 选项/API.md 端点/退出码表全对齐；Config AsyncLocal 隔离；BBDown.config 与 serve 不合并 |
 | 审查方法备注 | 四路并行深查 + Medium 全量人工复核（过滤器白名单、异常链、证据行号逐条亲验）；对第 9-13 轮全部修复项做了"旁支漏洞"复查（产出 RF-45/RF-49/RF-51 三条旁支 + RF-28 勘误——消纳批验证不能只验"修复在位"，要验"修复是否覆盖登记声称的全部引用面"） |
+
+---
+
+## 第 14 轮消纳批：RF-43~RF-61 修复（2026-09-15）
+
+> 本批消纳第 14 轮登记的全部 19 项（7 Medium + 12 Low，含文档族 RF-61）。修复路线遵循既有先例：异常逃逸面优先"源头规范化"（RF-14/RF-47 同构），过滤器白名单只补确有真实触发面的类型，净化下沉到来源而非逐 sink 打补丁。
+
+| 项 | 结果 |
+|----|------|
+| RF-43 | ✅ `SystemProcessRunner.RunAsync` 的 `p.Start()` 包裹转译（Win32Exception → InvalidOperationException，消息带工具名）；`Decrypt.cs` 新增 `StartProcessSafe` 同构收口 mp4decrypt 启动点 |
+| RF-44 | ✅ 两级过滤器（Download.cs 页面级/重试级）+ 命令级过滤器（SubCommand ×2/WatchLater）补 `UnauthorizedAccessException`；7 处单类型 `catch (IOException)` 清理子句对齐为双类型 |
+| RF-45 | ✅ Parser.cs 列表重赋值收进 `reparsePass == 0` 分支——降级路径保持 pass 0 列表（含已追加 dolby/flac）不动；回归测试待 DownloadOrchestrator 拆分（ExtractTracksAsync 静态直连网络无注入缝，与 RF-30/RF-32 同批如实标注） |
+| RF-46 | ✅ LiveStreamUtil 两处链式取节点改 `TryGetPropertySafe` 逐级判空，缺节点抛"暂时无法获取…将自动重试"的 InvalidOperationException 走既有瞬态退避 |
+| RF-47 | ✅ AppHelper `ParseId` 改抛 InvalidOperationException；`ParseFrom` 包 try/catch 转译 InvalidProtocolBufferException |
+| RF-48 | ✅ `Page.bvid` getter 包 try/catch，Encode 越界回落原始 aid（与非纯数字分支同语义） |
+| RF-49 | ✅ FavListFetcher/SpaceVideoFetcher/BuvidProvider 三处过滤器补 `TimeoutException`；SpaceVideoFetcher 过时注释同步修正 |
+| RF-50 | ✅ `GetWebSourceCoreAsync` 重构为逐跳循环：sendCookie 路径走 NoRedirectClient + 每跳 `IsTrustedCookieHost`；匿名路径保持 AppHttpClient 自动跳转不变；3xx 无 Location 按终态读 body（RF-59 同族语义） |
+| RF-51 | ✅ `GetWebSourceCoreAsync`/`GetWebSourceAnonymousCheckedAsync` 改 `ReadContentBoundedAsync` + `DecodeBodyBytes`（后者顺带补 EnsureSuccessStatusCode）；`DecodeBodyBytes` 补 BOM 剥离对齐 ReadAsStringAsync 行为 |
+| RF-52 | ✅ SeriesListFetcher/MediaListFetcher（含分页块）改先查 code 再取 data；MediaList 回退过滤器补 KeyNotFoundException |
+| RF-53 | ✅ `GetPropertySafe` 键名清单过控制字符剥离 + 截断保留前 8 个（`FormatAvailableKeys`） |
+| RF-54 | ✅ `ResolveAsync` 返回前统一 `SanitizeLogString` 单行化；Pages.cs/Options.cs 两处含客户端原文的 LogError 套用；SanitizeLogString 补单测（此前零单测） |
+| RF-55 | ✅ `IsSafeCallbackUrlAsync` 空数组返回 false；`SendCallbackAsync` 空数组记 Warn 跳过；回调过滤器放宽为 `catch (Exception)` |
+| RF-56 | ✅ `SanitizeUntrustedOptions` 补 `req.Area` 白名单（hk/tw/th 大小写不敏感，其余回落 ""）+ 单测 |
+| RF-57 | ✅ `ToolFinder.FindTool` 移除 CWD 搜索（仅 PATH + 程序目录 + Unix 常见路径） |
+| RF-58 | ✅ `FormatSavePath` 的 dfn/videoCodecs/audioCodecs 占位符统一过 `GetValidFileName`（res/fps/bandwidth 为纯数字/格式化值无需净化） |
+| RF-59 | ✅ 登录轮询 3xx 无 Location 分支改读 body 返回（与 2xx 同路径），不再落"跳数超限"异常 |
+| RF-60 | ✅ `Audio.shortCodecs` 改 `ToUpperInvariant()` |
+| RF-61 | ✅ 文档族 6 项：archives 产物说明 ×2（程序目录 BBDown.archives）、README 补 `<videoDate>`、API.md 补 413 + 忽略清单补 configFile/area 白名单 + 移除不存在的 `--work-dir` 表述 + ErrorMessage 措辞对齐 |
+| 配套 | CHANGELOG Unreleased 补 19 项条目（修复 10 / 改进 8 / 安全性 1 / 文档 1 / 测试增强）；REVIEW_FINDINGS 状态表与详述章节全部翻 ✅ |
+| 测试 | ✅ 全库 715/715 全绿（+37：SanitizeLogString 契约、area 白名单、webhook 零地址、GetPropertySafe 净化/截断、Page.bvid 回落、shortCodecs 文化不变） |
+| 基线 | ✅ dotnet build Release 0 警告 0 错误；dotnet format --verify-no-changes 通过 |

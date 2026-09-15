@@ -52,7 +52,7 @@
 
 ### 测试增强
 
-- 全库测试 715 例（第 14 轮消纳批新增 37 例）：`SanitizeLogString` 单行化契约（RF-54，此前零单测）；serve `area` 白名单（RF-56）；webhook 零地址 DNS 应答拒绝（RF-55）；`GetPropertySafe` 异常消息键名净化与截断（RF-53）；`Page.bvid` 越界 aid 回落（RF-48）；`Audio.shortCodecs` tr-TR 文化不变（RF-60）。
+- 全库测试 700 例（第 14 轮消纳批新增 22 例，PR gate 过滤器）：`SanitizeLogString` 单行化契约（RF-54，此前零单测）；serve `area` 白名单（RF-56）；webhook 零地址 DNS 应答拒绝（RF-55）；`GetPropertySafe` 异常消息键名净化与截断（RF-53）；`Page.bvid` 越界 aid 回落（RF-48）；`Audio.shortCodecs` tr-TR 文化不变（RF-60）。
 - RF-45（免二压降级丢杜比）的回归测试：`ExtractTracksAsync` 静态直连网络无注入缝，与 RF-30/RF-32 同批以代码走查 + 全量编译验证，测试缝待 DownloadOrchestrator 拆分（OPTIMIZATION_PLAN P0-1）后补。
 
 ## [1.6.17] - 2026-08-30
