@@ -24,7 +24,20 @@ public static class Entity
             get
             {
                 if (long.TryParse(aid, out var aidNum))
-                    return BilibiliBvConverter.Encode(aidNum);
+                {
+                    // RF-48：服务器可控 aid（收藏夹/合集/空间条目 id 可为 "0"/负数/超界大数）
+                    // 经 Encode 范围校验抛 ArgumentOutOfRangeException——不在下载页两级 catch
+                    // 过滤器内（Download.cs 注释三次明言 AOORE 须逐点防护），会中止整批。
+                    // 与下方"非纯数字"分支同语义：编码失败回落原始 aid。
+                    try
+                    {
+                        return BilibiliBvConverter.Encode(aidNum);
+                    }
+                    catch (ArgumentOutOfRangeException)
+                    {
+                        return aid;
+                    }
+                }
                 // aid 非纯数字（可能本就是 BV 号或自定义标识）：无法编码，直接返回原始 aid。
                 // 注意：此处 fallback 返回的是原始字符串而非真实 BV——调用方不应假设 bvid 恒为
                 // 规范化 BV 号（如仅用于展示/匹配时它等价 aid；用于请求 API 时请用 aid 字段）。
@@ -171,7 +184,9 @@ public static class Entity
         public required int dur;
 
         // E-AC-3 => EAC3
-        public string shortCodecs => codecs.ToUpper().Replace("-", string.Empty);
+        // RF-60：ToUpperInvariant——tr-TR 等区域下含 'i' 的服务器可控 codecs 串经
+        // 文化敏感 ToUpper() 变 'İ'（U+0130），选轨优先级查表失败静默退化。
+        public string shortCodecs => codecs.ToUpperInvariant().Replace("-", string.Empty);
 
         public override bool Equals(object? obj)
         {

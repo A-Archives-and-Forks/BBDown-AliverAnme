@@ -224,8 +224,10 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
                     {
                         throw;
                     }
+                    // UnauthorizedAccessException（RF-44）：与下载页过滤器同步扩充——
+                    // 只读属性文件/受控文件夹访问等本地权限错误按"单 aid 失败"继续。
                     catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
-                                                or InvalidOperationException or IOException or ArgumentException
+                                                or InvalidOperationException or IOException or UnauthorizedAccessException or ArgumentException
                                                 or TimeoutException or TaskCanceledException)
                     {
                         anyAidFailed = true;
@@ -249,8 +251,9 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
             {
                 throw;
             }
+            // UnauthorizedAccessException（RF-44）：与下载页过滤器同步扩充。
             catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
-                                        or InvalidOperationException or IOException or ArgumentException
+                                        or InvalidOperationException or IOException or UnauthorizedAccessException or ArgumentException
                                         or TimeoutException or TaskCanceledException)
             {
                 // 单个订阅失败不中止其余订阅，但必须计入失败数：

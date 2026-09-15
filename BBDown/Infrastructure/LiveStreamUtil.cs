@@ -74,7 +74,11 @@ public static class LiveStreamUtil
         int infoCode = infoDoc.RootElement.GetInt32Safe("code");
         if (infoCode != 0)
             throw new InvalidOperationException($"获取直播间信息失败(code={infoCode}): {infoDoc.RootElement.GetValueAsStringSafe("message")}");
-        var info = infoDoc.RootElement.GetPropertySafe("data");
+        // RF-46：code=0 但 data 节点缺失（接口降级/灰度变更/风控 JSON 变体）经 GetPropertySafe
+        // 抛 KeyNotFoundException——不在重连过滤器白名单，会终止整场录制。逐级判空，
+        // 缺节点按瞬态故障走既有退避重连路径。
+        var info = infoDoc.RootElement.TryGetPropertySafe("data")
+            ?? throw new InvalidOperationException($"暂时无法获取直播间 {roomId} 的信息（响应缺 data 节点），将自动重试");
         string title = info.GetValueAsStringSafe("title");
         if (title == "") title = $"直播间{roomId}";
         string uname = info.GetValueAsStringSafe("uname");
@@ -97,7 +101,11 @@ public static class LiveStreamUtil
             int playCode = playDoc.RootElement.GetInt32Safe("code");
             if (playCode != 0)
                 throw new InvalidOperationException($"获取直播流信息失败(code={playCode}): {playDoc.RootElement.GetValueAsStringSafe("message")}");
-            var playData = playDoc.RootElement.GetPropertySafe("data").GetPropertySafe("playurl_info").GetPropertySafe("playurl");
+            // RF-46：code=0 但 data/playurl_info/playurl 节点缺失的畸形响应经 GetPropertySafe
+            // 抛 KeyNotFoundException——不在重连过滤器白名单（:319），会终止整场录制，违背
+            // "不设重试上限"承诺。逐级判空，缺节点按瞬态故障走既有退避重连路径。
+            var playData = playDoc.RootElement.TryGetPropertySafe("data")?.TryGetPropertySafe("playurl_info")?.TryGetPropertySafe("playurl")
+                ?? throw new InvalidOperationException($"暂时无法获取直播间 {roomId} 的流地址（响应缺 playurl 节点），将自动重试");
             picked = SelectFlvUrl(playData, out lastFormats, out pickedQn);
             if (picked is not null) break;
         }

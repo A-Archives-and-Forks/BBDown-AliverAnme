@@ -41,7 +41,9 @@ public static class BuvidProvider
             Logger.LogDebug("已获取 buvid3: {0}", buvid3);
             return updated;
         }
-        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException)
+        // TimeoutException（RF-49）：buvid3 是纯装饰性设备标识，超时同样按"跳过注入"降级，
+        // 不让整个空间抓取失败。
+        catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException or TimeoutException)
         {
             Logger.LogDebug("获取 buvid3 失败: {0}", ex.Message);
             return null;

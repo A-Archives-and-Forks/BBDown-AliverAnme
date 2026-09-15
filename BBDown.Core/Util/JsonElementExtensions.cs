@@ -66,8 +66,34 @@ public static class JsonElementExtensions
         if (element.ValueKind != JsonValueKind.Object)
             throw new InvalidOperationException($"Expected JSON object, got {element.ValueKind}");
         if (!element.TryGetProperty(propertyName, out var prop))
-            throw new KeyNotFoundException($"JSON property not found: '{propertyName}' (available keys: {string.Join(", ", element.EnumerateObject().Select(p => p.Name))})");
+            throw new KeyNotFoundException($"JSON property not found: '{propertyName}' (available keys: {FormatAvailableKeys(element)})");
         return prop;
+    }
+
+    /// <summary>
+    /// RF-53：异常消息里的"全部键名"清单来自服务器可控响应，可含经 JSON 反转义的控制字符
+    /// （\u001b ANSI 转义等），直拼消息会经 Logger/终端注入转义序列（B3-L3 同族）；大响应的
+    /// 键名清单同时可把单行消息撑到极大。与 Parser.SanitizeServerText 同款：剥离控制字符 +
+    /// 截断保留前 8 个键名。
+    /// </summary>
+    private static string FormatAvailableKeys(JsonElement element)
+    {
+        const int MaxKeys = 8;
+        var sb = new System.Text.StringBuilder();
+        int count = 0;
+        foreach (var p in element.EnumerateObject())
+        {
+            if (count >= MaxKeys)
+            {
+                sb.Append(", …");
+                break;
+            }
+            if (count > 0) sb.Append(", ");
+            foreach (var ch in p.Name)
+                sb.Append(char.IsControl(ch) ? ' ' : ch);
+            count++;
+        }
+        return sb.ToString();
     }
 
     public static string GetValueAsStringSafe(this JsonElement element, string propertyName, string defaultValue = "")

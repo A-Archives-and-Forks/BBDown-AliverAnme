@@ -89,8 +89,9 @@ public class WatchLaterCommand : AsyncCommand<WatchLaterSettings>
                 {
                     throw;
                 }
+                // UnauthorizedAccessException（RF-44）：与下载页过滤器同步扩充。
                 catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException
-                                            or IOException or ArgumentException or TimeoutException or TaskCanceledException)
+                                            or IOException or UnauthorizedAccessException or ArgumentException or TimeoutException or TaskCanceledException)
                 {
                     // 单个视频失败不应中止整批稍后再看，但必须计入失败数，
                     // 让调用方拿到非零退出码（此前静默继续并返回 0，

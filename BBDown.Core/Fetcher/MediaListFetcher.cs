@@ -19,8 +19,9 @@ public class MediaListFetcher : IFetcher
         var json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
         var root = infoJson.RootElement;
-        var data = root.GetPropertySafe("data");
-        if (data.ValueKind != JsonValueKind.Object)
+        // RF-52：先查 code 再取 data——错误响应（{"code":-400,...} 无 data 键）经 GetPropertySafe
+        // 抛英文裸 KeyNotFoundException，精心编写的 code 诊断不可达。
+        if (!(root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object))
         {
             // 部分情况下（合集被删除、设为私密或无权访问）data 会是 null
             // 也有可能是“系列”却被误识别为合集，这里优先尝试按系列解析
@@ -28,7 +29,9 @@ public class MediaListFetcher : IFetcher
             {
                 return await new SeriesListFetcher().FetchAsync($"seriesBizId:{id}", cancellationToken);
             }
-            catch (Exception fallbackEx) when (fallbackEx is HttpRequestException or InvalidOperationException)
+            // KeyNotFoundException（RF-52）：SeriesListFetcher 内部节点缺失同属"误识别为系列"
+            // 的回退场景，与 HttpRequestException/InvalidOperationException 一并降级为可读诊断。
+            catch (Exception fallbackEx) when (fallbackEx is HttpRequestException or InvalidOperationException or KeyNotFoundException)
             {
                 Logger.LogDebug("MediaList fallback to SeriesList failed: {0}", fallbackEx.Message);
                 var code = root.TryGetProperty("code", out var codeElem) && codeElem.ValueKind == JsonValueKind.Number
@@ -57,8 +60,8 @@ public class MediaListFetcher : IFetcher
             json = await HTTPUtil.GetWebSourceAsync(listApi, token: cancellationToken);
             using var listJson = JsonDocument.Parse(json);
             var listRoot = listJson.RootElement;
-            data = listRoot.GetPropertySafe("data");
-            if (data.ValueKind != JsonValueKind.Object)
+            // RF-52：先查 code 再取 data（与首屏一致，错误响应不再抛裸 KeyNotFoundException）。
+            if (!(listRoot.TryGetProperty("data", out var listData) && listData.ValueKind == JsonValueKind.Object))
             {
                 var code = listRoot.TryGetProperty("code", out var codeElem) && codeElem.ValueKind == JsonValueKind.Number
                     ? codeElem.GetInt32()
@@ -68,6 +71,7 @@ public class MediaListFetcher : IFetcher
                     : "未知错误";
                 throw new InvalidOperationException($"获取合集视频列表失败(code={code}): {message}");
             }
+            data = listData;
             hasMore = data.GetBooleanSafe("has_more");
             // 游标必须记录本页最后一条的 id，无论它是否被 attr 过滤跳过。
             // 否则整页都是失效条目时 oid 不会推进，下一轮请求同一页 → 死循环。

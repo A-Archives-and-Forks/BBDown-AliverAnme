@@ -311,6 +311,7 @@ BBDown -a --access-token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
 | `<ownerName>` | 上传者名称（下载番剧时为空） |
 | `<ownerMid>` | 上传者 mid（下载番剧时为空） |
 | `<publishDate>` | 发布时间（yyyy-MM-dd_HH-mm-ss） |
+| `<videoDate>` | 分 P 发布时间（yyyy-MM-dd_HH-mm-ss） |
 | `<apiType>` | API 类型（TV / APP / INTL / WEB） |
 
 > **命名模板选择**：单分P视频用单P模板（`<videoTitle>` 或 `-F`），多分P视频用多P模板（`<videoTitle>/[P<pageNumberWithZero>]<pageTitle>` 或 `-M`）。多P判定基于**实际下载的分P数**——`-p 3` 只单选 1 集时即使视频有多个分P也走单P模板（`-F` 生效，产物不带 `[P##]` 前缀）；番剧未完结时固定按多P处理。

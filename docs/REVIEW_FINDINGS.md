@@ -50,6 +50,25 @@
 | RF-40 | README `--show-all` 描述错误（实为展示所有分 P 标题） | Low（文档） | 采纳（对齐 MyOption） | ✅ 已修复（第 13 轮消纳批） |
 | RF-41 | 模板文档缺 `<videoDate>` 占位符且计数 18→19 | Low（文档） | 采纳（补行 + 改计数） | ✅ 已修复（第 13 轮消纳批） |
 | RF-42 | README serve 子选项表缺 `--notify-webhook`（与同页 :333 自相矛盾） | Low（文档） | 采纳（补一行） | ✅ 已修复（第 13 轮消纳批） |
+| RF-43 | 外部程序"已解析但不可启动"中止整批多 P（Win32Exception 逃逸） | Medium | 采纳（启动点规范化 InvalidOperationException） | ✅ 已修复（第 14 轮消纳批） |
+| RF-44 | 本地权限错误中止整批下载（UnauthorizedAccessException 逃逸） | Medium | 采纳（过滤器补齐 + 清理 catch 对齐） | ✅ 已修复（第 14 轮消纳批） |
+| RF-45 | 免二压重发降级后静默丢失杜比/Hi-Res 音轨 | Medium | 采纳（列表重赋值仅首轮） | ✅ 已修复（第 14 轮消纳批） |
+| RF-46 | 直播录制遇畸形响应整场终止（KeyNotFoundException 逃逸） | Medium | 采纳（逐级判空按瞬态重连） | ✅ 已修复（第 14 轮消纳批） |
+| RF-47 | `--use-app-api` 畸形响应中止整批（ArgumentException/InvalidProtocolBufferException 逃逸） | Medium | 采纳（源头转译 InvalidOperationException） | ✅ 已修复（第 14 轮消纳批） |
+| RF-48 | 服务器可控 aid 越界中止整批（Page.bvid getter 抛异常） | Medium | 采纳（编码失败回落原始 aid） | ✅ 已修复（第 14 轮消纳批） |
+| RF-49 | 单稿件超时中止收藏夹/空间整批解析（三处过滤器缺口） | Medium | 采纳（三处过滤器补齐） | ✅ 已修复（第 14 轮消纳批） |
+| RF-50 | 携凭据的 API GET 自动跟随重定向（SESSDATA 外发面） | Medium | 采纳（NoRedirect + 逐跳可信校验） | ✅ 已修复（第 14 轮消纳批） |
+| RF-51 | API 响应体读取无上限（RF-28 消纳缺口接续） | Medium | 采纳（有界读取 + charset 解码） | ✅ 已修复（第 14 轮消纳批） |
+| RF-52 | 系列/合集错误响应诊断不可达（先 data 后 code 顺序） | Medium | 采纳（先查 code + 回退过滤器补齐） | ✅ 已修复（第 14 轮消纳批） |
+| RF-53 | JSON 异常消息键名清单未净化（控制字符落日志） | Medium | 采纳（剥离控制字符 + 截断） | ✅ 已修复（第 14 轮消纳批） |
+| RF-54 | serve/CLI 日志注入（URL 派生串原始 CRLF 落日志） | Medium | 采纳（ResolveAsync 返回前单行化） | ✅ 已修复（第 14 轮消纳批） |
+| RF-55 | webhook 域名零地址应答误报（校验空过/连接越界） | Medium | 采纳（两侧对齐 + 过滤器放宽） | ✅ 已修复（第 14 轮消纳批） |
+| RF-56 | serve 请求体 `area` 字段未收口（query 注入面） | Medium | 采纳（白名单 hk/tw/th） | ✅ 已修复（第 14 轮消纳批） |
+| RF-57 | DRM 工具搜索扫描当前工作目录（可执行劫持面） | Medium | 采纳（仅 PATH + 程序目录） | ✅ 已修复（第 14 轮消纳批） |
+| RF-58 | 输出文件名轨道元数据占位符未净化（路径穿越） | Medium | 采纳（统一过 GetValidFileName） | ✅ 已修复（第 14 轮消纳批） |
+| RF-59 | 登录轮询 3xx 无 Location 被误报"跳数超限" | Medium | 采纳（按终态读 body 返回） | ✅ 已修复（第 14 轮消纳批） |
+| RF-60 | tr-TR 区域下选轨优先级查表静默退化（文化敏感 ToUpper） | Medium | 采纳（ToUpperInvariant） | ✅ 已修复（第 14 轮消纳批） |
+| RF-61 | 文档正确性族（archives 产物说明、README 占位符表、API.md 413/忽略清单/ErrorMessage） | Medium（文档） | 采纳（修正文档） | ✅ 已修复（第 14 轮消纳批） |
 
 ---
 

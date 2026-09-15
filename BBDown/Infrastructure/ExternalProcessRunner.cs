@@ -58,7 +58,19 @@ public sealed class SystemProcessRunner : IExternalProcessRunner
         p.StartInfo.RedirectStandardError = spec.OnStandardError != null;
         if (spec.OnStandardError != null) p.StartInfo.StandardErrorEncoding = Encoding.UTF8;
         if (spec.OnStandardOutput != null) p.StartInfo.StandardOutputEncoding = Encoding.UTF8;
-        p.Start();
+        try
+        {
+            p.Start();
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            // "已解析但不可启动"（Unix 显式路径无执行位 / Windows 损坏或错误架构的二进制，
+            // ERROR_BAD_EXE_FORMAT）抛 Win32Exception：不在下载页两级 catch 过滤器白名单内，
+            // 会穿透中止整批（RF-43）。源头规范化为 InvalidOperationException（消息带工具名，
+            // 与 RF-14 对 NotSupportedException 的转译同构），一步收口全部调用点。
+            throw new InvalidOperationException(
+                $"外部程序无法启动: {spec.ToolDisplayName ?? spec.FileName}（{ex.Message}）", ex);
+        }
 
         // 先启动 stdout/stderr 读取再等待退出，避免子进程写满管道缓冲区时
         // 双方互相等待（管道已满 → 子进程阻塞 → WaitForExit 永不返回）造成死锁。

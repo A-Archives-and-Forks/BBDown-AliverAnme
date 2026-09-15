@@ -342,10 +342,18 @@ public static partial class Parser
                             Logger.LogDebug("免二压重新请求失败（降级沿用第一轮结果）: {0}", ex.Message);
                         }
                     }
-                    if (root.TryGetProperty("dash", out var dash) && dash.TryGetProperty("video", out var vidArr))
-                        video = vidArr.EnumerateArray().ToList();
-                    if (root.TryGetProperty("dash", out dash) && dash.TryGetProperty("audio", out var audArr))
-                        audio = audArr.EnumerateArray().ToList();
+                    // RF-45：列表重赋值仅在 pass 0 执行。pass 1 的新文档接管分支已自带
+                    // video/audio 重赋值；降级路径（重发失败被吞/新响应无 dash）必须保持
+                    // pass 0 的列表（含已追加的 dolby/flac 音轨）不动——否则会从旧文档重新
+                    // 生成不含 dolby/flac 的列表，而 dolbyApplied/flacApplied 标记仍为 true，
+                    // 追加块被跳过，最终音轨静默缺失杜比/Hi-Res。
+                    if (reparsePass == 0)
+                    {
+                        if (root.TryGetProperty("dash", out var dash) && dash.TryGetProperty("video", out var vidArr))
+                            video = vidArr.EnumerateArray().ToList();
+                        if (root.TryGetProperty("dash", out dash) && dash.TryGetProperty("audio", out var audArr))
+                            audio = audArr.EnumerateArray().ToList();
+                    }
 
                     if (appApi && bangumi)
                     {

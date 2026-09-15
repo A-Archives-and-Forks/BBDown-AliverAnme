@@ -58,6 +58,7 @@
 - 如果请求有效并成功添加任务，将返回 **202 Accepted**，响应体为 `{"TaskId":"<jobId>"}`，其中 `TaskId` 是无业务含义的 JobId（GUID 字符串），用于查询任务详情（`/get-tasks/{id}`）或取消任务（`/cancel/{id}`）。JobId 在任务入队时立即生成，与 URL 解析出的 Aid 无关——提交完整视频 URL 后同样可查询/取消。
 - 如果请求无效，将返回400 Bad Request，并附带错误消息`"输入有误"`。
 - 如果任务队列已满，将返回 **429 Too Many Requests**：执行中 + 排队等待的任务总数上限为 `--max-concurrent` × 9（每个并发槽位允许最多 8 个排队任务），达到上限后立即拒绝新任务，避免长驻进程被无限堆积的后台任务/配置对象/CTS 拖垮。
+- 如果请求体超过 64KB 上限，将返回 **413 Content Too Large**。
 
 > 注：任务入队后，URL 解析与下载在后台异步进行；即使 URL 无法解析，客户端也能凭 JobId 查询到一条失败（`Failed`）任务及其错误原因。
 
@@ -110,7 +111,7 @@
 **Response:**
 - 无论是否能找到对应ID的任务，均返回200 OK。
 
-> 注意：`FilePattern` / `MultiFilePattern` 在服务器模式下会被忽略（见上"安全边界"），因此 `/add-task` 无法用该字段自定义保存路径；请通过 `serve` 启动时的 `--work-dir` 指定默认工作目录。
+> 注意：`FilePattern` / `MultiFilePattern` 在服务器模式下会被忽略（见上"安全边界"），因此 `/add-task` 无法用该字段自定义保存路径；任务统一保存到 serve 进程的当前工作目录（启动 serve 前切换进程工作目录即可指定）。
 
 ## 数据结构
 
@@ -131,7 +132,7 @@
 - `TotalDownloadedBytes` `<double>`: 总下载字节(Byte)数，完成后的数字比实际文件偏小。
 - `IsSuccessful` `<bool>`: 标识任务是否成功完成。
 - `Status` <string>: 任务状态，取值 `Queued`（排队等待） / `Running`（下载中） / `Succeeded`（成功） / `Failed`（失败） / `Cancelled`（被取消）。
-- `ErrorMessage` <string?>: 任务失败原因（成功/排队/下载中时为空）。文本已经过单行化净化，可直接展示。
+- `ErrorMessage` <string?>: 任务失败原因（成功/排队/下载中时为空）。文本中的绝对路径已替换为末段文件名（防泄露服务器目录结构）；JSON 序列化会转义换行，可直接展示。
 - `SavePaths` <List<string>>: 任务产物在**服务器本地**的绝对路径列表（多 P / 分离音视频时多条）。注意这是服务端文件系统路径，客户端通常无法直接访问。
 
 ### `DownloadTaskCollection` 数据结构
@@ -145,7 +146,7 @@
 
 参考[BBDown/Configuration/MyOption.cs](./BBDown/Configuration/MyOption.cs)。属性和命令行参数几乎是一一对应的，相应的值填写使用命令行会使用的值即可。这个结构会随着版本变化，请参考对应版本时候的文件。
 
-> 安全边界：`/add-task` 请求体中的 `host/epHost/tvHost/uposHost` 仅接受 B 站官方域名（其余回落默认值）；`aria2cArgs/aria2cPath/aria2cProxy/ffmpegPath/mp4boxPath/wvdPath/mp4decryptPath/workDir/notifyWebhook/callBackWebHook/userAgent/filePattern/multiFilePattern/insecure/forceHttp/drmKeyHex/drmKidHex` 一律被忽略（`filePattern`/`multiFilePattern` 会作为保存路径模板被拼进输出路径，可能被用于路径穿越；`insecure`/`forceHttp` 会分别关闭 TLS 证书校验、把携带凭据的媒体流量改写为明文 HTTP，可能导致请求被中间人截获；`drmKeyHex`/`drmKidHex` 是客户端可控的解密密钥注入点；回调字段 `callBackWebHook`/`notifyWebhook` 已改为服务端 allowlist，客户端请求体中的回调地址被忽略）。任务始终保存到默认目录模板。
+> 安全边界：`/add-task` 请求体中的 `host/epHost/tvHost/uposHost` 仅接受 B 站官方域名（其余回落默认值）；`area` 仅接受 `hk`/`tw`/`th`（其余回落空值）；`aria2cArgs/aria2cPath/aria2cProxy/ffmpegPath/mp4boxPath/wvdPath/mp4decryptPath/workDir/notifyWebhook/callBackWebHook/userAgent/filePattern/multiFilePattern/insecure/forceHttp/drmKeyHex/drmKidHex/configFile` 一律被忽略（`filePattern`/`multiFilePattern` 会作为保存路径模板被拼进输出路径，可能被用于路径穿越；`insecure`/`forceHttp` 会分别关闭 TLS 证书校验、把携带凭据的媒体流量改写为明文 HTTP，可能导致请求被中间人截获；`drmKeyHex`/`drmKidHex` 是客户端可控的解密密钥注入点；回调字段 `callBackWebHook`/`notifyWebhook` 已改为服务端 allowlist，客户端请求体中的回调地址被忽略）。任务统一保存到 serve 进程的当前工作目录（启动 serve 前切换进程工作目录即可指定）。
 
 ### 注意事项
 - 由于BBDown的下载进度回报频率所限，`TotalDownloadedBytes`会比实际下载的文件略低，大概会少等效于1秒下载速度的文件体积，如果文件本身就非常小那这个数字偏差会较大。
@@ -171,7 +172,7 @@ curl -X POST -H 'Content-Type: application/json' -d '{ "Url": "BV1qt4y1X7TW" }' 
 
 #### 下载到指定目录
 
-> 服务器模式下 `FilePattern` 字段会被忽略（见上"安全边界"），请改用 `serve` 的 `--work-dir` 指定默认工作目录，任务产物保存到该目录下的默认模板路径。示例仅供参考传统 CLI 用法：
+> 服务器模式下 `FilePattern` 字段会被忽略（见上"安全边界"），任务产物保存到 serve 进程的当前工作目录下的默认模板路径（启动 serve 前切换进程工作目录即可指定）。示例仅供参考传统 CLI 用法：
 
 Windows:
 ```shell

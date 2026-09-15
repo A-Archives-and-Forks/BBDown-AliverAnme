@@ -404,4 +404,54 @@ public class ServeApiSecurityTests
         // 泄露服务器文件系统布局；消息其余部分保留；无路径消息不受影响。
         Assert.Equal(expected, BBDownApiServer.SanitizeErrorMessage(input));
     }
+
+    // ── 第 14 轮消纳批（RF-54/55/56）──
+
+    [Fact]
+    public async Task IsSafeCallbackUrl_EmptyDnsResult_Rejected()
+    {
+        // RF-55：部分 DNS 应答形态可返回零地址——空数组零次迭代会"校验空过"放行，
+        // 而连接侧对空数组跳过回调，两侧语义必须一致：解析不出任何地址按不安全处理。
+        Func<string, Task<IPAddress[]>> ResolveEmpty = _ => Task.FromResult(Array.Empty<IPAddress>());
+        Assert.False(await BBDownApiServer.IsSafeCallbackUrlAsync("http://empty-dns.test/cb", ResolveEmpty));
+    }
+
+    [Theory]
+    [InlineData("hk", "hk")]
+    [InlineData("TW", "tw")]
+    [InlineData(" th ", "th")]
+    [InlineData("", "")]
+    [InlineData(null, "")]
+    [InlineData("jp", "")]      // 白名单外枚举值回落 ""
+    [InlineData("hk;evil=1", "")] // query 注入形态回落 ""
+    [InlineData("h k", "")]
+    public void SanitizeUntrustedOptions_AreaWhitelist(string? input, string expected)
+    {
+        // RF-56：Area 是唯一未收口的"拼进官方 API query"字段（Parser 的 area={Area} 裸拼、
+        // Workflow 按 Area != "" 跳过登录检测）。仅接受 hk/tw/th（大小写不敏感），否则回落 ""。
+        var req = new ServeRequestOptions { Area = input ?? "" };
+        BBDownApiServer.SanitizeUntrustedOptions(req);
+        Assert.Equal(expected, req.Area);
+    }
+
+    [Theory]
+    [InlineData("av12345", "av12345")]                       // 正常内容原样保留
+    [InlineData("a\r\nb", "a\\r\\nb")]                        // CRLF 单行化（日志注入面）
+    [InlineData("", "")]
+    [InlineData(null, "")]
+    public void SanitizeLogString_FlattensControlChars(string? input, string expected)
+    {
+        // RF-54：客户端可控字符串（URL query 派生串等）进日志前必须单行化——
+        // CR/LF 直接拼日志会破坏日志结构（伪造日志行）。
+        Assert.Equal(expected, BBDownApiServer.SanitizeLogString(input));
+    }
+
+    [Fact]
+    public void SanitizeLogString_NonCrLfControlChars_Preserved()
+    {
+        // 契约锁定：SanitizeLogString 只替换 CR/LF，不改变其它内容（含 ANSI 转义字符本身）——
+        // 终端转义序列的剥离由 Logger 层/RF-53 的键名净化分别负责，此处只防日志结构破坏。
+        Assert.Contains("\u001b", BBDownApiServer.SanitizeLogString("a\u001bb"));
+        Assert.Equal("a\tb", BBDownApiServer.SanitizeLogString("a\tb"));
+    }
 }

@@ -93,7 +93,9 @@ internal partial class Program
             }
             // FormatException/OverflowException（RF-31）：与页面级过滤器同步扩充，
             // 单 P 的确定性解析异常不中止整批（丢 webhook/failedPages 的同族逃逸面）。
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException or TaskCanceledException or AggregateException or FormatException or OverflowException)
+            // UnauthorizedAccessException（RF-44）：Windows 只读属性文件 File.Delete、受控文件夹
+            // 访问、ACL 拒写等本地权限错误非 IOException 派生，单 P 路径上不中止整批。
+            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or UnauthorizedAccessException or InvalidOperationException or TimeoutException or TaskCanceledException or AggregateException or FormatException or OverflowException)
             {
                 // 真正的用户取消/服务关停（token 已取消）必须正常中止整批，不能进失败分支续跑；
                 // HTTP 超时抛的 TaskCanceledException 其 token 未取消，会进入下方"记录失败后继续"分支。
@@ -277,7 +279,7 @@ internal partial class Program
             if (muxingPath is not null)
             {
                 try { if (File.Exists(muxingPath)) File.Delete(muxingPath); }
-                catch (IOException) { /* 清理失败不影响主流程 */ }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* 清理失败不影响主流程 */ }
             }
             // 轨道文件清理纳入 finally：成功/失败/异常（MuxAV 抛超时/取消/进程失败）都执行，
             // 杜绝混流失败时已下载的 GB 级音视频/字幕文件残留在 aid 工作目录。
@@ -671,7 +673,7 @@ internal partial class Program
                                 // 递归删除会把它们一起毁掉（与 SubOnly/CoverOnly 同一守卫语义）。
                                 if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
                                 {
-                                    try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
+                                    try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                                 }
                                 // DanmakuOnly 但没有任何有效弹幕文件（解析失败/为空/过滤后为空被删除）
                                 // → 零产物：返回 false 而非假成功
@@ -959,7 +961,7 @@ internal partial class Program
                                 // 只清理空目录（守卫语义同上方 DanmakuOnly 第一处：保留可续传分片）
                                 if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
                                 {
-                                    try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
+                                    try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                                 }
                                 if (!danmakuProduced)
                                 {
@@ -982,7 +984,7 @@ internal partial class Program
                             await BBDownDownloadUtil.DownloadFileAsync(coverUrl, newCoverPath, downloadConfig, cancellationToken);
                             if (Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
                             {
-                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
+                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             }
                             relatedTask?.AddSavePath(newCoverPath);
                             return true;
@@ -1008,7 +1010,7 @@ internal partial class Program
                             // （aid 工作目录按稿件共享），不能因本P跳过而连带删除。
                             if (selectedPagesInfo.Count == 1 && Directory.Exists(PathUtil.ResolveWorkPath(p.aid)) && Directory.GetFiles(PathUtil.ResolveWorkPath(p.aid)).Length == 0)
                             {
-                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (IOException) { }
+                                try { Directory.Delete(PathUtil.ResolveWorkPath(p.aid), true); } catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
                             }
                             return true;
                         }
@@ -1090,7 +1092,9 @@ internal partial class Program
                 // FormatException/OverflowException（RF-31）：SortTracks 的服务器可控 id
                 // 解析（已改 TryParse 兜底）与各类 Convert 调用可能抛出——按"单 P 失败"
                 // 隔离重试，不让异常逃逸中止整批。
-                catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or InvalidOperationException or TimeoutException or AggregateException or FormatException or OverflowException
+                // UnauthorizedAccessException（RF-44）：与页面级过滤器同步扩充（只读属性/
+                // 受控文件夹访问/ACL 拒写等本地权限错误）。
+                catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or UnauthorizedAccessException or InvalidOperationException or TimeoutException or AggregateException or FormatException or OverflowException
                                   || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
                 {
                     // 风控页（200+HTML 的 RiskControlResponseException，继承 JsonException）也参与
@@ -1147,13 +1151,13 @@ internal partial class Program
                 if (!File.Exists(tmp + ".manifest.json"))
                 {
                     try { File.Delete(tmp); }
-                    catch (IOException) { /* 占用时跳过，下次再清 */ }
+                    catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* 占用时跳过，下次再清 */ }
                 }
             }
             if (Directory.GetFiles(dir).Length == 0)
             {
                 try { Directory.Delete(dir, true); }
-                catch (IOException) { /* 目录被占用时跳过 */ }
+                catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { /* 目录被占用时跳过 */ }
             }
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException)

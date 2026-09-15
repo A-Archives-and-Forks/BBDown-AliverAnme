@@ -19,8 +19,12 @@ internal partial class Program
             ? pathEnv.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
             : Array.Empty<string>();
 
-        // 2. 然后搜索程序同目录及当前工作目录
-        var localDirs = new[] { AppContext.BaseDirectory, Environment.CurrentDirectory };
+        // 2. 然后搜索程序同目录。RF-57：绝不搜索当前工作目录——用户在不可信目录运行
+        // --decrypt-drm 时，预置的伪造 mp4decrypt(.exe) 会被静默执行（可执行文件劫持），
+        // 与 ExternalToolHelper.FindExecutable 建立的信任边界（"绝不搜索 CWD"）保持一致；
+        // DRM 密钥材料 device.wvd 同理不再从 CWD 读取。--mp4decrypt-path/--wvd-path
+        // 显式路径分支不受影响。
+        var localDirs = new[] { AppContext.BaseDirectory };
 
         var allDirs = pathDirs.Concat(localDirs);
 

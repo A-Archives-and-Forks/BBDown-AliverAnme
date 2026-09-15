@@ -112,7 +112,8 @@ internal partial class Program
         var formats = myOption.DownloadDanmakuFormats.Replace("，", ",").ToLowerInvariant().Split(',', StringSplitOptions.TrimEntries | StringSplitOptions.RemoveEmptyEntries);
         if (formats.Any(format => !BBDownDanmakuFormatInfo.AllFormatNames.Contains(format)))
         {
-            Logger.LogError($"包含不支持的下载弹幕格式：{myOption.DownloadDanmakuFormats}");
+            // RF-54：客户端可控原文进日志前单行化。
+            Logger.LogError($"包含不支持的下载弹幕格式：{BBDownApiServer.SanitizeLogString(myOption.DownloadDanmakuFormats)}");
             return BBDownDanmakuFormatInfo.DefaultFormats;
         }
 

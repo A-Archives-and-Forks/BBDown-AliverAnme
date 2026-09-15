@@ -109,8 +109,10 @@ public class FavListFetcher : IFetcher
                     {
                         throw;
                     }
+                    // TimeoutException（RF-49）：E1 修复后重试耗尽的超时统一抛它，
+                    // 单稿件超时按"记 failures 跳过"降级，不中止整收藏夹解析。
                     catch (Exception ex) when (ex is HttpRequestException or JsonException or KeyNotFoundException
-                                                  or InvalidOperationException or TaskCanceledException)
+                                                  or InvalidOperationException or TaskCanceledException or TimeoutException)
                     {
                         failures.Add($"aid={m.GetValueAsStringSafe("id")} ({m.GetValueAsStringSafe("title")}): {ex.Message}");
                     }
