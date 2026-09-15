@@ -69,6 +69,16 @@
 | RF-59 | 登录轮询 3xx 无 Location 被误报为"重定向跳数超过上限"（单跳无目标≠超限） | Low | 采纳（无 Location 分支读 body 返回） | ✅ 已修复（第 14 轮消纳批） |
 | RF-60 | `Audio.shortCodecs` 文化敏感 `ToUpper()`（tr-TR 查表失败静默退化选轨优先级） | Low | 采纳（ToUpperInvariant 一行） | ✅ 已修复（第 14 轮消纳批） |
 | RF-61 | 文档族 6 项：archives.txt 文件名/位置 ×2、README 缺 `<videoDate>`、API.md 缺 413、忽略清单缺 configFile ×2、API.md 引用不存在的 serve `--work-dir`、"单行化"措辞 | Low（文档） | 采纳（随文档批消纳） | ✅ 已修复（第 14 轮消纳批） |
+| RF-62 | DRM 取钥链 `CryptographicException` 穿透两级过滤器（RSA 二次解密无 catch + 过滤器白名单缺口 → 整批中止） | Medium | 采纳（取钥 catch 补类型或源头转译） | ⏳ 待排期（第 15 轮登记） |
+| RF-63 | `FormatSavePath` 的 `res`/`fps` 占位符未过 `GetValidFileName`（RF-58 消纳缺口，与同处意图注释自相矛盾） | Low | 采纳（两行对齐 :63/:66 同构净化） | ⏳ 待排期（第 15 轮登记） |
+| RF-64 | 评论保存 catch 白名单窄于页面级过滤器（评论 API 超时 → 成功页被误判失败） | Low | 采纳（补 TimeoutException/AggregateException/UA 或整体隔离） | ⏳ 待排期（第 15 轮登记） |
+| RF-65 | fetcher 顶层 `GetPropertySafe` 未经 `code` 先行检查——精心构造的中文诊断不可达（RF-52 同族残留 6 处） | Low | 采纳（对齐 FavListFetcher:148-157 的 code/TryGetProperty 守卫） | ⏳ 待排期（第 15 轮登记） |
+| RF-66 | `NoRedirectClient` 超时 1 分钟——超时矩阵唯一非 2 分钟项，RF-50 切池后头阶段上限隐性减半 | Low | 采纳（不变量对齐 `FromMinutes(2)`） | ⏳ 待排期（第 15 轮登记） |
+| RF-67 | PR CI `vulnerability-scan` 门禁失效：`dotnet list package --vulnerable` 退出码恒为 0，永不阻断 PR | Medium | 采纳（`--format=json` + jq 判定 severity，或 grep 断言） | ⏳ 待排期（第 15 轮登记） |
+| RF-68 | `EntityTests` RF-60 回归测试假绿：输入 `"e-ac-3"` 不含 `'i'`，tr-TR 规则不触发，回退到 `ToUpper()` 测试仍通过 | Low（测试） | 采纳（改用含 `'i'` 的 codecs 串） | ⏳ 待排期（第 15 轮登记） |
+| RF-69 | 测试套件未隔离系统代理：`ServeApiHttpTests` 的 `HttpClient` 未设 `UseProxy=false`，本机代理在线时回环测试假红 | Low（测试） | 采纳（`SocketsHttpHandler { UseProxy = false }`） | ⏳ 待排期（第 15 轮登记） |
+| RF-70 | 日志注入旁支：`WatchLater`/`Live` 命令把服务器可控 `title`/`Uname` 未脱敏写入日志（RF-54 同族） | Low | 采纳（过 `SanitizeLogString`） | ⏳ 待排期（第 15 轮登记） |
+| RF-71 | `API.md` 时间戳字段标注"本机时区"——实现为 UTC 纪元秒（`ToUnixTimeSeconds()`），措辞误导 | Low（文档） | 采纳（改"UTC 纪元秒（与时区无关）"） | ⏳ 待排期（第 15 轮登记） |
 
 ---
 
@@ -666,6 +676,96 @@
 - **⑥** `API.md:134`：称 `ErrorMessage`"文本已经过单行化净化"——实际 `SanitizeErrorMessage`（:480-486）只做绝对路径→文件名替换，不做 CRLF 折叠（JSON 序列化会转义 `\n`，无 API 面风险，但措辞与实现不符）。
 - **结论**：采纳——随下一文档批一并消纳（⑥ 可与 RF-54 的日志单线化工作顺带对齐措辞）。
 - **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
+
+---
+
+## RF-62：DRM 取钥链 `CryptographicException` 穿透两级过滤器（整批中止）
+
+- **位置**：`BBDown.Core/DRM/WidevineCdm.cs:324`（`ParseResponse` 内 `_device.Rsa.Decrypt(encSessionKey, RSAEncryptionPadding.OaepSHA256)`——`:317-325` 的 try 只保护**第一次** OAEP-SHA1 尝试，回退分支自身无捕获）；`CkcDecryptor.cs:9-26`（`DrmDecryptor.GetKeyWidevineAsync` 无 try/catch，直接传播）；`BBDown/Application/Decrypt.cs:84`（取钥 catch 白名单 `IOException or InvalidOperationException or FormatException`）；两级过滤器 `Download.cs:98`/`:1097` 白名单亦无 `CryptographicException`。
+- **发现**：RSA 会话密钥两种 padding 都解不开时（device.wvd 与服务器协商不匹配、Widevine 版本差异——区别于设备证书被吊销，后者走 `:305-311` 的"异常响应类型"分支 `return null`）抛 `CryptographicException`。该类型全仓库仅 4 处捕获（`WidevineCdm.cs:321/:401`、`WvdDevice.cs:164/:171`），取钥出口与下载页两级过滤器均无 → 异常从 `DownloadPageAsync` 冒泡穿过 `DownloadPagesAsync` 的 `foreach`，**剩余分 P 全部放弃下载，且 webhook 通知与 `failedPages` 汇总都不再执行**（正是过滤器设计要防的逃逸面，与 RF-43/47/48/49 同族）。对照 RR 设计意图：若在 `Decrypt.cs:84` 接住，会走 `:92-103` 的"密钥缺失"分支抛 `InvalidOperationException`（在两级白名单内）→ 单页记失败继续，符合 DRM 失败仅影响本页的语义。
+- **结论**：采纳——`Decrypt.cs:84` 白名单补 `CryptographicException`（或与 RF-47 先例同构，在 `WidevineCdm.ParseResponse`/`DrmDecryptor` 源头转译为 `InvalidOperationException` 并带设备证书提示）；建议补单测：构造最小 wvd + 不可解的 session key，断言抛出的是被过滤器接住的类型。
+- **状态**：⏳ 待排期（第 15 轮登记，仅评估未修复）。
+
+---
+
+## RF-63：`FormatSavePath` 的 `res`/`fps` 占位符未净化（RF-58 消纳缺口）
+
+- **位置**：`BBDown/Application/PathHelper.cs:64-65`（`"res" => videoTrack.res`、`"fps" => videoTrack.fps` 裸替换）；同分支 `:63`（`dfn`）、`:66`（`videoCodecs`）、`:68`（`audioCodecs`）均已过 `GetValidFileName(..., filterSlash: true)`；意图注释 `:61-62` 逐字列出"**dfn/res/fps/codecs** 是服务器透传值（镜像站 --host 或 --insecure 中间人可控，可含 '/' 或 '..'）……统一过 GetValidFileName"。
+- **发现**：RF-58 的消纳记录声称"该分支统一净化"，实际只覆盖了 4 个占位符中的 3 个（`dfn`/`videoCodecs`/`audioCodecs`），`res`/`fps` 漏网——**修复与同处注释的声称自相矛盾**。两字段均为服务器透传值：`Parser.cs:419-420`（`width + "x" + height`、`frame_rate` 节点原文）、`BangumiInfoFetcher.cs:87` / `IntlBangumiInfoFetcher.cs:105`（`$"{w}x{h}"`）。恶意镜像站/中间人返回含 `/` 或 `..` 的 `width`/`frame_rate` 即可让 `--file-pattern` 中含 `<res>`/`<fps>` 的模板实现路径穿越或写出意外子目录，与 RF-58 登记的触发面完全同级。属"消纳批只验修复在位、未验是否覆盖登记声称的全部引用面"的又一实例（同 RF-51）。
+- **结论**：采纳——`:64-65` 与 `:63/:66` 同构包 `GetValidFileName(..., filterSlash: true).Trim().TrimEnd('.').Trim()`。
+- **状态**：⏳ 待排期（第 15 轮登记，仅评估未修复）。
+
+---
+
+## RF-64：评论保存 catch 白名单窄于页面级过滤器（成功页被误判失败）
+
+- **位置**：`BBDown/Application/Download.cs:819-820`（评论保存的嵌套 catch：`HttpRequestException or JsonException or InvalidOperationException or IOException or TaskCanceledException or KeyNotFoundException or FormatException`）；意图注释 `:798-799`；上游页面级过滤器 `:98`。
+- **发现**：`:798` 注释明确要求"评论是附加功能：任何失败都只降级为警告，绝不能触发页面级重试或中止整批"，但嵌套 catch 漏了 `TimeoutException`（RF-49/E1 统一后 HTTP 超时的主要抛型）、`AggregateException`、`UnauthorizedAccessException`。评论 API 超时（大评论区真实场景）时异常逃逸至页面级 `:98` 过滤器（其含 `TimeoutException`）→ 该页被 `:106-108` 记为失败并 `continue`。后果是**已成功下载并混流的页面被误判失败**：最终 `failedPages` 非空 → 退出码非 0 + `NotifyWebhook` 报失败 + `SaveArchivesToFile` 不入档——与注释声称的"只降级为警告"直接冲突。（注：不会重下该页——页面级 catch 是 `continue` 语义；风险点是结果误报而非重复下载。）
+- **结论**：采纳——`:819` 的 `when` 补 `or TimeoutException or AggregateException or UnauthorizedAccessException`；更彻底的做法是把评论抓取整体隔离为"绝不外抛页面级"的独立块（语义更清晰，避免今后新增异常类型再次漏网）。
+- **状态**：⏳ 待排期（第 15 轮登记，仅评估未修复）。
+
+---
+
+## RF-65：fetcher 顶层 `GetPropertySafe` 未经 `code` 先行检查——中文诊断不可达（RF-52 同族残留）
+
+- **位置**：`SpaceVideoFetcher.cs:236`（`doc.RootElement.GetPropertySafe("data")`，其下 `:248-274` 精心构造了"响应中缺少 page 节点"/"page 中缺少 count 字段"等中文 `InvalidOperationException` 诊断——因 `:236` 先抛英文 `KeyNotFoundException` 而**永不可达**）；同族顶层取节点：`SpaceVideoFetcher.cs:41`、`CheeseInfoFetcher.cs:23`、`FavListFetcher.cs:36/:59`、`NormalInfoFetcher.cs:23/:95`、`IntlBangumiInfoFetcher.cs:50-52`；异常源 `JsonElementExtensions.cs:69`（`throw new KeyNotFoundException($"JSON property not found: '{propertyName}' (available keys: …)")`）；对照 `FavListFetcher.cs:148-157`（分页块）**已有** `code` 先行 + `TryGetProperty` 守卫。
+- **发现**：RF-52 为 Series/MediaList fetcher 建立了"先查 code 再取 data"的范式，但仅修了那两个文件；同类模式在 6 处 fetcher 顶层仍在。后果分两档：① `SpaceVideoFetcher.cs:236`——响应缺 `data` 节点（镜像站/intl/中间人可构造 `code=0` 但结构缺失）时抛英文 KNFE，使 `:248-274` 的全部中文诊断失效，整个空间投稿抓取失败且用户拿不到可定位的消息（其请求洪泛面已由 `:204-208` 空页 break 防护，故非资源问题）；② 其余 5 处为单对象解析路径，失败面有限但同样牺牲诊断质量。属 RF-52 的"同类引用面漏网"，非新机制。
+- **结论**：采纳——`FetchPageAsync`（`SpaceVideoFetcher.cs:236`）改用 `FavListFetcher.cs:148-157` 同款 `code` 先行 + `TryGetProperty` 守卫；其余 5 处随同批统一为"先 `code` 后 `data`"序（纯诊断质量改善，可降优先级）。
+- **状态**：⏳ 待排期（第 15 轮登记，仅评估未修复）。
+
+---
+
+## RF-66：`NoRedirectClient` 超时 1 分钟——超时矩阵唯一非 2 分钟项
+
+- **位置**：`BBDown.Core/Util/HTTPUtil.cs:222/:224`（`_noRedirectClient`/`_insecureNoRedirectClient` 均 `CreateClient(allowRedirect: false, TimeSpan.FromMinutes(1), …)`）；对照同一超时矩阵：`AppHttpClient:120/:122`、另一 noRedirect 客户端 `:127/:129`、`:142` 全部为 `FromMinutes(2)`，流式客户端 `:208/:210` 为 `Timeout.InfiniteTimeSpan`；上游超时预算 `AppSettings.cs:23 ApiTimeoutMs = 120000`。
+- **发现**：`NoRedirectClient` 是矩阵中唯一的 1 分钟项，与 `ApiTimeoutMs`（120s）不一致。RF-50 把 `GetWebSourceCoreAsync` 的 `sendCookie` 路径从 `AppHttpClient` 切到该客户端后，虽然方法内 `timeoutCts.CancelAfter(ApiTimeoutMs)` 仍按 120s 控整体预算，但 `HttpClient.Timeout` 在 `ResponseHeadersRead` 下只约束"收到响应头"阶段——**带 Cookie 请求的头阶段实际上限被隐性砍半为 60s**，由 `catch (OperationCanceledException) when (!token.IsCancellationRequested)` 当作瞬时超时降级/重试。第 13 轮 TV 登录切池时该 1 分钟是**有意**设定（与 WEB 轮询同池，已在 CHANGELOG 记录），但 RF-50 的切换未评估同一超时差异，属隐性回退。
+- **结论**：采纳——`_noRedirectClient`/`_insecureNoRedirectClient` 超时对齐为 `TimeSpan.FromMinutes(2)`（与 `AppHttpClient` 同不变量）；若确有理由保持 1 分钟，应在 `:221-224` 注释写明与 `ApiTimeoutMs` 的关系。
+- **状态**：⏳ 待排期（第 15 轮登记，仅评估未修复）。
+
+---
+
+## RF-67：PR CI `vulnerability-scan` 门禁失效（退出码恒为 0）
+
+- **位置**：`.github/workflows/pr.yml:49-52`（`run: dotnet list BBDown.sln package --vulnerable --include-transitive`——无任何失败判定）；对照同文件 `:70-71` 的 format 门禁用 `--verify-no-changes` 真失败语义。
+- **发现**：`dotnet list package --vulnerable` **无论是否发现漏洞都返回退出码 0**（NuGet 官方跟踪项 NuGet/Home#11315，多个独立来源一致确认），该命令只是"打印报告"。因此 `vulnerability-scan` job 永不失败，作为 PR 检查项**形同虚设**——依赖出现已知漏洞时 PR 照常合并。（对比：`.NET 8+` 的 `dotnet restore` 会输出 NU1901-NU1904 警告，但本仓库 PR CI 的 `Build` 步骤未将警告提升为错误。）
+- **结论**：采纳——改用可判定的形式，例如 `dotnet list BBDown.sln package --vulnerable --include-transitive --format=json > vuln.json` 后用 `jq -e '.projects | .. | .severity? // empty' vuln.json` 判定并 `exit 1`；或退一步用 `grep -q "has the following vulnerable packages"` 断言（注意避免误匹配项目名）。建议顺带评估是否把 NU1901-NU1904 提升为 build 错误（`TreatWarningsAsErrors` 的定向 subset）。
+- **状态**：⏳ 待排期（第 15 轮登记，仅评估未修复）。
+
+---
+
+## RF-68：`EntityTests` 的 RF-60 回归测试假绿（输入不含 `'i'`）
+
+- **位置**：`BBDown.Tests/EntityTests.cs:45`（`codecs = "e-ac-3"`）与 `:46`（`Assert.Equal("EAC3", a.shortCodecs)`）；注释 `:43` 自称"含 'i' 的编码串"；被测实现 `BBDown.Core/Entity/Entity.cs:189`（`codecs.ToUpperInvariant().Replace("-", string.Empty)`）。
+- **发现**：tr-TR 的文化敏感陷阱是 `'i' → 'İ'`（U+0130），只有输入含小写 `'i'` 才会触发。测试输入 `"e-ac-3"` **不含 `'i'`**：`ToUpperInvariant()` 与回退后的 `ToUpper()` 在 tr-TR 下产出完全相同（`E-AC-3` → `EAC3`），断言恒成立。即**把实现改成有缺陷的 `ToUpper()`，该测试仍然通过**——RF-60 的回归防线实际形同虚设（这与本仓库 G 组"防 CI 假绿"的主题同类，属"看起来绿、实际没测到"）。注：RF-60 的代码修复本身（`ToUpperInvariant`）是可核查的、正确的，仅测试无效。
+- **结论**：采纳——输入改为确含小写 `'i'` 的 codecs 串（如 `"mlpa"`/`"avci"`，或直接构造 `"eiac3"` 类合成值并在注释说明为回归专用输入），断言 `shortCodecs` 在 tr-TR 下仍为文化不变结果。
+- **状态**：⏳ 待排期（第 15 轮登记，仅评估未修复）。
+
+---
+
+## RF-69：测试套件未隔离系统代理（本机代理在线时回环测试假红）
+
+- **位置**：`BBDown.Tests/ServeApiHttpTests.cs:74`（`Client = new HttpClient { BaseAddress = new Uri(BaseUrl) };`——全测试套件唯一的 `HttpClient` 构造点，未设 `UseProxy = false`）；受影响用例 `:212`（`HostValidation_WithoutToken_RejectsNonLoopbackHost`）、`:233`（`HostValidation_WithoutToken_AcceptsLoopbackHosts`）。
+- **发现**：.NET 的 `HttpClient` 默认 `UseProxy = true`，在 Windows 上读**系统代理设置**。当本机运行 Clash/V2Ray 类代理（本机实况：git 全局 `http.proxy = 127.0.0.1:7890`）时，回环 HTTP 测试的请求会经代理转发，代理按 Host 头策略返回 400/502，导致断言失配。**实测复现**（本地）：默认环境 `dotnet test --filter "FullyQualifiedName~HostValidation_WithoutToken"` → 2/2 失败（`localhost` 返回 400、POST 返回 400 而非 403）；加 `NO_PROXY=* HTTP_PROXY= HTTPS_PROXY=` 后同命令 → **2/2 通过**，且全量 `700/700` 全绿。结论：**代码无缺陷，失败纯属环境污染**（本机 `127.0.0.1:7890` 代理介入）。风险面双向：代理在线时假红（开发者白排查），代理恰好返回期望码时理论上可假绿。CI（ubuntu-latest，无系统代理）不受影响——这正是"本地红、CI 绿"的根因。
+- **结论**：采纳——`RunningServer` 的客户端改为 `new HttpClient(new SocketsHttpHandler { UseProxy = false }) { BaseAddress = … }`（回环服务测试绝不应经代理）；可顺带在测试类注释记录该环境依赖。属 G 组"测试结构加固"的直接延伸。
+- **状态**：⏳ 待排期（第 15 轮登记，仅评估未修复）。
+
+---
+
+## RF-70：日志注入旁支——`WatchLater`/`Live` 命令的服务器可控字段未脱敏（RF-54 同族）
+
+- **位置**：`BBDown/Commands/WatchLaterCommand.cs:81`（`Logger.Log($"--- 下载 av{aid} {title} ---")`，`title` 来自 `:143 item.GetValueAsStringSafe("title")` 服务器原文）；`BBDown/Commands/LiveCommand.cs:63`（`Logger.Log($"直播间: {info.Title} (UP: {info.Uname})…")`，二者均为 `LiveStreamUtil.ResolveAsync` 解析出的服务器字段）；可复用净化器 `BBDownApiServer.SanitizeLogString`（`BBDownApiServer.cs:492`，`internal static`，BBDown 项目内可达）。
+- **发现**：RF-54 已把日志单行化下沉到 `UrlResolver.ResolveAsync` 返回前，并覆盖 `req.Url` 全部调用点，但**未覆盖命令层把服务器透传文本直接写日志**的路径。视频标题/直播间标题可含 `\r\n`，可将单条日志伪造为多条（日志污染/审计误导），与 RF-25/RF-54 的防护目标同族。触发面与 RF-25 同级（需服务器或中间人构造字段值），故判 Low 而非 Medium。
+- **结论**：采纳——两处 `title`/`Uname` 经 `BBDownApiServer.SanitizeLogString(...)` 后写日志（与 RF-54 同构）；可顺带复查命令层是否还有其它服务器文本入日志的点。
+- **状态**：⏳ 待排期（第 15 轮登记，仅评估未修复）。
+
+---
+
+## RF-71：`API.md` 时间戳字段"本机时区"措辞与实现不符（文档）
+
+- **位置**：`API.md:125`（`TaskCreateTime` "Unix时间戳，精确到秒，**本机时区**"）、`:129`（`TaskFinishTime` 同）；实现 `BBDownApiServer.cs:1048`/`:1228`（`DateTimeOffset.Now.ToUnixTimeSeconds()`）。
+- **发现**：`ToUnixTimeSeconds()` 的定义是"自 1970-01-01T00:00:00Z 的秒数"，**与时区无关**（UTC 纪元秒）。文档的"本机时区"措辞会让客户端按服务器本地时区解释绝对值，与真实语义偏差（仅同一字段的差值运算不受影响）。属 RF-33/39/42/61 文档漂移同族，为措辞级偏差。
+- **结论**：采纳——改为"UTC 纪元秒（与时区无关）"；若确需"本机本地时间"语义，则应改实现（不推荐，会引入时区依赖）。建议在 API.md 的字段说明段落统一一次时间语义口径。
+- **状态**：⏳ 待排期（第 15 轮登记，仅评估未修复）。
 
 ---
 

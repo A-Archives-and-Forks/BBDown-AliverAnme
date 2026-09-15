@@ -361,4 +361,23 @@
 | RF-61 | ✅ 文档族 6 项：archives 产物说明 ×2（程序目录 BBDown.archives）、README 补 `<videoDate>`、API.md 补 413 + 忽略清单补 configFile/area 白名单 + 移除不存在的 `--work-dir` 表述 + ErrorMessage 措辞对齐 |
 | 配套 | CHANGELOG Unreleased 补 19 项条目（修复 10 / 改进 8 / 安全性 1 / 文档 1 / 测试增强）；REVIEW_FINDINGS 状态表与详述章节全部翻 ✅ |
 | 测试 | ✅ 全库 715/715 全绿（+37：SanitizeLogString 契约、area 白名单、webhook 零地址、GetPropertySafe 净化/截断、Page.bvid 回落、shortCodecs 文化不变） |
+
+---
+
+## 第 15 轮：全库续审（2026-09-15）
+
+> 本轮为第 14 轮消纳批（RF-43~RF-61，v1.6.18）合入后的续审：①消纳批 19 项复核；②四路并行深查（下载管线/命令层、serve 服务层、Core 解析网络层、测试与文档 CI）；③全部 Medium 逐项人工亲验 + **本地实测复现**。新发现 **2 Medium + 9 Low**，登记 REVIEW_FINDINGS（RF-62~RF-71）。**仅登记评估未修复**，修复待消纳批。本轮另有一条方法论级产出：**测试基线红≠代码缺陷**——RF-69 的假红经实测定案（见下）。
+
+| 项 | 结果 |
+|----|------|
+| 基线 | ✅ `dotnet build` Release 0 警告 0 错误；**单测 700/700 全绿**（PR gate 过滤器，`NO_PROXY=*` 下）；`dotnet format --verify-no-changes` exit 0。⚠️ 默认环境（系统代理在线）下 `HostValidation_WithoutToken_*` 2 例假红，根因见 RF-69 |
+| 第 14 轮消纳批复核 | ✅ 重点项在位：RF-44（`Download.cs:98` 含 `UnauthorizedAccessException`，清理点 `:227/:232/:282/:302/:307` 均已双类型）、RF-50/51（`HTTPUtil` 逐跳循环 + `ReadContentBoundedAsync`）、RF-53（`JsonElementExtensions.cs:69` 键名过净化）、RF-54（`SanitizeLogString` 调用点落地）、RF-60（`Entity.cs:189` `ToUpperInvariant`）、RF-61（文档族）。**复核产出两处消纳缺口**：RF-58 的"统一净化"实际漏 `res`/`fps`（→ **RF-63**）；RF-60 的代码修复正确但回归测试输入不含 `'i'`，防线失效（→ **RF-68**）——再次印证"消纳批验证不能只验修复在位，要验是否覆盖登记声称的全部引用面"（RF-51 教训的同类复发） |
+| RF-62 (M) | DRM 取钥链 `CryptographicException` 穿透两级过滤器：`WidevineCdm.cs:324` 的 RSA 二次解密无 catch（`:317-325` 只护第一次 OAEP-SHA1）→ `DrmDecryptor` 无 try → `Decrypt.cs:84` 白名单不含 → `Download.cs:98` 白名单不含 → 逃出 `foreach`，**剩余分 P 全部放弃 + webhook/failedPages 汇总丢失**。触发面真实（wvd 与服务器协商不匹配，区别于证书吊销走 `:305-311` return null）。与 RF-43/47/48/49 同族 |
+| RF-67 (M) | PR CI `vulnerability-scan` 门禁失效：`pr.yml:49-52` 的 `dotnet list package --vulnerable` **退出码恒为 0**（NuGet/Home#11315），只打印报告、永不阻断 PR。安全门禁形同虚设 |
+| RF-63~66、68~71 (L) | 9 项 Low：RF-63 `res`/`fps` 未净化（RF-58 消纳缺口，与 `PathHelper.cs:61-62` 注释自相矛盾）；RF-64 评论保存 catch 窄于页面级过滤器（评论 API 超时 → 成功页误判失败，违背 `:798` 注释意图）；RF-65 fetcher 顶层 `GetPropertySafe` 未经 `code` 先行检查致中文诊断不可达（RF-52 同族残留 6 处，`SpaceVideoFetcher.cs:236` 最重）；RF-66 `NoRedirectClient` 超时 1 分钟为超时矩阵唯一非 2 分钟项（RF-50 切池后头阶段上限隐性减半）；RF-68 `EntityTests` RF-60 回归测试假绿；RF-69 测试套件未隔离系统代理；RF-70 `WatchLater`/`Live` 服务器可控标题未脱敏入日志（RF-54 同族）；RF-71 `API.md` 时间戳"本机时区"措辞与 `ToUnixTimeSeconds()` 语义不符 |
+| RF-69 实测定案 | 初始基线 2 例红（`localhost` 返回 400、POST 返回 400 而非 403）→ 逐条排查：`/add-task` 的 400 只可能来自 `Results.BadRequest("输入有误")`（绑定失败），意味中间件放行 → 实测 `serve` + curl 复现（`Host: 127.0.0.1` 200、其余 502，暴露代理介入）→ 决定性实验 `NO_PROXY=* dotnet test` → **2/2 通过、全量 700/700 全绿**。结论：本机系统代理（`127.0.0.1:7890`）转发回环请求导致的**假红，代码无缺陷**；`ServeApiHttpTests.cs:74` 未设 `UseProxy=false` 是测试基础设施缺陷（CI 无代理故绿，本地在线代理故红） |
+| 无新发现面 | serve 安全边界（token `FixedTimeEquals`、Host 回环白名单、CSRF/Content-Type 闸、webhook SSRF `ConnectCallback` 绑定校验、`SanitizeUntrustedOptions` 字段完备性、锁序 `_persistLock→_taskLock` 无环、内存上界）；Core 逐条降级过滤器（`FavList.ProcessPageAsync:114`、`SpaceVideo.ExpandEntriesAsync:121`、`BuvidProvider:46` 均已含 KNFE/Timeout，RF-46/49 在位）；进程启动收口（全仓仅 `Decrypt.cs:29`/`SystemProcessRunner.cs:65` 两处 `Process.Start`，均已规范化）；资源释放（`BBDownDownloadUtil`/`BBDownMuxer`/`ExternalProcessRunner`/`ProgressBar` 的双 Timer）；测试卫生（零 `[Fact(Skip)]`、`failSkips` 在位、`Config.Current` AsyncLocal 隔离、`MuxerProcessRunnerCollection` 串行化正确）；文档一致性（对照 `MyOption`/`Commands`/`BBDownApiServer` 全面核对，除 RF-71 外无新漂移） |
+| 审查方法备注 | 四路并行深查 + Medium 全量人工亲验；本轮新增**环境干扰排查**环节（RF-69）——基线出现红色时先区分"代码缺陷"与"环境假色"，用禁用代理/绕过代理的对照实验定案，避免把环境污染误记为代码问题（与既有的"防假绿"纪律互为镜像） |
+
+| Info 级观察（不登记 RF） | ① `BBDownApiServer.cs:337-339` 在途任务登记窗口（关停排空快照理论上可漏，窗口为单条指令且 30s 超时兜底）——维持现状；② `:715-718` 已完成任务按 `TaskCreateTime` 计龄（RF-10 已决策按该字段保留最新），非漏网——维持现状；③ `AGENTS.md:27` 的本地 `dotnet format` 与 CI `--verify-no-changes` 差异已由同行注释说明（本地修复、CI 把关），非不一致——不登记；④ `Parser.cs:762` `QualityMap` 为空时 `Max()` 抛 IOE（配置非服务器输入，触发面极低） |
 | 基线 | ✅ dotnet build Release 0 警告 0 错误；dotnet format --verify-no-changes 通过 |
