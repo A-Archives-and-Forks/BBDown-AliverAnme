@@ -111,4 +111,30 @@ public class JsonElementExtensionsTests
             System.Globalization.CultureInfo.CurrentCulture = originalCulture;
         }
     }
+
+    // ── RF-53：GetPropertySafe 异常消息的键名清单净化 ──
+
+    [Fact]
+    public void GetPropertySafe_Message_StripsControlCharsFromKeyNames()
+    {
+        // 服务器可控键名可含经 JSON 反转义的控制字符（\u001b ANSI 转义等），
+        // 直拼异常消息会经 Logger/终端注入转义序列（B3-L3 同族）。
+        var e = Parse("""{"a\u001b[31mb": 1}""");
+        var ex = Assert.Throws<KeyNotFoundException>(() => e.GetPropertySafe("missing"));
+        Assert.DoesNotContain('\u001b', ex.Message);
+        Assert.Contains("a [31mb", ex.Message);
+    }
+
+    [Fact]
+    public void GetPropertySafe_Message_TruncatesLargeKeyLists()
+    {
+        // 大响应的键名清单可把单行消息撑到极大：截断保留前 8 个键名。
+        var json = """{"k1":1,"k2":2,"k3":3,"k4":4,"k5":5,"k6":6,"k7":7,"k8":8,"k9":9,"k10":10}""";
+        var e = Parse(json);
+        var ex = Assert.Throws<KeyNotFoundException>(() => e.GetPropertySafe("missing"));
+        Assert.Contains("k8", ex.Message);
+        Assert.DoesNotContain("k9", ex.Message);
+        Assert.DoesNotContain("k10", ex.Message);
+        Assert.Contains("…", ex.Message);
+    }
 }

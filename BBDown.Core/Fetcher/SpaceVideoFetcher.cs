@@ -115,11 +115,12 @@ public class SpaceVideoFetcher : IFetcher
                 throw;
             }
             // 过滤范围要覆盖所有"单个稿件"级别的故障：稿件失效（InvalidOperationException）、
-            // 网络瞬断（HttpRequestException/IOException）、请求超时（TaskCanceledException，
-            // HttpClient 超时抛的正是它而非 HttpRequestException）、响应结构异常。
+            // 网络瞬断（HttpRequestException/IOException）、请求超时（E1 修复后重试耗尽统一抛
+            // TimeoutException，RF-49；HttpClient 未重试路径仍抛 TaskCanceledException）、
+            // 响应结构异常。
             catch (Exception ex) when (ex is HttpRequestException or JsonException or XmlException
                                           or IOException or KeyNotFoundException
-                                          or InvalidOperationException or TaskCanceledException)
+                                          or InvalidOperationException or TaskCanceledException or TimeoutException)
             {
                 failures.Add((entry.Aid, entry.Title, ex.Message));
                 consecutiveFailures++;

@@ -16,6 +16,24 @@ namespace BBDown;
 
 internal partial class Program
 {
+    /// <summary>
+    /// 启动外部进程并把"已解析但不可启动"的 Win32Exception 规范化为 InvalidOperationException（RF-43）：
+    /// Unix 显式路径无执行位 / Windows 损坏或错误架构二进制（ERROR_BAD_EXE_FORMAT）抛出的
+    /// Win32Exception 不在下载页两级 catch 过滤器白名单内，会穿透中止整批。
+    /// 与 SystemProcessRunner 启动点同构。
+    /// </summary>
+    private static Process StartProcessSafe(ProcessStartInfo psi, string toolName)
+    {
+        try
+        {
+            return Process.Start(psi) ?? throw new InvalidOperationException($"{toolName} 无法启动: {psi.FileName}（进程启动失败）");
+        }
+        catch (System.ComponentModel.Win32Exception ex)
+        {
+            throw new InvalidOperationException($"{toolName} 无法启动: {psi.FileName}（{ex.Message}）", ex);
+        }
+    }
+
     private static async Task DecryptDrmAsync(ParsedResult parsed, string videoPath, string audioPath, MyOption myOption, CancellationToken token = default)
     {
         Logger.Log("检测到DRM加密，正在获取解密密钥...");
@@ -148,9 +166,7 @@ internal partial class Program
             psi.ArgumentList.Add(input);
             psi.ArgumentList.Add(output);
 
-            using var proc = Process.Start(psi);
-            if (proc is null)
-                throw new InvalidOperationException($"mp4decrypt 无法启动: {mp4decrypt}（进程启动失败）");
+            using var proc = StartProcessSafe(psi, "mp4decrypt");
             var stderrTask = proc.StandardError.ReadToEndAsync();
             try
             {

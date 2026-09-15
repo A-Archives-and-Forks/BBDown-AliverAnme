@@ -58,12 +58,14 @@ internal partial class Program
                 "cid" => p.cid,
                 "ownerName" => p.ownerName == null ? "" : BBDownUtil.GetValidFileName(p.ownerName, filterSlash: true).Trim().TrimEnd('.').Trim(),
                 "ownerMid" => p.ownerMid ?? "",
-                "dfn" => videoTrack == null ? "" : videoTrack.dfn,
+                // RF-58：dfn/res/fps/codecs 是服务器透传值（镜像站 --host 或 --insecure 中间人
+                // 可控，可含 '/' 或 '..'），与 title 族一致统一过 GetValidFileName（RF-18 同族）。
+                "dfn" => videoTrack == null ? "" : BBDownUtil.GetValidFileName(videoTrack.dfn, filterSlash: true).Trim().TrimEnd('.').Trim(),
                 "res" => videoTrack == null ? "" : videoTrack.res,
                 "fps" => videoTrack == null ? "" : videoTrack.fps,
-                "videoCodecs" => videoTrack == null ? "" : videoTrack.codecs,
+                "videoCodecs" => videoTrack == null ? "" : BBDownUtil.GetValidFileName(videoTrack.codecs, filterSlash: true).Trim().TrimEnd('.').Trim(),
                 "videoBandwidth" => videoTrack == null ? "" : videoTrack.bandwidth.ToString(),
-                "audioCodecs" => audioTrack == null ? "" : audioTrack.codecs,
+                "audioCodecs" => audioTrack == null ? "" : BBDownUtil.GetValidFileName(audioTrack.codecs, filterSlash: true).Trim().TrimEnd('.').Trim(),
                 "audioBandwidth" => audioTrack == null ? "" : audioTrack.bandwidth.ToString(),
                 // publishDate/videoDate 的自定义格式是用户输入，CultureInfo 决定 `:` 占位符
                 // 的实际输出（RF-19）：替换值再过一次 GetValidFileName——否则 en-US 下

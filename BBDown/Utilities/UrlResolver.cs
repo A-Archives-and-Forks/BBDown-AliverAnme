@@ -214,6 +214,11 @@ public static partial class UrlResolver
         {
             throw new ArgumentException("输入有误：无法识别的视频 URL 或 ID");
         }
+        // RF-54：净化下沉到来源——avid 的派生串（aidOri/fid/sid 等 query 值经 GetQueryString
+        // 的 [^&]+ 可匹配 CR/LF）以原始控制字符形态落日志（Workflow/Pages/Options/serve 的
+        // Logger 层无转义），serve 客户端或 CLI 粘贴恶意链接可伪造日志行/ANSI 序列。
+        // 在返回前统一单行化，比逐 sink 补丁收敛（SanitizeLogString 当前零单测，随本批补）。
+        avid = BBDownApiServer.SanitizeLogString(avid);
         return await FixAvidAsync(avid, token);
     }
 

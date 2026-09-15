@@ -50,25 +50,25 @@
 | RF-40 | README `--show-all` 描述错误（实为展示所有分 P 标题） | Low（文档） | 采纳（对齐 MyOption） | ✅ 已修复（第 13 轮消纳批） |
 | RF-41 | 模板文档缺 `<videoDate>` 占位符且计数 18→19 | Low（文档） | 采纳（补行 + 改计数） | ✅ 已修复（第 13 轮消纳批） |
 | RF-42 | README serve 子选项表缺 `--notify-webhook`（与同页 :333 自相矛盾） | Low（文档） | 采纳（补一行） | ✅ 已修复（第 13 轮消纳批） |
-| RF-43 | 非 DOVI 进程启动点 `Win32Exception` 穿透两级过滤器（第 13 轮遗留观察①定案） | Medium | 采纳（启动点规范化为 InvalidOperationException） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-44 | `UnauthorizedAccessException` 不在两级过滤器 + 清理点只捕 IOException（单页本地权限错误中止整批） | Medium | 采纳（过滤器补 UA + 裸删/清理点对齐） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-45 | 免二压重发降级丢失杜比/Hi-Res 音轨（RF-26 守卫旁支：列表重置与标记重置不同步） | Medium | 采纳（降级路径保持 pass0 列表或重置标记+去重） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-46 | 直播录制 `KeyNotFoundException` 逃逸重连过滤器（畸形 live 响应终止整场录制，违背"不设重试上限"承诺） | Medium | 采纳（改 TryGetPropertySafe 逐级判空走瞬态退避） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-47 | AppHelper `ArgumentException`/`InvalidProtocolBufferException` 穿透两级过滤器（RF-31 同族，SubUtil 姊妹接口已防） | Medium | 采纳（DoReqAsync 源头转译为 InvalidOperationException） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-48 | `Page.bvid` getter 对服务器可控 aid 抛 AOORE（"0"/负数/超界穿透两级过滤器） | Medium | 采纳（getter 包 try/catch 回落原始 aid） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-49 | `TimeoutException` 未入三处逐条降级过滤器（FavList/SpaceVideo/BuvidProvider；E1 类型统一后的旁支） | Medium | 采纳（三处补 TimeoutException + 修过时注释） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-50 | `GetWebSourceCoreAsync`（携 SESSDATA）仍自动跟随重定向——NoRedirect 收口族（RF-4/13/37）凭据最重的漏网成员 | Low | 采纳（sendCookie 路径切 NoRedirect + 逐跳可信校验） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-51 | RF-28 消纳缺口：普通响应体（GetWebSourceCoreAsync/AnonymousChecked）仍无 64MB 上限，登记记录需勘误 | Low | 采纳（两处改 ReadContentBoundedAsync + FINDINGS 勘误） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-52 | Series/MediaList fetcher 先 GetPropertySafe 后查 code——精心编写的错误诊断不可达；MediaList 回退过滤器缺 KeyNotFoundException | Low | 采纳（取节点后移 + 过滤器补类型） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-53 | `GetPropertySafe` 异常消息拼服务器可控"全部键名"清单（控制字符注入面 B3-L3 族 + 巨型消息） | Low | 采纳（键名过控制字符剥离/截断） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-54 | serve/CLI 日志注入残留：RF-25 只收口 req.Url 调用点，UrlResolver 派生串（aidOri 含 CRLF）未脱敏落日志 | Low | 采纳（净化下沉到 ResolveAsync 返回前） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-55 | webhook 域名空解析数组"校验空过"+ `addresses[0]` 越界——已成功任务误报"异常终止" | Low | 采纳（两侧补空数组分支 + 过滤器放宽） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-56 | `SanitizeUntrustedOptions` 漏 `Area`：任意值拼进官方 API query + 跳过登录检查 | Low | 采纳（hk/tw/th 白名单回落 ""） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-57 | `ToolFinder` 在 CWD 搜索 mp4decrypt/device.wvd（违背 FindExecutable 建立的可执行劫持信任边界） | Low | 采纳（CWD 移出搜索或复用 FindExecutable） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-58 | `FormatSavePath` 轨道元数据占位符（dfn/res/fps/codecs/bandwidth）不过 GetValidFileName（RF-18 同族） | Low | 采纳（该分支统一净化） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-59 | 登录轮询 3xx 无 Location 被误报为"重定向跳数超过上限"（单跳无目标≠超限） | Low | 采纳（无 Location 分支读 body 返回） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-60 | `Audio.shortCodecs` 文化敏感 `ToUpper()`（tr-TR 查表失败静默退化选轨优先级） | Low | 采纳（ToUpperInvariant 一行） | ⏳ 已登记（第 14 轮，待消纳批） |
-| RF-61 | 文档族 6 项：archives.txt 文件名/位置 ×2、README 缺 `<videoDate>`、API.md 缺 413、忽略清单缺 configFile ×2、API.md 引用不存在的 serve `--work-dir`、"单行化"措辞 | Low（文档） | 采纳（随文档批消纳） | ⏳ 已登记（第 14 轮，待消纳批） |
+| RF-43 | 非 DOVI 进程启动点 `Win32Exception` 穿透两级过滤器（第 13 轮遗留观察①定案） | Medium | 采纳（启动点规范化为 InvalidOperationException） | ✅ 已修复（第 14 轮消纳批） |
+| RF-44 | `UnauthorizedAccessException` 不在两级过滤器 + 清理点只捕 IOException（单页本地权限错误中止整批） | Medium | 采纳（过滤器补 UA + 裸删/清理点对齐） | ✅ 已修复（第 14 轮消纳批） |
+| RF-45 | 免二压重发降级丢失杜比/Hi-Res 音轨（RF-26 守卫旁支：列表重置与标记重置不同步） | Medium | 采纳（降级路径保持 pass0 列表或重置标记+去重） | ✅ 已修复（第 14 轮消纳批） |
+| RF-46 | 直播录制 `KeyNotFoundException` 逃逸重连过滤器（畸形 live 响应终止整场录制，违背"不设重试上限"承诺） | Medium | 采纳（改 TryGetPropertySafe 逐级判空走瞬态退避） | ✅ 已修复（第 14 轮消纳批） |
+| RF-47 | AppHelper `ArgumentException`/`InvalidProtocolBufferException` 穿透两级过滤器（RF-31 同族，SubUtil 姊妹接口已防） | Medium | 采纳（DoReqAsync 源头转译为 InvalidOperationException） | ✅ 已修复（第 14 轮消纳批） |
+| RF-48 | `Page.bvid` getter 对服务器可控 aid 抛 AOORE（"0"/负数/超界穿透两级过滤器） | Medium | 采纳（getter 包 try/catch 回落原始 aid） | ✅ 已修复（第 14 轮消纳批） |
+| RF-49 | `TimeoutException` 未入三处逐条降级过滤器（FavList/SpaceVideo/BuvidProvider；E1 类型统一后的旁支） | Medium | 采纳（三处补 TimeoutException + 修过时注释） | ✅ 已修复（第 14 轮消纳批） |
+| RF-50 | `GetWebSourceCoreAsync`（携 SESSDATA）仍自动跟随重定向——NoRedirect 收口族（RF-4/13/37）凭据最重的漏网成员 | Low | 采纳（sendCookie 路径切 NoRedirect + 逐跳可信校验） | ✅ 已修复（第 14 轮消纳批） |
+| RF-51 | RF-28 消纳缺口：普通响应体（GetWebSourceCoreAsync/AnonymousChecked）仍无 64MB 上限，登记记录需勘误 | Low | 采纳（两处改 ReadContentBoundedAsync + FINDINGS 勘误） | ✅ 已修复（第 14 轮消纳批） |
+| RF-52 | Series/MediaList fetcher 先 GetPropertySafe 后查 code——精心编写的错误诊断不可达；MediaList 回退过滤器缺 KeyNotFoundException | Low | 采纳（取节点后移 + 过滤器补类型） | ✅ 已修复（第 14 轮消纳批） |
+| RF-53 | `GetPropertySafe` 异常消息拼服务器可控"全部键名"清单（控制字符注入面 B3-L3 族 + 巨型消息） | Low | 采纳（键名过控制字符剥离/截断） | ✅ 已修复（第 14 轮消纳批） |
+| RF-54 | serve/CLI 日志注入残留：RF-25 只收口 req.Url 调用点，UrlResolver 派生串（aidOri 含 CRLF）未脱敏落日志 | Low | 采纳（净化下沉到 ResolveAsync 返回前） | ✅ 已修复（第 14 轮消纳批） |
+| RF-55 | webhook 域名空解析数组"校验空过"+ `addresses[0]` 越界——已成功任务误报"异常终止" | Low | 采纳（两侧补空数组分支 + 过滤器放宽） | ✅ 已修复（第 14 轮消纳批） |
+| RF-56 | `SanitizeUntrustedOptions` 漏 `Area`：任意值拼进官方 API query + 跳过登录检查 | Low | 采纳（hk/tw/th 白名单回落 ""） | ✅ 已修复（第 14 轮消纳批） |
+| RF-57 | `ToolFinder` 在 CWD 搜索 mp4decrypt/device.wvd（违背 FindExecutable 建立的可执行劫持信任边界） | Low | 采纳（CWD 移出搜索或复用 FindExecutable） | ✅ 已修复（第 14 轮消纳批） |
+| RF-58 | `FormatSavePath` 轨道元数据占位符（dfn/res/fps/codecs/bandwidth）不过 GetValidFileName（RF-18 同族） | Low | 采纳（该分支统一净化） | ✅ 已修复（第 14 轮消纳批） |
+| RF-59 | 登录轮询 3xx 无 Location 被误报为"重定向跳数超过上限"（单跳无目标≠超限） | Low | 采纳（无 Location 分支读 body 返回） | ✅ 已修复（第 14 轮消纳批） |
+| RF-60 | `Audio.shortCodecs` 文化敏感 `ToUpper()`（tr-TR 查表失败静默退化选轨优先级） | Low | 采纳（ToUpperInvariant 一行） | ✅ 已修复（第 14 轮消纳批） |
+| RF-61 | 文档族 6 项：archives.txt 文件名/位置 ×2、README 缺 `<videoDate>`、API.md 缺 413、忽略清单缺 configFile ×2、API.md 引用不存在的 serve `--work-dir`、"单行化"措辞 | Low（文档） | 采纳（随文档批消纳） | ✅ 已修复（第 14 轮消纳批） |
 
 ---
 
@@ -499,7 +499,7 @@
 - **位置**：`BBDown/Infrastructure/ExternalProcessRunner.cs:61`（`p.Start()` 在 try 块外、无捕获——全仓库 ffmpeg/mp4box/aria2c 的唯一集中启动点）、`BBDown/Application/Decrypt.cs:151`（mp4decrypt 的独立 `Process.Start`，同样无捕获）；两级过滤器 `BBDown/Application/Download.cs:96`/`:1093` 均无 `System.ComponentModel.Win32Exception`（继承 ExternalException→SystemException，非 IOException 派生）；对照 RF-34 只收口了 `ExternalToolHelper.cs:58` 的 DOVI 探针。
 - **发现**：页面处理路径上的全部 5 个外部进程启动点（ffmpeg 混流 `MuxAV`/mp4box `MuxByMp4box`/`MergeFLV`/aria2c `DownloadFileByAria2cAsync`/mp4decrypt）都经裸 `p.Start()`；"已解析但不可启动"的真实条件——Unix 下显式路径无执行位（`Options.cs:151-164` 与 `EnsureToolAvailable` 的 explicitPath 分支只查 `File.Exists`）、Windows/PATH 中存在损坏或错误架构的二进制（`FindExecutable` 只查 `File.Exists`，ERROR_BAD_EXE_FORMAT 193）——抛 `Win32Exception` → 穿透两级过滤器 → 剩余分 P、webhook、failedPages 汇总全丢、退出码 1，正是过滤器设计要防的逃逸面。旁证：`LiveStreamUtil.ConcatSegmentsAsync` 的 catch（LiveStreamUtil.cs:563）已显式含 `Win32Exception`，证明该类型在真实运行中发生过——唯独下载页面路径未收口。
 - **结论**：采纳——`SystemProcessRunner.RunAsync` 把 `p.Start()` 的 Win32Exception 规范化为 `InvalidOperationException`（消息带工具名，与 RF-14 对 NotSupportedException 的处理同构），一步收口全部调用点；`Decrypt.cs:151` 同样包裹。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮。Medium 亲验：过滤器白名单逐字核对、启动点链路逐层追）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -508,7 +508,7 @@
 - **位置**：过滤器缺口 `Download.cs:96`/`:1093`（UA 非 IOException 派生，两级均无）；裸 `File.Delete`（无 try/catch）`BBDownDownloadUtil.cs:381/401/421/433/618/710`（处于下载重试循环内，`:459/:474` 的 catch 过滤器同缺 UA）；`Download.cs:532/536`（debug 文件写/删）、`:458`（SubOnly 产物 Move）、`:264`（混流产物 Move）；清理子句只捕 `catch (IOException)` 的不一致点 `Download.cs:674/962/985/1011`（对照同文件 `:473` 已用 `IOException or UnauthorizedAccessException`）。
 - **发现**：Windows 上 `File.Delete` 对**只读属性**文件抛的正是 UnauthorizedAccessException（而非 IOException）；受控文件夹访问（Defender 对未签名 exe 写 Documents 等目录返回 Access Denied）、只读 `.tmp`、ACL 拒写的网络盘/容器卷——任一本地权限错误落在单 P 路径上即穿透两级过滤器中止整批（含 `File.Delete(tmpName)` 断点续传清理等高频点），与 RF-31 补 FormatException/OverflowException 的动机同构。
 - **结论**：采纳——两级过滤器补 `UnauthorizedAccessException`；`:674/962/985/1011` 的 `catch (IOException)` 对齐为双类型；`SubCommand.cs:227/252`、`WatchLaterCommand.cs:92` 命令级过滤器同族一并评估。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮。Medium 亲验：两级过滤器白名单逐字核对、裸删/单类型 catch 各位置抽查核实）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -517,7 +517,7 @@
 - **位置**：`BBDown.Core/Parser.cs:345-348`（每轮无条件从 root 重赋值 video/audio 列表）、`:340-343`（重发失败降级 catch）、`:327-330`（新响应无 dash 的降级分支）、`:358-390`（dolby/flac 追加块，受 `!dolbyApplied`/`!flacApplied` 守卫；标记仅在 `:324-325` 新文档接管分支重置）。
 - **发现**：pass 0 把 dolby/flac 音轨 `AddRange` 进 `audio` 并置标记 true；pass 1 无论走哪条降级路径（重发请求失败被 `:340` 过滤器吞掉、或新响应无 dash 节点 `:329` Dispose），执行到 `:345-348` 时都会从**同一份旧文档**重新生成一份不含 dolby/flac 的 `audio` 列表，而标记仍为 true → 追加块被跳过 → 最终音轨缺失杜比/Hi-Res，无任何日志提示。每个非 app 接口的 dash 视频都无条件发起 pass 1 重发——网络瞬断/风控 HTML/业务失败任一条即触发，"重试越忙、风控越紧，越容易丢杜比"。RF-26 的守卫只防了"重复追加"，没防"列表被重置但标记未重置"的不一致。
 - **结论**：采纳二选一——(1) `:345-348` 的重赋值仅在"新文档接管"分支内执行，降级路径保持 pass 0 的列表（含已追加项）不动；(2) 降级时重置标记 + 追加前按 baseUrl 判重。建议补单测：构造含 dolby 的 dash 文档 + 重发抛 HttpRequestException，断言 AudioTracks 仍含 E-AC-3 轨。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮。Medium 亲验：Parser.cs:295-369 全段逐行核对，重赋值/守卫/降级三路径推演成立）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -526,7 +526,7 @@
 - **位置**：`BBDown/Infrastructure/LiveStreamUtil.cs:100`（`GetPropertySafe("data").GetPropertySafe("playurl_info").GetPropertySafe("playurl")` 链式取节点）、`:77`（info 的 data）；重连过滤器 `:319`（`HttpRequestException or JsonException or InvalidOperationException or TimeoutException or LiveStreamWriteException`——无 KeyNotFoundException）；异常源 `BBDown.Core/Util/JsonElementExtensions.cs:69`；外层 `:338` `catch (Exception) { …; throw; }`。
 - **发现**：live API 返回 code=0 但 data/playurl_info 节点缺失（接口降级/灰度变更/风控 JSON 变体）→ `KeyNotFoundException` 不在 `:319` 白名单 → 落到 `:338` 重抛 → **整场录制终止**。与 `:219-222` 注释的设计承诺（"网络瞬断/API 故障期间持续退避重试（不设重试上限）……网络恢复后自动续录"）矛盾——"主播还在播、用户没取消"被服务器响应形状打断。`IsRoomLiveAsync`（`:235-246`）只 catch InvalidOperationException，经 `ResolveAsync` 同面穿透。
 - **结论**：采纳——改 `TryGetPropertySafe` 逐级判空（缺节点 → 按"暂时无法获取流地址"的 InvalidOperationException 走既有瞬态退避路径），与文件既有防御风格一致；或 `:319` 白名单补 KeyNotFoundException。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮。Medium 亲验：:70-114 与 :315-345 两段逐行核对）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -535,7 +535,7 @@
 - **位置**：`BBDown.Core/AppHelper.cs:59-68`（`ParseId` 对非数字 id 抛 `ArgumentException`）、`:88`（`ParseFrom(ReadMessage(data))` 可抛 `Google.Protobuf.InvalidProtocolBufferException`——直接继承 Exception）；两级过滤器 `Download.cs:96/:1093` 均无这两类；对照 `BBDown.Core/Util/SubUtil.cs:406-407`（TryParse 守卫）与 `:428-429`（显式 catch InvalidProtocolBufferException）——同一套 gRPC API 的 DmViewReply 姊妹路径已明确防护。
 - **发现**：`--use-app-api` 下每个分 P 的 `ExtractTracksAsync` 都经 `Parser.GetPlayJsonAsync:47 → AppHelper.DoReqAsync`。服务器（或 `--insecure` 中间人）下发：含非数字/浮点 cid 的 view 响应 → `ArgumentException`；帧头合法但帧体为垃圾字节的 200 响应 → `InvalidProtocolBufferException`——两者穿透两级过滤器终止整批多 P。SubUtil 对姊妹接口的显式防御证明项目已知这两类异常是服务器可触发的，含 access_token 授权头的更重路径反而不设防。
 - **结论**：采纳——`DoReqAsync` 源头转译：`ParseId` 的 throw 改为带可读中文的 `InvalidOperationException`（业务性确定性失败）；`ParseFrom` 包 try/catch 转 `InvalidOperationException("APP 接口响应反序列化失败…")`。不在两级过滤器加类型（避免白名单继续膨胀，与 RF-47 修复路线一致于 RF-14 的"源头规范化"先例）。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮。Medium 亲验：AppHelper.cs:50-99 与两级过滤器逐字核对）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -544,7 +544,7 @@
 - **位置**：`BBDown.Core/Entity/Entity.cs:26-27`（getter `long.TryParse(aid) → BilibiliBvConverter.Encode(aidNum)`）；`BBDown.Core/Util/BilibiliBvConverter.cs:31-38`（`avid < MIN_AID` / `>= MAX_AID` 抛 `ArgumentOutOfRangeException`）；消费点 `Workflow.cs:145`、`Download.cs:249`（混流元数据）、`PathHelper.cs:56`（文件名占位符）均无包裹；两级过滤器无 AOORE——且 `Download.cs:182/:782/:882` 注释三次明言"AOORE 不在下载重试的 catch 过滤内，直接中止整批"并逐处防护，此处是同族漏网。
 - **发现**：收藏夹/合集/空间路径的 aid 来自服务器响应（`FavListFetcher.cs:123` `GetValueAsStringSafe("id")`）。畸形/被攻破端点把条目 id 填 `"0"`（`long.TryParse` 成功 → `Encode(0)` 抛 AOORE）、负数或超 2^51 大数 → 整批在文件名格式化或元数据混流阶段被英文 AOORE 中止。
 - **结论**：采纳——getter 把 `Encode` 包 try/catch（AOORE → 回落返回原始 aid，与下方"非纯数字"分支同语义），3 行改动。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮。Medium 亲验：getter 与 Encode 范围校验逐行核对）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -553,7 +553,7 @@
 - **位置**：`BBDown.Core/Fetcher/FavListFetcher.cs:112-113`（单稿件降级过滤器：`HttpRequestException or JsonException or KeyNotFoundException or InvalidOperationException or TaskCanceledException`——无 TimeoutException）、`BBDown.Core/Fetcher/SpaceVideoFetcher.cs:120-122`（同缺）+ `:118-119`（注释仍在陈述过时分类"请求超时抛 TaskCanceledException"）、`BBDown.Core/Util/BuvidProvider.cs:44`（过滤器仅四类，连 TaskCanceledException 也未列）；对照 `HTTPUtil.cs:574-579`——E1 修复后重试耗尽的超时**统一抛 TimeoutException**，TaskCanceledException 对这些路径已成死类型。
 - **发现**：单稿件 HTTP 3 次有界重试耗尽后超时 → TimeoutException 逃过逐条降级过滤器：① `FavListFetcher.ProcessPageAsync`——一个稿件超时 → 整个收藏夹解析中止（`:105` 注释"单个稿件失败只记 failures 跳过"失效）；② `SpaceVideoFetcher.ExpandEntriesAsync`——千稿展开中途一次超时 → 不进 failures、不计 consecutiveFailures，前功尽弃；③ `BuvidProvider.EnsureAsync`——buvid3 是纯装饰性设备标识（失败本应"跳过注入"），超时却让整个空间抓取直接失败。
 - **结论**：采纳——三处过滤器补 `TimeoutException`；SpaceVideoFetcher `:118-119` 过时注释一并修正。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮。Medium 亲验：三处过滤器逐字核对 + HTTPUtil.cs:574-579 超时转译在位确认）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -562,7 +562,7 @@
 - **位置**：`BBDown.Core/Util/HTTPUtil.cs:522`（`AppHttpClient.SendAsync`，池定义 `:112-113` allowRedirect: true）、`:497`（仅初始 URL 过 `IsTrustedCookieHost`）。
 - **发现**：`GetWebSourceCoreAsync(sendCookie:true)` 是全项目凭据最重、调用面最广的 GET 入口（全部 fetcher、Parser playurl、WbiSign 签名请求），初始 URL 有 B3-S1 主机白名单，但客户端 `AllowAutoRedirect=true`——可信入口主机返回 3xx 时，RedirectHandler 会把手工附加的 Cookie 头（完整 SESSDATA/bili_jct）发往 Location 指向的任意主机，白名单只拦第一跳。与 RF-4/RF-13/RF-37 同定性（Low：入口可信/TLS 恒校验/B 站 API 正常不重定向，一致性/纵深防御项），但它是收口族中剩余成员里载荷最重的一个，且入口含操作者配置的镜像主机。
 - **结论**：采纳——`sendCookie:true` 改走 `NoRedirectClient` + 每跳 `IsTrustedCookieHost`（`GetWebSourceWithSetCookiesAsync:303-330` 已是现成逐跳模板，抽出复用即可）。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -571,7 +571,7 @@
 - **位置**：`BBDown.Core/Util/HTTPUtil.cs:532`（`GetWebSourceCoreAsync`——全部 fetcher/Parser/WbiSign 的主入口，仍 `ReadAsStringAsync` 无界）、`:415`（`GetWebSourceAnonymousCheckedAsync`——UrlResolver 泛抓取、目标可为不可信 URL，同样无界）；对照 `:336`（登录轮询）与 `:823`（gRPC POST）已改 `ReadContentBoundedAsync`。
 - **发现**：RF-28 的登记引用点明确含"普通响应 `:467`"，消纳只落地了 gRPC POST 与登录轮询两处，其文字描述的主要引用面从未改造——属消纳验证遗漏而非新面。`GetWebSourceAnonymousCheckedAsync` 的 XML doc 自述"目标可能是任意网页"，被攻破端点/`--insecure` 中间人可用分块慢发/巨包打满内存，与 RF-28/B3-S1 已认可的威胁模型一致。
 - **结论**：采纳——两处改 `ReadContentBoundedAsync` + `DecodeBodyBytes`（工具已就位，两行改动）；`GetWebSourceAnonymousCheckedAsync` 顺带补 `EnsureSuccessStatusCode`。同时本文件 RF-28 状态行补勘误："普通响应体一半未落地，第 14 轮 RF-51 接续"。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -580,7 +580,7 @@
 - **位置**：`BBDown.Core/Fetcher/SeriesListFetcher.cs:23`（先 `GetPropertySafe("data")`）/`:26-31`（code 诊断在后，对无 data 节点的错误响应不可达）；`MediaListFetcher.cs:22`（同序）/`:31`（回退过滤器只含 `HttpRequestException or InvalidOperationException`，吞不掉 SeriesListFetcher:23 抛的 KeyNotFoundException）；对照 NormalInfoFetcher:17-23 / BangumiInfoFetcher:20-27 / FavListFetcher:53-59 全部"先查 code"的正确序。
 - **发现**：`x/v1/medialist/info` 返回 `{"code":-400,"message":"…"}`（无 data 键）时，用户看到的是英文裸 `KeyNotFoundException: JSON property not found: 'data' …` 而非设计好的"获取系列信息失败(code=-400)"；MediaList 的"误识别为系列"回退路径同面被 KeyNotFoundException 直接击穿。
 - **结论**：采纳——两处 `GetPropertySafe` 后移到 code 检查之后（或改 TryGetProperty + 判空分支）；MediaListFetcher 回退过滤器补 `KeyNotFoundException`。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -589,7 +589,7 @@
 - **位置**：`BBDown.Core/Util/JsonElementExtensions.cs:69`——`throw new KeyNotFoundException($"JSON property not found: '{propertyName}' (available keys: {string.Join(", ", element.EnumerateObject().Select(p => p.Name))})")`。
 - **发现**：异常消息把响应对象的全部键名（服务器可控，可含经 JSON 反转义后的 `\u001b[31m` 等控制字符）拼进消息，经顶层 `Console.Error.WriteLine(ex.Message)` 直写终端、经 LogStack 落日志——与 Parser.SanitizeServerText（B3-L3）同族的终端/日志投毒注入面；大响应的键名清单同时可把单行消息撑到极大。该消息也是 RF-46 的异常源。
 - **结论**：采纳——键名清单过与 SanitizeServerText 同款的控制字符剥离，或截断保留前 N 个键名。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -598,7 +598,7 @@
 - **位置**：来源 `BBDown/Utilities/UrlResolver.cs:100-104`（fid 取自 query 未净化拼 `aidOri`）、`:67-83`（listBizId/seriesBizId/sid 同构）、`BBDown/Utilities/BBDownUtil.cs:130-142`（`GetQueryString` 的 `[^&]+` 可匹配 CR/LF）；未脱敏 sink：`Workflow.cs:100/:126`、`Pages.cs:48`、`Options.cs:115`、`BBDownApiServer.cs:1199/:1210`（Logger 层无转义，serve 同写 `bbdown-api.log`）。
 - **发现**：RF-25 只对 `/add-task` 的 `req.Url` 本身三个调用点应用了 `SanitizeLogString`；URL 在 `ResolveAsync` 拆解后，客户端可控的 query 值以原始 CRLF 形态进派生串 `aidOri`/`aid` 并落日志——serve 客户端（或 CLI 粘贴恶意链接）可伪造日志行/ANSI 序列（审计污染）。`SanitizeLogString` 当前零单测。
 - **结论**：采纳——净化下沉到来源：`ResolveAsync` 返回前对结果统一单行化（比逐 sink 补丁收敛）；`Pages.cs:48`/`Options.cs:115` 含客户端原文的 LogError 一并套用；补单测。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -607,7 +607,7 @@
 - **位置**：`BBDown/Infrastructure/BBDownApiServer.cs:953-959`（校验侧 foreach 空数组零次迭代直接 `return true`）、`:1300-1317`（连接侧再解析取 `addresses[0]`——空数组抛 `IndexOutOfRangeException`）、`:1352`（回调过滤器白名单无该类型）→ 冒泡 `:1060` `catch (Exception)`。
 - **发现**：管理员配置域名 webhook 且回调时刻解析出零地址（部分 DNS 应答形态）时：校验"空过放行"，连接侧越界异常把**已成功且已持久化的任务**打成误导性的"任务异常终止"——正是 `:1352` 注释明确要避免的误报语义（此前只为 TimeoutException 修过一次的旁支遗漏）。
 - **结论**：采纳——两侧对齐：`IsSafeCallbackUrlAsync` 对 `addresses.Length == 0` 返回 false；`SendCallbackAsync` 空数组记 Warn 跳过；过滤器放宽为 `catch (Exception)` + Warn（该 catch 目的只是"回调失败不影响任务"，无需类型白名单）。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -616,7 +616,7 @@
 - **位置**：`BBDown/Infrastructure/BBDownApiServer.cs:1089`（客户端 `option.Area` 原样 `Config.Apply`）；下游 `BBDown.Core/Parser.cs:68-69`（`area={Area}` 未编码裸拼 WEB playurl query）、`:138`（intl 同构）、`Workflow.cs:219`（`Area != ""` 跳过登录检查）、`Pages.cs:173-182`（akamaized 源强制替换触发）。
 - **发现**：对照 `MyOption.cs` 全字段核查 `SanitizeUntrustedOptions`：Host/EpHost/TvHost/UposHost 四个"改变请求去向"的字段都已白名单 pin 官方域，唯 Area 未处理——serve 客户端可传任意文本。因 host 已 pin 官方、凭据不外发第三方（`IsTrustedCookieHost` 第二道闸），降 Low；实际影响：① 向官方 API 注入任意 query 参数语义（覆盖 qn/try_look 等）；② 跳过登录检测产生"已检测登录"误导日志；③ 与 `--area` 文档语义（hk|tw|th 枚举）不符的值畅通无阻。
 - **结论**：采纳——与 host 字段同法：`req.Area` 仅接受 `hk`/`tw`/`th`（大小写不敏感），否则回落 `""`（一行 + 一个测试断言）。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -625,7 +625,7 @@
 - **位置**：`BBDown/Application/ToolFinder.cs:23`（`localDirs = new[] { AppContext.BaseDirectory, Environment.CurrentDirectory }`）→ 调用点 `Decrypt.cs:45/:92`；对照 `ExternalToolHelper.cs:68-76` 注释明言"绝不搜索当前工作目录……会静默执行本地伪造文件（可执行文件劫持）"——ffmpeg/mp4box/aria2c 已按此收口，唯 DRM 路径漏网。
 - **发现**：用户在不可信目录运行 `--decrypt-drm` 且目录中存在预置的伪造 `mp4decrypt(.exe)`、且用户未安装 Bento4（PATH 未命中，DRM 场景常见）时，CWD 命中被静默执行；`device.wvd`（密钥材料）同从 CWD 读取。需本地攻击者/不可信目录前置条件，DRM 属小众功能，定 Low。
 - **结论**：采纳——`FindTool` 把 CWD 移出搜索（或复用 `ExternalToolHelper.FindExecutable`）；`--mp4decrypt-path/--wvd-path` 显式路径分支保留。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -634,7 +634,7 @@
 - **位置**：`BBDown/Application/PathHelper.cs:61-67`——`<dfn>/<res>/<fps>/<videoCodecs>/<videoBandwidth>/<audioCodecs>/<audioBandwidth>` 裸替换；对照同文件 `:52/:55/:59/:72-73`（title/pageTitle/ownerName/publishDate/videoDate 全过 `GetValidFileName`）。
 - **发现**：dfn/codecs 是服务器透传值（`GetValueAsStringSafe`），镜像站（`--host` 可配）或 `--insecure` 中间人下发含 `/` 或 `..` 的值即可穿越路径——与 RF-18 采纳的威胁模型（"镜像站与 --insecure 中间人正是项目明确采纳的对抗源"）同构。serve 下 FilePattern 已清零、经 `AddDfnSuffix` 复活为固定模板，数据源被 pin 官方 API 风险极低；主要面是 CLI + 镜像站。
 - **结论**：采纳——该分支占位符统一套 `GetValidFileName`（与 title 族一致）。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -643,7 +643,7 @@
 - **位置**：`BBDown.Core/Util/HTTPUtil.cs:321-324`（`GetWebSourceWithSetCookiesAsync` 逐跳循环：`if (location is null) break;`）→ 落到方法尾 `:347` 抛 `InvalidOperationException("重定向跳数超过上限 (10)")`；对照同构方法 `GetWebSourceAnonymousCheckedAsync:403-404` 的处理是 `return current`。
 - **发现**：3xx 响应缺 Location 头（如 300 Multiple Choices、或网关只回状态码）时，`break` 跳出循环后落到"超限"异常——单跳无目标被报成重定向超限，语义完全不符，且该确定性失败会抛给登录流程。RF-13 修复时引入的结构。
 - **结论**：采纳——`location is null` 分支直接读 body 返回（与 2xx 同路径），或至少修正错误消息。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -652,7 +652,7 @@
 - **位置**：`BBDown.Core/Entity/Entity.cs:174`（`codecs.ToUpper()` 未指定 culture）；消费点 `TrackSort.cs:33`（`encodingPriority.GetValueOrDefault(a.shortCodecs, 100)`）。
 - **发现**：tr-TR 区域下含 `'i'` 的服务器可控 codecs 串经 `ToUpper()` 变 `'İ'`（U+0130），选轨优先级查表失败静默退化为默认 100——与其它 culture 的选轨结果不同。现取值域（M4A/FLAC/E-AC-3）暂不含小写 i，属潜伏项；codecs 是服务器透传值，未来新编码（如小写别名）即触发。
 - **结论**：采纳——`ToUpperInvariant()`（RF-19/RF-5 文化收口族，一行）。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 
@@ -665,7 +665,7 @@
 - **⑤** `API.md:113/:174`：指导用户"通过 serve 启动时的 `--work-dir` 指定默认工作目录"——`ServeSettings` 仅 5 个选项（ServeCommand.cs:13-32），`BBDown.config` 不合并子命令，该选项**不存在**；安全设计的"替代方案"实无此物。最小改动是修正文档为"启动 serve 前切换进程工作目录"（或给 ServeSettings 增加 `--work-dir`）。
 - **⑥** `API.md:134`：称 `ErrorMessage`"文本已经过单行化净化"——实际 `SanitizeErrorMessage`（:480-486）只做绝对路径→文件名替换，不做 CRLF 折叠（JSON 序列化会转义 `\n`，无 API 面风险，但措辞与实现不符）。
 - **结论**：采纳——随下一文档批一并消纳（⑥ 可与 RF-54 的日志单线化工作顺带对齐措辞）。
-- **状态**：⏳ 已登记（2026-09-15，第 14 轮）。
+- **状态**：✅ 已修复（2026-09-15，第 14 轮消纳批）。
 
 ---
 

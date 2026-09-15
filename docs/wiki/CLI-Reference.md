@@ -88,7 +88,7 @@ BBDown [选项] <URL或标识符>
 | | `--upos-host` | `string ("")` | 手动指定 CDN / UPOS 流媒体主机域名 |
 | | `--force-replace-host` | `bool (true)` | 强制将边缘 PCDN 域名替换为骨干 CDN 域名 |
 | | `--allow-pcdn` | `bool (false)` | 允许使用边缘 PCDN 节点（不自动替换） |
-| | `--save-archives-to-file`| `bool (false)`| 在工作目录维护 `archives.txt` 记录已下载 aid |
+| | `--save-archives-to-file`| `bool (false)`| 在程序目录维护 `BBDown.archives` 记录已下载 aid |
 | | `--notify-webhook` | `string?` | 下载完成后发送 HTTP POST 结果通知 |
 | | `--language` | `string ("")` | 设置混流音频流的语言代码（如 `chi`、`jpn`、`eng`） |
 | `-u` | `--user-agent` | `string ("")` | 指定自定义 User-Agent 请求头 |

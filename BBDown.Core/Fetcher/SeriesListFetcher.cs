@@ -20,10 +20,10 @@ public class SeriesListFetcher : IFetcher
         var json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
         var infoRoot = infoJson.RootElement;
-        var data = infoRoot.GetPropertySafe("data");
-        // data 为 null 说明系列不存在/私密/无权访问。必须抛出而非静默返回空 VInfo，
-        // 否则 MediaListFetcher 的回退会吞掉真正的错误，用户只看到"无视频"。
-        if (data.ValueKind != JsonValueKind.Object)
+        // RF-52：先查 code 再取 data——错误响应（{"code":-400,...} 无 data 键）经 GetPropertySafe
+        // 抛英文裸 KeyNotFoundException，精心编写的 code 诊断不可达。与 NormalInfoFetcher 等
+        // "先查 code"的正确序对齐。
+        if (!(infoRoot.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object))
         {
             var code = infoRoot.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0;
             var message = infoRoot.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.String ? msg.GetString() : "未知错误";
@@ -45,17 +45,15 @@ public class SeriesListFetcher : IFetcher
             var listApi = $"https://api.bilibili.com/x/v2/medialist/resource/list?type=5&oid={oid}&otype=2&biz_id={id}&bvid=&with_current=true&mobi_app=web&ps=20&direction=false&sort_field=1&tid=0&desc=true";
             json = await HTTPUtil.GetWebSourceAsync(listApi, token: cancellationToken);
             using var listJson = JsonDocument.Parse(json);
-            data = listJson.RootElement.GetPropertySafe("data");
-            // 分页接口返回业务错误（data 为 null / code != 0，如系列中途被删除、风控）时，
-            // GetBooleanSafe 会静默返回 false 无声结束循环，用户拿到残缺 VInfo。
-            // 与 MediaListFetcher 的同一场景保持一致：显式抛出可读错误。
-            if (data.ValueKind != JsonValueKind.Object)
+            var listRoot = listJson.RootElement;
+            // RF-52：先查 code 再取 data（与首屏一致，错误响应不再抛裸 KeyNotFoundException）。
+            if (!(listRoot.TryGetProperty("data", out var listData) && listData.ValueKind == JsonValueKind.Object))
             {
-                var listRoot = listJson.RootElement;
                 var code = listRoot.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0;
                 var message = listRoot.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.String ? msg.GetString() : "未知错误";
                 throw new InvalidOperationException($"获取系列分页列表失败(code={code}): {message}");
             }
+            data = listData;
             hasMore = data.GetBooleanSafe("has_more");
             // 游标必须记录本页最后一条 id，无论是否被 attr 过滤；否则整页失效时
             // oid 不推进，重复请求同一页造成死循环。

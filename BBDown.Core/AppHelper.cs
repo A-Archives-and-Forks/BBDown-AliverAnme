@@ -56,15 +56,17 @@ static partial class AppHelper
     /// <returns></returns>
     public static async Task<string> DoReqAsync(string aid, string cid, string epId, string qn, bool bangumi, string encoding, string appkey = "", CancellationToken token = default)
     {
+        // RF-47：业务性确定性失败用 InvalidOperationException（在下载页两级 catch 过滤器内，
+        // 按"单 P 失败"隔离），不用 ArgumentException——后者不在过滤器内，会穿透中止整批多 P。
         static long ParseId(string value, string name, bool allowEmpty = false)
         {
             if (string.IsNullOrEmpty(value))
             {
-                return allowEmpty ? 0 : throw new ArgumentException($"{name} 必须是有效的数字 ID，当前值为空");
+                return allowEmpty ? 0 : throw new InvalidOperationException($"{name} 必须是有效的数字 ID，当前值为空");
             }
             return long.TryParse(value, System.Globalization.NumberStyles.Integer, System.Globalization.CultureInfo.InvariantCulture, out var result)
                 ? result
-                : throw new ArgumentException($"{name} 必须是有效的数字 ID，当前值: '{value}'");
+                : throw new InvalidOperationException($"{name} 必须是有效的数字 ID，当前值: '{value}'");
         }
 
         var headers = GetHeader(appkey);
@@ -85,7 +87,19 @@ static partial class AppHelper
             var body = GetPayload(ParseId(aid, nameof(aid), allowEmpty: false), ParseId(cid, nameof(cid), allowEmpty: false), ParseId(qn, nameof(qn), allowEmpty: true), GetVideoCodeType(encoding));
             data = await HTTPUtil.GetPostResponseAsync(API, body, headers, token);
         }
-        var resp = new MessageParser<PlayViewReply>(() => new PlayViewReply()).ParseFrom(ReadMessage(data));
+        // RF-47：服务器（或 --insecure 中间人）下发帧头合法但帧体为垃圾字节的 200 响应时，
+        // ParseFrom 抛 InvalidProtocolBufferException（直接继承 Exception，不在两级过滤器内，
+        // 会穿透中止整批多 P）。姊妹接口 DmViewReply（SubUtil）已显式防此两类——含
+        // access_token 授权头的更重路径同样源头转译为 InvalidOperationException。
+        PlayViewReply resp;
+        try
+        {
+            resp = new MessageParser<PlayViewReply>(() => new PlayViewReply()).ParseFrom(ReadMessage(data));
+        }
+        catch (Google.Protobuf.InvalidProtocolBufferException ex)
+        {
+            throw new InvalidOperationException($"APP 接口响应反序列化失败（响应可能被篡改或接口已变更）: {ex.Message}", ex);
+        }
 
         // 调试日志不记录完整 PlayViewReply：其中含每个轨道的 base_url/backup_url
         //（带 sign/deadline 参数的临时签名 CDN 地址），全文落盘会把可用的签名媒体 URL

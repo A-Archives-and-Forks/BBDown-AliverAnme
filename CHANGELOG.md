@@ -13,16 +13,34 @@
 - **专栏标题为 Windows 保留名时保存失败**：标题恰为 CON/NUL/COM1 等设备名时产物 `CON.md` 以设备名语义无法落盘，报误导性的"专栏获取失败"。专栏与直播文件名净化均接入保留名防护（与下载管线的 `GetValidFileName` 同一规则）。
 - **serve 异常退出被记为退出码 0**：非用户取消的 OperationCanceledException（内部超时联动等）被取消分支吞掉，Docker restart 策略/systemd/CI 丢失崩溃信号。现取消分支补 token 守卫，未取消的异常落失败分支记日志并返回 1。
 - **DRM 密钥临时文件"安全覆写"少覆写 1 字节**：固定写 64 个 NUL 覆写 65 字节的 `kid:key` 行，`FileMode.Create` 截断后最后一个字符仍留在盘上。现按实际载荷长度覆写。
+- **外部程序"已解析但不可启动"中止整批多 P（RF-43）**：ffmpeg/mp4box/aria2c/mp4decrypt 的进程启动点对"路径存在但不可执行"（Unix 无执行位/Windows 损坏或错误架构二进制）抛出的 Win32Exception 不在两级失败隔离过滤器内，单个分 P 命中即放弃剩余分 P。现启动点统一规范化为 `InvalidOperationException`（消息带工具名）。
+- **本地权限错误中止整批下载（RF-44）**：Windows 只读属性文件 `File.Delete`、受控文件夹访问、ACL 拒写抛出的 `UnauthorizedAccessException` 非 IOException 派生，穿透页面级与批级过滤器；多处清理子句只捕 IOException 与同文件双类型 catch 不一致。现两级过滤器与命令级过滤器（sub/watchlater）补齐该类型，7 处单类型清理 catch 对齐为双类型。
+- **免二压重发降级后静默丢失杜比/Hi-Res 音轨（RF-45）**：pass 1 重发失败降级沿用旧文档时，音轨列表被无条件从旧文档重建（不含已追加的 dolby/flac），而追加守卫标记仍为 true——重试越忙越容易丢杜比且无任何日志。现列表重赋值仅在首轮执行，降级路径保持已含杜比/Hi-Res 的列表不动。
+- **直播录制遇畸形响应整场终止（RF-46）**：live 接口返回 code=0 但缺 data/playurl_info 节点时抛 KeyNotFoundException，不在重连过滤器白名单——违背"不设重试上限、网络恢复自动续录"承诺。现逐级判空，缺节点按瞬态故障走既有退避重连。
+- **`--use-app-api` 畸形响应中止整批（RF-47）**：APP 接口对非数字 id 抛 ArgumentException、对垃圾字节 protobuf 响应抛 InvalidProtocolBufferException，均不在两级过滤器内（姊妹接口 DmViewReply 已防）。现源头转译为 `InvalidOperationException`。
+- **服务器可控 aid 越界中止整批（RF-48）**：收藏夹/合集条目 id 为 "0"/负数/超界大数时 `Page.bvid` getter 经 BV 编码抛 ArgumentOutOfRangeException 穿透过滤器。现编码失败回落原始 aid。
+- **单稿件超时中止收藏夹/空间整批解析（RF-49）**：E1 超时类型统一为 TimeoutException 后，FavList/SpaceVideo/BuvidProvider 三处逐条降级过滤器未同步——一个稿件超时即放弃整批，装饰性 buvid3 超时竟能炸掉整个空间抓取。现三处过滤器补齐。
+- **系列/合集错误响应诊断不可达（RF-52）**：先取 data 节点后查 code 的顺序让精心编写的中文错误诊断被英文裸 KeyNotFoundException 取代；合集误识别为系列的回退过滤器缺 KeyNotFoundException。现两处 fetcher（含分页）改为先查 code，回退过滤器补齐。
+- **登录轮询 3xx 无 Location 被误报"重定向跳数超限"（RF-59）**：单跳无目标 ≠ 跳数超限，该确定性失败会中断扫码登录。现按终态读 body 返回（与 2xx 同路径）。
+- **tr-TR 区域下选轨优先级查表静默退化（RF-60）**：`Audio.shortCodecs` 文化敏感 `ToUpper()` 在含 'i' 的编码串上产出 'İ'。现 `ToUpperInvariant()`。
 
 ### 改进
 
 - **DRM 取钥支持取消**：`GetKeyWidevineAsync` 透传 CancellationToken 至许可证请求链路（原在薄封装处断链）——serve `/cancel` 与 Ctrl+C 在取钥窗口（2 分钟超时 ×3 次尝试，最长约 6 分钟）内不再不可中断。
 - **评论 JSON / 专栏 Markdown 的时间戳固定 InvariantCulture**：自定义格式的 `:` 是时间分隔符占位符，fi-FI 等区域设置下产出 `12.00.00` 形态、产物跨机漂移；数据文件导出与控制台展示不同，必须文化无关。
 - **TV 登录两个端点禁跟随重定向**：auth_code 获取与扫码轮询的 POST 体携带按 appsecret 签名的参数、轮询响应更是新下发 access_token 的通道，原走自动跟随重定向的共享客户端。现改禁跳转客户端 + 3xx 显式拦截（与 WEB 登录轮询、gRPC POST、Widevine 许可证的凭据收口同构），并顺带修复响应对象不释放的问题。这两个请求的客户端超时随之由 2 分钟收紧至 1 分钟（禁跳转客户端池的既定语义，与 WEB 登录轮询一致；单次小 POST 影响可忽略）。
+- **携凭据的 API GET 收口为逐跳可信校验（RF-50）**：`GetWebSourceCoreAsync(sendCookie:true)`——全项目凭据最重的 GET 入口——仍自动跟随重定向，入口白名单只拦第一跳，3xx 可把完整 SESSDATA 引向任意主机。现改禁跳转客户端手动逐跳、每跳过 `IsTrustedCookieHost`（NoRedirect 收口族最后一名漏网成员）；匿名路径行为不变。
+- **API 响应体读取统一 64MB 上限（RF-51，RF-28 消纳缺口接续）**：普通响应体（`GetWebSourceCoreAsync`/`GetWebSourceAnonymousCheckedAsync`）仍无界读取，被攻破端点或 `--insecure` 中间人可用分块慢发/巨包打满内存。现两处改有界读取 + charset 解码（含 BOM 剥离对齐），泛抓取路径顺带补 4xx/5xx 显式失败。
+- **JSON 异常消息键名清单净化（RF-53）**：`GetPropertySafe` 把服务器可控的全部键名（可含控制字符）拼进异常消息落日志/终端。现剥离控制字符并截断保留前 8 个键名。
+- **serve/CLI 日志注入收口到来源（RF-54）**：URL 拆解后的派生串（aidOri/fid/sid 等 query 值）以原始 CRLF 形态落日志，可伪造日志行。现 `ResolveAsync` 返回前统一单行化，含客户端原文的 LogError 一并套用。
+- **webhook 域名零地址应答的误报（RF-55）**：校验侧空数组"空过放行"、连接侧 `addresses[0]` 越界把已成功任务打成"异常终止"。现两侧对齐（校验拒绝/连接跳过），回调过滤器放宽为 `catch (Exception)`（该 catch 目的只是"回调失败不影响任务"）。
+- **DRM 工具搜索不再扫描当前工作目录（RF-57）**：`ToolFinder` 在 CWD 搜索 mp4decrypt/device.wvd，与 `FindExecutable` 建立的"绝不搜索 CWD"信任边界自相矛盾（可执行文件劫持面）。现仅搜索 PATH 与程序目录；显式路径选项不受影响。
+- **输出文件名轨道元数据占位符净化（RF-58）**：`<dfn>/<videoCodecs>/<audioCodecs>` 是服务器透传值，镜像站/中间人可注入 `/` 或 `..` 穿越路径。现与 title 族一致统一过 `GetValidFileName`。
 
 ### 安全性
 
 - **serve 请求体 `configFile` 字段防御性清零**：该字段是 DTO 从 MyOption 继承的死属性（实际由 argv 层处理、无消费点），若未来接通"按任务合并本地配置文件"会是指向服务器任意本地文件的注入点。提前清零。
+- **serve 请求体 `area` 字段白名单（RF-56）**：Area 是唯一未收口的"拼进官方 API query"字段（任意文本注入 query 参数语义、跳过登录检测产生误导日志）。现仅接受 `hk`/`tw`/`th`（大小写不敏感），其余回落空值。
 
 ### 文档
 
@@ -30,11 +48,12 @@
 - CLI-Reference：`--download-danmaku-formats` 示例 `xml,protobuf` 改为 `xml,ass`（枚举仅支持 xml/ass）；`--download-danmaku` 默认行为修正为同时保存 XML 与 ASS。
 - README：`--show-all` 描述修正为"展示所有分 P 标题"（并非列出全部音视频流）；serve 子选项表补 `--notify-webhook`。
 - 配置模板文档：占位符对照表补 `<videoDate>`（当前分 P 发布时间，接受与 `<publishDate>` 相同的格式后缀），计数 18→19。
+- **RF-61 文档族**：`--save-archives-to-file` 产物说明修正为程序目录 `BBDown.archives`（CLI-Reference + Batch-and-Automation）；README 占位符表补 `<videoDate>`；API.md `/add-task` 补 413、忽略清单补 `configFile` 与 `area` 白名单、移除不存在的 serve `--work-dir` 表述、`ErrorMessage` 措辞与实现对齐。
 
 ### 测试增强
 
-- 全库测试 678 例（新增 12 例）：轨道排序畸形 id 回归（缺失/非数字/超 int32 不再抛异常，`SortTracks` 提为 internal）；DOVI 探针缺失二进制回归（Win32Exception 按探测失败处理）；DRM 取钥取消透传（测试内自构造最小 wvd + PSSH，预取消 token 零网络即抛 OCE）；serve 用户取消退出码（经 `StartServerAsync` → `RunAsync` 全链返回 0）；评论 JSON/专栏 Markdown 时间戳文化无关（fi-FI 区域断言冒号分隔）各 1 例；直播文件名 Windows 保留名防护 6 断言。
-- `sub check` 的损坏异常重抛与取消分类为命令层语义：`DoWorkAsync`/`ResolveAsync` 静态直连网络无注入缝，回归以代码走查 + 全量编译验证，测试缝待 DownloadOrchestrator 拆分（OPTIMIZATION_PLAN P0-1）后补。
+- 全库测试 700 例（第 14 轮消纳批新增 22 例，PR gate 过滤器）：`SanitizeLogString` 单行化契约（RF-54，此前零单测）；serve `area` 白名单（RF-56）；webhook 零地址 DNS 应答拒绝（RF-55）；`GetPropertySafe` 异常消息键名净化与截断（RF-53）；`Page.bvid` 越界 aid 回落（RF-48）；`Audio.shortCodecs` tr-TR 文化不变（RF-60）。
+- RF-45（免二压降级丢杜比）的回归测试：`ExtractTracksAsync` 静态直连网络无注入缝，与 RF-30/RF-32 同批以代码走查 + 全量编译验证，测试缝待 DownloadOrchestrator 拆分（OPTIMIZATION_PLAN P0-1）后补。
 
 ## [1.6.17] - 2026-08-30
 

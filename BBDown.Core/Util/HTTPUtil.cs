@@ -69,19 +69,26 @@ public static partial class HTTPUtil
             throw new InvalidDataException($"响应体大小 ({len} 字节) 超过 {MaxResponseBodyBytes} 字节上限，已中止读取");
     }
 
-    /// <summary>按响应的 Content-Type charset 解码字节为字符串（默认 UTF-8，非法 charset 回落 UTF-8）。</summary>
+    /// <summary>按响应的 Content-Type charset 解码字节为字符串（默认 UTF-8，非法 charset 回落 UTF-8）。
+    /// ReadAsStringAsync 会剥离 UTF-8 BOM（U+FEFF）：改用字节解码后需手动剥离，
+    /// 否则下游 JsonDocument.Parse 会因前导 BOM 抛 JsonReaderException（行为回退）。</summary>
     private static string DecodeBodyBytes(HttpContent content, byte[] bytes)
     {
         var charSet = content.Headers.ContentType?.CharSet;
-        if (string.IsNullOrEmpty(charSet)) return Encoding.UTF8.GetString(bytes);
-        try
+        string result;
+        if (string.IsNullOrEmpty(charSet)) result = Encoding.UTF8.GetString(bytes);
+        else
         {
-            return Encoding.GetEncoding(charSet).GetString(bytes);
+            try
+            {
+                result = Encoding.GetEncoding(charSet).GetString(bytes);
+            }
+            catch (ArgumentException)
+            {
+                result = Encoding.UTF8.GetString(bytes);
+            }
         }
-        catch (ArgumentException)
-        {
-            return Encoding.UTF8.GetString(bytes);
-        }
+        return result.Length > 0 && result[0] == '\uFEFF' ? result[1..] : result;
     }
 
     private static System.Net.Security.SslClientAuthenticationOptions CreateSslOptions(bool skipSslCheck)
@@ -321,7 +328,16 @@ public static partial class HTTPUtil
                     if ((int)webResponse.StatusCode is >= 300 and < 400)
                     {
                         var location = webResponse.Headers.Location;
-                        if (location is null) break;
+                        // RF-59：3xx 无 Location（如 300 Multiple Choices、网关只回状态码）是
+                        // "单跳无目标"，不是"重定向跳数超过上限"——break 落到方法尾的超限异常
+                        // 语义完全不符且该确定性失败会抛给登录流程。与 2xx 同路径读 body 返回。
+                        if (location is null)
+                        {
+                            byte[] noLocBody = await ReadContentBoundedAsync(webResponse.Content, timeoutCts.Token);
+                            string noLocHtml = DecodeBodyBytes(webResponse.Content, noLocBody);
+                            List<string> noLocCookies = webResponse.Headers.TryGetValues("Set-Cookie", out var noLocVals) ? noLocVals.ToList() : [];
+                            return (noLocHtml, noLocCookies);
+                        }
                         var next = location.IsAbsoluteUri ? location : new Uri(new Uri(current), location);
                         if (!IsTrustedCookieHost(next.ToString()))
                             throw new InvalidOperationException($"重定向目标未通过可信主机校验: {SensitiveDataMasker.MaskUrl(next.ToString())}");
@@ -412,7 +428,12 @@ public static partial class HTTPUtil
                 current = next.ToString();
                 continue;
             }
-            string htmlCode = await response.Content.ReadAsStringAsync(timeoutCts.Token);
+            // RF-51：4xx/5xx 不再返回错误页 body（泛抓取会把错误页当目标页解析），
+            // 显式抛出；响应体读取改有界（64MB 上限）——目标可为不可信 URL，被攻破端点
+            // 或 --insecure 中间人可用分块慢发/巨包打满进程内存（RF-28/B3-S1 威胁模型）。
+            response.EnsureSuccessStatusCode();
+            byte[] bodyBytes = await ReadContentBoundedAsync(response.Content, timeoutCts.Token);
+            string htmlCode = DecodeBodyBytes(response.Content, bodyBytes);
             if (Config.Current.DebugLog)
                 Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
             return htmlCode;
@@ -486,75 +507,107 @@ public static partial class HTTPUtil
         {
             try
             {
-                using var webRequest = new HttpRequestMessage(HttpMethod.Get, url);
-                var effectiveUa = GetUserAgent(userAgent);
-                webRequest.Headers.TryAddWithoutValidation("User-Agent", effectiveUa);
-                webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
-                // B3-S1 纵深防御：带 Cookie 的请求必须先确认目标在可信 B 站域白名单内。
-                // 否则一旦未来某调用方把用户可控 URL 传入本方法，登录凭据（SESSDATA）会
-                // 随 HttpClient 直接外发（凭据泄露）。当前全部 sendCookie:true 调用方都传
-                // B 站 API/CDN 域名（受信任源），此校验是防回退闸而非改动现有行为。
-                if (sendCookie && !IsTrustedCookieHost(url))
-                    throw new InvalidOperationException($"拒绝向非可信主机发送登录 Cookie: {SensitiveDataMasker.MaskUrl(url)}");
-                if (sendCookie)
-                    webRequest.Headers.TryAddWithoutValidation("Cookie", (url.Contains("/ep") || url.Contains("/ss")) ? Config.Current.Cookie + ";CURRENT_FNVAL=4048;" : Config.Current.Cookie);
-                if (url.Contains("api.bilibili.com"))
-                    webRequest.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
-                if (url.Contains("api.bilibili.tv"))
+                // RF-50：sendCookie 路径改用 NoRedirectClient 手动逐跳——AppHttpClient 的
+                // AllowAutoRedirect=true 会把手工附加的 Cookie 头（完整 SESSDATA/bili_jct）发往
+                // 3xx Location 指向的任意主机，入口白名单只拦第一跳（NoRedirect 收口族
+                // RF-4/13/37 的最后一名漏网成员）。每一跳的 Location 在发起下一跳前必须通过
+                // IsTrustedCookieHost，与 GetWebSourceWithSetCookiesAsync 同构。
+                // 匿名路径（sendCookie:false）不携带凭据，保持 AppHttpClient 自动跳转不变。
+                string current = url;
+                for (int hop = 0; hop < MaxRedirectHops; hop++)
                 {
-                    // sec-ch-ua 与 UA 自洽：只有 Chrome UA 才发送（真实 Firefox 不发送 Chrome 品牌
-                    // sec-ch-ua），版本取自已解析的 UA——避免"UA 145 + sec-ch-ua 131"这类可被识别
-                    // 的指纹不一致（此前硬编码 131，与升级后的 UA 池同样不匹配）。
-                    var chromeVersion = ChromeVersionRegex().Match(effectiveUa).Groups[1].Value;
-                    if (chromeVersion.Length > 0)
-                        webRequest.Headers.TryAddWithoutValidation("sec-ch-ua",
-                            $"\"Google Chrome\";v=\"{chromeVersion}\", \"Chromium\";v=\"{chromeVersion}\", \"Not_A Brand\";v=\"99\"");
-                }
-                webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
-                webRequest.Headers.Connection.Clear();
+                    using var webRequest = new HttpRequestMessage(HttpMethod.Get, current);
+                    var effectiveUa = GetUserAgent(userAgent);
+                    webRequest.Headers.TryAddWithoutValidation("User-Agent", effectiveUa);
+                    webRequest.Headers.TryAddWithoutValidation("Accept-Encoding", "gzip, deflate");
+                    // B3-S1 纵深防御：带 Cookie 的请求必须先确认目标在可信 B 站域白名单内（逐跳）。
+                    // 否则一旦未来某调用方把用户可控 URL 传入本方法，登录凭据（SESSDATA）会
+                    // 随 HttpClient 直接外发（凭据泄露）。当前全部 sendCookie:true 调用方都传
+                    // B 站 API/CDN 域名（受信任源），此校验是防回退闸而非改动现有行为。
+                    if (sendCookie && !IsTrustedCookieHost(current))
+                        throw new InvalidOperationException($"拒绝向非可信主机发送登录 Cookie: {SensitiveDataMasker.MaskUrl(current)}");
+                    if (sendCookie)
+                        webRequest.Headers.TryAddWithoutValidation("Cookie", (current.Contains("/ep") || current.Contains("/ss")) ? Config.Current.Cookie + ";CURRENT_FNVAL=4048;" : Config.Current.Cookie);
+                    if (current.Contains("api.bilibili.com"))
+                        webRequest.Headers.TryAddWithoutValidation("Referer", "https://www.bilibili.com/");
+                    if (current.Contains("api.bilibili.tv"))
+                    {
+                        // sec-ch-ua 与 UA 自洽：只有 Chrome UA 才发送（真实 Firefox 不发送 Chrome 品牌
+                        // sec-ch-ua），版本取自已解析的 UA——避免"UA 145 + sec-ch-ua 131"这类可被识别
+                        // 的指纹不一致（此前硬编码 131，与升级后的 UA 池同样不匹配）。
+                        var chromeVersion = ChromeVersionRegex().Match(effectiveUa).Groups[1].Value;
+                        if (chromeVersion.Length > 0)
+                            webRequest.Headers.TryAddWithoutValidation("sec-ch-ua",
+                                $"\"Google Chrome\";v=\"{chromeVersion}\", \"Chromium\";v=\"{chromeVersion}\", \"Not_A Brand\";v=\"99\"");
+                    }
+                    webRequest.Headers.CacheControl = CacheControlHeaderValue.Parse("no-cache");
+                    webRequest.Headers.Connection.Clear();
 
-                Logger.LogDebug("获取网页内容: Url: {0}, Headers: {1}",
-                    SensitiveDataMasker.MaskUrl(url), SensitiveDataMasker.MaskHeaders(webRequest.Headers));
-                // ResponseHeadersRead 之后 HttpClient.Timeout 不再约束响应体读取（实测，见
-                // StreamingHttpClient 注释），用 CancelAfter 重建整体超时（默认 2 分钟）。
-                using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
-                timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
-                using var webResponse = await AppHttpClient.SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
-                // 服务器时钟校准：在所有状态码分支前执行（错误响应也带 Date，见 CalibrateClock）
-                CalibrateClock(webResponse, fromVerifiedPool: !Config.Current.SkipSslCheck);
-                // 5xx：显式抛 HttpRequestException（带状态码）走下方退避；
-                // 4xx 交给 EnsureSuccessStatusCode 立即抛出（HttpRequestException.StatusCode < 500，
-                // 不满足重试过滤条件，不会被重试）。
-                if (!webResponse.IsSuccessStatusCode && (int)webResponse.StatusCode >= 500)
-                    throw new HttpRequestException($"服务器返回 {(int)webResponse.StatusCode} {webResponse.ReasonPhrase}", null, webResponse.StatusCode);
-                webResponse.EnsureSuccessStatusCode();
+                    Logger.LogDebug("获取网页内容: Url: {0}, Headers: {1}",
+                        SensitiveDataMasker.MaskUrl(current), SensitiveDataMasker.MaskHeaders(webRequest.Headers));
+                    // ResponseHeadersRead 之后 HttpClient.Timeout 不再约束响应体读取（实测，见
+                    // StreamingHttpClient 注释），用 CancelAfter 重建整体超时（默认 2 分钟）。
+                    using var timeoutCts = CancellationTokenSource.CreateLinkedTokenSource(token);
+                    timeoutCts.CancelAfter(TimeSpan.FromMilliseconds(Config.Current.ApiTimeoutMs));
+                    using var webResponse = await (sendCookie ? NoRedirectClient : AppHttpClient).SendAsync(webRequest, HttpCompletionOption.ResponseHeadersRead, timeoutCts.Token);
+                    // 服务器时钟校准：在所有状态码分支前执行（错误响应也带 Date，见 CalibrateClock）
+                    CalibrateClock(webResponse, fromVerifiedPool: !Config.Current.SkipSslCheck);
+                    // 3xx：仅 NoRedirectClient（sendCookie）路径会到达此处（匿名客户端自动跳转，
+                    // 3xx 带 Location 时 HttpClient 内部已跟随）。有 Location → 逐跳校验后跟随；
+                    // 无 Location → 单跳无目标 ≠ 跳数超限（RF-59 同族语义），按终态读 body 返回。
+                    if ((int)webResponse.StatusCode is >= 300 and < 400)
+                    {
+                        var location = webResponse.Headers.Location;
+                        if (location is not null)
+                        {
+                            var next = location.IsAbsoluteUri ? location : new Uri(new Uri(current), location);
+                            if (!IsTrustedCookieHost(next.ToString()))
+                                throw new InvalidOperationException($"重定向目标未通过可信主机校验: {SensitiveDataMasker.MaskUrl(next.ToString())}");
+                            current = next.ToString();
+                            continue;
+                        }
+                        if (!sendCookie)
+                        {
+                            // 匿名路径的 3xx 无 Location：保持原行为（EnsureSuccessStatusCode 抛出）
+                            webResponse.EnsureSuccessStatusCode();
+                        }
+                    }
+                    else
+                    {
+                        // 5xx：显式抛 HttpRequestException（带状态码）走下方退避；
+                        // 4xx 交给 EnsureSuccessStatusCode 立即抛出（HttpRequestException.StatusCode < 500，
+                        // 不满足重试过滤条件，不会被重试）。
+                        if (!webResponse.IsSuccessStatusCode && (int)webResponse.StatusCode >= 500)
+                            throw new HttpRequestException($"服务器返回 {(int)webResponse.StatusCode} {webResponse.ReasonPhrase}", null, webResponse.StatusCode);
+                        webResponse.EnsureSuccessStatusCode();
+                    }
 
-                string htmlCode = await webResponse.Content.ReadAsStringAsync(timeoutCts.Token);
-                // 200+HTML 风控页识别：JSON 响应不可能以 '<' 开头，因此这一定是 HTML 页面。
-                // 给出可读的"疑似风控页"异常，替代下游 JsonDocument.Parse 的裸 JsonException
-                //（难定位、看似偶发）。TrimStart 处理前导空白——部分 WAF/风控页在 '<html' 前
-                // 带换行或空白，直接 StartsWith('<') 会漏检并让裸 JsonException 回潮；并防御性
-                // 剥离 UTF-8 BOM（char.IsWhiteSpace 不认 U+FEFF，ReadAsStringAsync 通常已剥离，
-                // 此处兜底）。用 AsSpan 避免为每条响应分配截断串。此为业务性拦截，不参与上面的
-                // 5xx 重试。
-                if (rejectHtml)
-                {
+                    // RF-51：响应体读取改有界（64MB 上限）——被攻破端点或 --insecure 中间人可用
+                    // 分块慢发/巨包打满进程内存（与 RF-28/B3-S1 已认可的威胁模型一致）。
+                    byte[] bodyBytes = await ReadContentBoundedAsync(webResponse.Content, timeoutCts.Token);
+                    string htmlCode = DecodeBodyBytes(webResponse.Content, bodyBytes);
                     // 200+HTML 风控页识别：JSON 响应不可能以 '<' 开头，因此这一定是 HTML 页面。
                     // 给出可读的"疑似风控页"异常，替代下游 JsonDocument.Parse 的裸 JsonException
-                    //（难定位、看似偶发）。先剥前导空白，再剥 BOM，再剥一次空白：
-                    // char.IsWhiteSpace 不认 U+FEFF，部分 WAF/风控页在 BOM 前还带换行/空白
-                    //（"\n\uFEFF<html"），只剥 BOM 或只剥空白都会漏检而让裸 JsonException 回潮。
-                    // 用 AsSpan 避免为每条响应分配截断串。此为业务性拦截，不参与上面的 5xx 重试。
-                    var htmlSpan = htmlCode.AsSpan().TrimStart().TrimStart('\uFEFF').TrimStart();
-                    if (htmlSpan.StartsWith("<"))
-                        throw new RiskControlResponseException(url);
+                    //（难定位、看似偶发）。TrimStart 处理前导空白——部分 WAF/风控页在 '<html' 前
+                    // 带换行或空白，直接 StartsWith('<') 会漏检并让裸 JsonException 回潮；并防御性
+                    // 剥离 UTF-8 BOM（DecodeBodyBytes 已剥离，此处兜底）。用 AsSpan 避免为每条响应
+                    // 分配截断串。此为业务性拦截，不参与上面的 5xx 重试。
+                    if (rejectHtml)
+                    {
+                        var htmlSpan = htmlCode.AsSpan().TrimStart().TrimStart('\uFEFF').TrimStart();
+                        if (htmlSpan.StartsWith("<"))
+                            throw new RiskControlResponseException(url);
+                    }
+                    // 响应体可达数 MB（如 intl 回退抓取的整张 HTML 页面），翻页类 fetcher 会放大几十倍，
+                    // 全部落盘会把日志文件灌满；截断到前 1KB 即可排查问题。
+                    // 截断实参含子串分配，DebugLog 关闭时跳过求值（见 GetWebSourceWithSetCookiesAsync）。
+                    if (Config.Current.DebugLog)
+                        Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
+                    return htmlCode;
                 }
-                // 响应体可达数 MB（如 intl 回退抓取的整张 HTML 页面），翻页类 fetcher 会放大几十倍，
-                // 全部落盘会把日志文件灌满；截断到前 1KB 即可排查问题。
-                // 截断实参含子串分配，DebugLog 关闭时跳过求值（见 GetWebSourceWithSetCookiesAsync）。
-                if (Config.Current.DebugLog)
-                    Logger.LogDebug("Response: {0}", htmlCode.Length > 1024 ? htmlCode[..1024] + $"…[截断, 共 {htmlCode.Length} 字符]" : htmlCode);
-                return htmlCode;
+                // 确定性失败（跳数上限/重定向环）用 InvalidOperationException：HttpRequestException
+                // 的 StatusCode 为 null 会命中重试过滤器，把整个 10 跳流程重打最多 3 遍
+                throw new InvalidOperationException($"重定向跳数超过上限 ({MaxRedirectHops})");
             }
             catch (HttpRequestException ex) when (attempt < maxRetry && (ex.StatusCode is null || (int)ex.StatusCode >= 500))
             {

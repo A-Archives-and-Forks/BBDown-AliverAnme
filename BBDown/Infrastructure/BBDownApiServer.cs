@@ -815,6 +815,12 @@ public partial class BBDownApiServer
         // 回调字段被完全忽略（服务端 allowlist，不接受客户端指定）。
         req.CallBackWebHook = "";
 
+        // RF-56：Area 是唯一未收口的"拼进官方 API query"字段（Parser 的 area={Area} 裸拼、
+        // Workflow 按 Area != "" 跳过登录检测）。与 --area 文档语义（hk|tw|th 枚举）对齐：
+        // 仅接受白名单值（大小写不敏感），否则回落 ""——任意文本注入 query 参数语义/
+        // 产生"已检测登录"误导日志的通道一并关闭。
+        req.Area = req.Area?.Trim().ToLowerInvariant() is "hk" or "tw" or "th" ? req.Area.Trim().ToLowerInvariant() : "";
+
         // 限制重试参数：客户端传入失控的重试次数或超长延迟会在共享并发槽内阻塞长达数十天，
         // 占满并发槽并使服务瘫痪。将 API 任务重试次数限制在 [1, 3]，延迟限制在 [0, 5000]ms 内。
         // 下限 1：显式传 0 会被 ValidateNumericOptions 的 --retry-count ≥ 1 判为非法任务 Failed，
@@ -951,6 +957,10 @@ public partial class BBDownApiServer
         try
         {
             var addresses = dnsResolver is not null ? await dnsResolver(host) : await Dns.GetHostAddressesAsync(host);
+            // RF-55：部分 DNS 应答形态可返回零地址——空数组零次迭代会"校验空过"放行，
+            // 而连接侧（SendCallbackAsync）对空数组记 Warn 跳过，两侧语义必须一致：
+            // 解析不出任何地址的回调必然失败，按不安全处理。
+            if (addresses.Length == 0) return false;
             foreach (var addr in addresses)
             {
                 var resolvedIp = addr.IsIPv4MappedToIPv6 ? addr.MapToIPv4() : addr;
@@ -1304,6 +1314,15 @@ public partial class BBDownApiServer
                     Logger.LogWarn($"回调地址 DNS 解析失败，已跳过本次回调: {webhook}");
                     return;
                 }
+                // RF-55：部分 DNS 应答形态可返回零地址——此时 addresses[0] 会抛
+                // IndexOutOfRangeException（不在回调过滤器白名单），把已成功且已持久化的
+                // 任务打成误导性的"任务异常终止"。与校验侧（IsSafeCallbackUrlAsync 对空数组
+                // 返回 false）对齐：记 Warn 跳过本次回调。
+                if (addresses.Length == 0)
+                {
+                    Logger.LogWarn($"回调地址解析结果为空，已跳过本次回调: {webhook}");
+                    return;
+                }
                 foreach (var addr in addresses)
                 {
                     var resolvedIp = addr.IsIPv4MappedToIPv6 ? addr.MapToIPv4() : addr;
@@ -1346,10 +1365,11 @@ public partial class BBDownApiServer
                 Logger.LogWarn($"回调返回 HTTP {(int)resp.StatusCode}: {webhook}");
             }
         }
-        // TaskCanceledException 也要接住：回调 HttpClient.Timeout（2 分钟）触发时抛它且
-        // token 未取消，若不进此过滤器会一路冒泡到 RunAcceptedTaskAsync 的 catch(Exception)，
-        // 对一个已成功且已持久化的任务打印误导性的"任务异常终止"。
-        catch (Exception e) when (e is HttpRequestException or UriFormatException or InvalidOperationException or SocketException or TaskCanceledException)
+        // RF-55：放宽为 catch (Exception)——本 catch 的目的只是"回调失败不影响任务"，
+        // 无需类型白名单（此前 IndexOutOfRangeException 等未列类型会冒泡到
+        // RunAcceptedTaskAsync 的 catch(Exception)，对已成功且已持久化的任务打印
+        // 误导性的"任务异常终止"）。
+        catch (Exception e)
         {
             // 升 Warn：回调失败意味着通知静默丢失（任务本身已成功），需可观测。
             Logger.LogWarn($"回调失败: {e.Message}");
