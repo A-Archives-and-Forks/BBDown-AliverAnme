@@ -33,7 +33,10 @@ public class FavListFetcher : IFetcher
                 var favMsg = favDoc.RootElement.GetValueAsStringSafe("message");
                 throw new InvalidOperationException($"获取默认收藏夹失败: {favMsg} (code={favCode})");
             }
-            var list = favDoc.RootElement.GetPropertySafe("data").EnumerateArraySafe("list");
+            // RF-65：code=0 但 data 缺失时给可读诊断，而非英文裸 KeyNotFoundException
+            if (!(favDoc.RootElement.TryGetProperty("data", out var favData) && favData.ValueKind == System.Text.Json.JsonValueKind.Object))
+                throw new InvalidOperationException("获取默认收藏夹失败: 响应缺少 data 节点");
+            var list = favData.EnumerateArraySafe("list");
             var firstFav = list.FirstOrDefault();
             if (firstFav.ValueKind == System.Text.Json.JsonValueKind.Undefined)
                 throw new InvalidOperationException("该用户没有创建收藏夹");
@@ -56,7 +59,9 @@ public class FavListFetcher : IFetcher
             var msg = infoJson.RootElement.GetValueAsStringSafe("message");
             throw new InvalidOperationException($"获取收藏夹失败: {msg} (code={rootCode})");
         }
-        var data = infoJson.RootElement.GetPropertySafe("data");
+        // RF-65：code=0 但 data 缺失时给可读诊断，而非英文裸 KeyNotFoundException
+        if (!(infoJson.RootElement.TryGetProperty("data", out var data) && data.ValueKind == System.Text.Json.JsonValueKind.Object))
+            throw new InvalidOperationException("获取收藏夹失败: 响应缺少 data 节点");
         var favInfo = data.GetPropertySafe("info");
         int totalCount = favInfo.GetInt32Safe("media_count");
         int totalPage = (int)Math.Ceiling((double)totalCount / pageSize);

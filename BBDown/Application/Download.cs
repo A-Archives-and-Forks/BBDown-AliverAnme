@@ -60,10 +60,8 @@ internal partial class Program
         // CheckAidFromFile 判定为"已下载"而全部跳过——收藏夹、合集、UP 主投稿
         // 这类含多P稿件的列表尤其容易踩到。因此必须等一个 aid 的分P全部成功
         // 之后再写入。
-        var remainingPagesByAid = pagesInfo
-            .GroupBy(p => p.aid)
-            .ToDictionary(g => g.Key, g => g.Count());
-        var failedAids = new HashSet<string>();
+        // RF-75：入档判定抽为生产类型 ArchiveTracker（供 DownloadPagesAsync 与单测共用）。
+        var archiveTracker = new ArchiveTracker(pagesInfo.Select(p => p.aid));
 
         // 计数循环而非 foreach + IndexOf：IndexOf 是 O(n)，全量分P时 O(n²) 且按值
         // 匹配重复分P会得到错误序号；序号在循环顶部递增，与 foreach 遍历一一对应。
@@ -81,7 +79,7 @@ internal partial class Program
             if (myOption.SaveArchivesToFile && CheckAidFromFile(p.aid))
             {
                 Logger.Log($"aid: {p.aid}已下载过, 跳过下载...");
-                remainingPagesByAid[p.aid]--;
+                archiveTracker.OnSkipped(p.aid);
                 continue;
             }
 
@@ -95,7 +93,10 @@ internal partial class Program
             // 单 P 的确定性解析异常不中止整批（丢 webhook/failedPages 的同族逃逸面）。
             // UnauthorizedAccessException（RF-44）：Windows 只读属性文件 File.Delete、受控文件夹
             // 访问、ACL 拒写等本地权限错误非 IOException 派生，单 P 路径上不中止整批。
-            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or UnauthorizedAccessException or InvalidOperationException or TimeoutException or TaskCanceledException or AggregateException or FormatException or OverflowException)
+            // InvalidDataException（RF-72）：继承 SystemException 而非 IOException，RF-28/RF-51
+            // 新增的 64MB 响应体上限与 gRPC 帧校验（AppHelper）抛的正是它——不在页面级过滤器内
+            // 会让一次巨包/畸形帧放弃剩余分 P、丢 webhook/failedPages。
+            catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or UnauthorizedAccessException or InvalidOperationException or TimeoutException or TaskCanceledException or AggregateException or FormatException or OverflowException or InvalidDataException)
             {
                 // 真正的用户取消/服务关停（token 已取消）必须正常中止整批，不能进失败分支续跑；
                 // HTTP 超时抛的 TaskCanceledException 其 token 未取消，会进入下方"记录失败后继续"分支。
@@ -110,10 +111,7 @@ internal partial class Program
 
             if (myOption.SaveArchivesToFile)
             {
-                remainingPagesByAid[p.aid]--;
-                // 只要该稿件有任何一个分P失败就不入档，否则下次运行会跳过尚未下全的稿件
-                if (!succeeded) failedAids.Add(p.aid);
-                if (remainingPagesByAid[p.aid] == 0 && !failedAids.Contains(p.aid))
+                if (archiveTracker.OnProcessed(p.aid, succeeded))
                 {
                     SaveAidToFile(p.aid);
                 }
@@ -816,8 +814,12 @@ internal partial class Program
                                 // 否则取消信号丢失，后续 SkipMux 等分支仍返回成功。
                                 throw;
                             }
+                            // RF-64：与页面级过滤器同步扩充——评论 API 超时（TimeoutException，E1 统一后的主要抛型）、
+                            // AggregateException、UnauthorizedAccessException 若漏接会逃逸到页面级过滤器，
+                            // 把已成功下载并混流的页面误判为失败（failedPages 非空 → 退出码非 0 + webhook 报失败 + 不入档）。
                             catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException
-                                                        or IOException or TaskCanceledException or KeyNotFoundException or FormatException)
+                                                        or IOException or TaskCanceledException or KeyNotFoundException or FormatException
+                                                        or TimeoutException or AggregateException or UnauthorizedAccessException)
                             {
                                 Logger.LogWarn($"评论下载失败（已跳过）: {ex.Message}");
                             }
@@ -1094,7 +1096,9 @@ internal partial class Program
                 // 隔离重试，不让异常逃逸中止整批。
                 // UnauthorizedAccessException（RF-44）：与页面级过滤器同步扩充（只读属性/
                 // 受控文件夹访问/ACL 拒写等本地权限错误）。
-                catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or UnauthorizedAccessException or InvalidOperationException or TimeoutException or AggregateException or FormatException or OverflowException
+                // InvalidDataException（RF-72）：RF-28/RF-51 的 64MB 上限与 gRPC 帧校验抛型，
+                // 不在白名单内会穿透中止整批——补入后按单 P 失败重试。
+                catch (Exception ex) when (ex is HttpRequestException or JsonException or IOException or UnauthorizedAccessException or InvalidOperationException or TimeoutException or AggregateException or FormatException or OverflowException or InvalidDataException
                                   || (ex is TaskCanceledException && !cancellationToken.IsCancellationRequested))
                 {
                     // 风控页（200+HTML 的 RiskControlResponseException，继承 JsonException）也参与

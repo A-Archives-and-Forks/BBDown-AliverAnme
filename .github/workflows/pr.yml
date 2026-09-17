@@ -47,9 +47,20 @@ jobs:
         run: dotnet restore BBDown.sln
 
       - name: Audit packages
-        # --include-transitive：仅扫描直接依赖会漏掉传递依赖中的已知漏洞，
-        # NuGet 官方要求显式包含传递依赖
-        run: dotnet list BBDown.sln package --vulnerable --include-transitive
+        # RF-67：`dotnet list package --vulnerable` 无论是否发现漏洞退出码恒为 0
+        # （NuGet/Home#11315），原先的 job 永不阻断 PR。改用 --format json + jq 判定：
+        # 任一项目出现带 vulnerabilities 的包即 exit 1，使门禁具备真实失败语义。
+        # --include-transitive：仅扫描直接依赖会漏掉传递依赖中的已知漏洞。
+        run: |
+          set -euo pipefail
+          dotnet list BBDown.sln package --vulnerable --include-transitive --format json > vuln.json
+          echo "--- vulnerable packages report ---"
+          jq -r '.projects[] | select(.frameworks) | .path as $p | .frameworks[] | .topLevelPackages[]?, .transitivePackages[]? | select(.vulnerabilities) | "\($p): \(.id) \(.resolvedVersion) -> \(.vulnerabilities | map(.severity) | join(","))"' vuln.json || true
+          if ! jq -e '[.. | objects | select(.vulnerabilities?)] | length == 0' vuln.json > /dev/null; then
+            echo "::error::发现具有已知漏洞的 NuGet 依赖，PR 门禁失败"
+            exit 1
+          fi
+          echo "未发现已知漏洞"
 
   # 格式门禁（硬性）：此前的存量 CRLF/BOM 问题已随格式修复 PR 清理，
   # 报告确认 dotnet format --verify-no-changes 当前通过，升级为硬性门禁防回归。

@@ -71,7 +71,10 @@ public class ServeApiHttpTests
                     throw new InvalidOperationException($"测试服务器启动失败: {_runTask.Exception?.GetBaseException()}", _runTask.Exception);
                 throw new TimeoutException($"测试服务器 {BaseUrl} 未在 10 秒内就绪");
             }
-            Client = new HttpClient { BaseAddress = new Uri(BaseUrl) };
+            // RF-69：回环服务测试绝不能经系统代理——.NET HttpClient 默认 UseProxy=true 会读
+            // Windows 系统代理，本机 Clash/V2Ray 类代理在线时回环请求被转发、按 Host 策略
+            // 返回 400/502，使 HostValidation 系列假红（实测 127.0.0.1:7890 代理下 2/2 失败）。
+            Client = new HttpClient(new SocketsHttpHandler { UseProxy = false }) { BaseAddress = new Uri(BaseUrl) };
         }
 
         public void Dispose()

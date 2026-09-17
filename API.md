@@ -122,11 +122,11 @@
 - `JobId` `<string>`: 任务唯一标识（GUID 字符串），`/add-task` 返回的 TaskId 即 JobId，用于查询/取消任务。旧持久化记录（无该字段）默认为空串。
 - `Aid` `<string>`: 视频解析出的 Aid（业务字段）。解析成功前为空/为提交 Url，不再作为任务唯一标识。
 - `Url` `<string>`: 下载任务请求时的URL，不一定需要完整的URL，命令行支持的`av|bv|BV|ep|ss`都可以在这里使用。
-- `TaskCreateTime` `<long>`: 任务创建时间，Unix时间戳，精确到秒，本机时区。
+- `TaskCreateTime` `<long>`: 任务创建时间，UTC 纪元秒（`ToUnixTimeSeconds()`，与时区无关）。
 - `Title` `<string?>`: 视频的标题。
 - `Pic` `<string?>`: 视频的封面图片链接。
 - `VideoPubTime` `<long?>`: 视频发布时间，Unix时间戳，精确到秒。
-- `TaskFinishTime` `<long?>`: 任务完成时间，Unix时间戳，精确到秒，本机时区。
+- `TaskFinishTime` `<long?>`: 任务完成时间，UTC 纪元秒（`ToUnixTimeSeconds()`，与时区无关）。
 - `Progress` `<double>`: 任务的下载进度，为0-1区间范围的小数。
 - `DownloadSpeed` `<double>`: 下载速度, 单位为Byte/s。下载中时为最后一次更新的实时速度，下载完成后为平均速度。
 - `TotalDownloadedBytes` `<double>`: 总下载字节(Byte)数，完成后的数字比实际文件偏小。

@@ -8,9 +8,28 @@ public static class Entity
     public class Page
     {
         public required int index;
-        public required string aid;
-        public required string cid;
-        public required string epid;
+        // RF-73：aid/cid/epid 逐字来自 API 响应（Fetcher 的 GetValueAsStringSafe("id") 等，无数字校验），
+        // 又直接拼入工作区路径与 <aid>/<cid> 占位符。属性 setter 统一经 SanitizePathSegment 净化，
+        // 单一收口杜绝镜像站/中间人下发 "..\\..\\tmp\\x" 类值导致路径穿越出 --work-dir。
+        // 纯数字/ BV 号等合法值为恒等变换，不影响 RF-48 的 bvid 非数字回退。
+        private string _aid = "";
+        public required string aid
+        {
+            get => _aid;
+            set => _aid = PathUtil.SanitizePathSegment(value);
+        }
+        private string _cid = "";
+        public required string cid
+        {
+            get => _cid;
+            set => _cid = PathUtil.SanitizePathSegment(value);
+        }
+        private string _epid = "";
+        public required string epid
+        {
+            get => _epid;
+            set => _epid = PathUtil.SanitizePathSegment(value);
+        }
         public required string title;
         public required int dur;
         public required string res;

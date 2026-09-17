@@ -186,16 +186,18 @@ public partial class BBDownApiServer
                 if (!string.IsNullOrEmpty(_serveToken) && !FixedTimeEquals(context.Request.Headers["X-Serve-Token"], _serveToken!))
                 {
                     var clientIp = GetClientIp(context);
-                    // 每次失败都记录日志：401 此前完全静默，暴力尝试对运维/用户不可见。
-                    Logger.LogWarn($"serve 认证失败（401）: {clientIp} {context.Request.Path}");
                     if (IsAuthLockedOut(clientIp))
                     {
                         // 1 分钟窗口内失败超阈值：限速拒绝，令 X-Serve-Token 暴力枚举失效。
+                        // 仅记客户端 IP，不回显攻击者可控的路径/XFF（日志体积与注入面同时收口）。
                         Logger.LogWarn($"serve 认证失败过于频繁，已限速: {clientIp}");
                         context.Response.Headers.RetryAfter = "60";
                         context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
                         return;
                     }
+                    // RF-74：认证失败日志必须单行化（RF-25/RF-54 同族：Request.Path/XFF 可含 CRLF）
+                    // 并截断——未认证客户端可无限刷此 sink（Logger 无轮转），不截断可灌盘。
+                    Logger.LogWarn($"serve 认证失败（401）: {clientIp} {TruncateForLog(context.Request.Path)}");
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     return;
                 }
@@ -493,6 +495,16 @@ public partial class BBDownApiServer
     {
         if (string.IsNullOrEmpty(s)) return "";
         return s.Replace("\r", "\\r").Replace("\n", "\\n");
+    }
+
+    /// <summary>客户端可控字符串进日志前的单行化 + 截断（RF-74）。
+    /// Logger 写持久文件且无轮转：未认证客户端可无限刷 401 日志 sink，
+    /// 不限制单条长度（受 Kestrel 请求行上限约束但仍可达数 KB）时可灌满磁盘。
+    /// 截断到固定长度，保留首段便于排查。</summary>
+    internal static string TruncateForLog(string? s, int maxLength = 200)
+    {
+        var sanitized = SanitizeLogString(s);
+        return sanitized.Length <= maxLength ? sanitized : sanitized[..maxLength] + "…";
     }
 
     /// <summary>匹配盘符/UNC/Unix 根绝对路径（含尾随文件名或目录段），保留路径最后一段。

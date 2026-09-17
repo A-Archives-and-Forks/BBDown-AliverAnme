@@ -47,9 +47,13 @@ public partial class IntlBangumiInfoFetcher : IFetcher
                 {
                     string _json = match.Groups[1].Value;
                     using var _tempJson = JsonDocument.Parse(_json);
-                    cover = _tempJson.RootElement.GetPropertySafe("mediaInfo").GetValueAsStringSafe("cover");
-                    title = _tempJson.RootElement.GetPropertySafe("mediaInfo").GetValueAsStringSafe("title");
-                    desc = _tempJson.RootElement.GetPropertySafe("mediaInfo").GetValueAsStringSafe("evaluate");
+                    // RF-65：__INITIAL_STATE__ 结构可能缺 mediaInfo（页面改版/风控变体）：
+                    // 逐级判空，不用 GetPropertySafe 抛英文裸 KNFE（与上方 result 节点同风格）。
+                    var mediaInfo = _tempJson.RootElement.TryGetPropertySafe("mediaInfo")
+                        ?? throw new InvalidOperationException("国际版番剧页面缺少 mediaInfo 节点");
+                    cover = mediaInfo.GetValueAsStringSafe("cover");
+                    title = mediaInfo.GetValueAsStringSafe("title");
+                    desc = mediaInfo.GetValueAsStringSafe("evaluate");
                 }
             }
         }

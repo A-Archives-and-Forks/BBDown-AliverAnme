@@ -381,3 +381,47 @@
 
 | Info 级观察（不登记 RF） | ① `BBDownApiServer.cs:337-339` 在途任务登记窗口（关停排空快照理论上可漏，窗口为单条指令且 30s 超时兜底）——维持现状；② `:715-718` 已完成任务按 `TaskCreateTime` 计龄（RF-10 已决策按该字段保留最新），非漏网——维持现状；③ `AGENTS.md:27` 的本地 `dotnet format` 与 CI `--verify-no-changes` 差异已由同行注释说明（本地修复、CI 把关），非不一致——不登记；④ `Parser.cs:762` `QualityMap` 为空时 `Max()` 抛 IOE（配置非服务器输入，触发面极低） |
 | 基线 | ✅ dotnet build Release 0 警告 0 错误；dotnet format --verify-no-changes 通过 |
+
+---
+
+## 第 16 轮：全库续审 + 分析（2026-09-18）
+
+> 第 15 轮登记（RF-62~RF-71）后的续审 + 新一轮深查。新发现 **6 Medium + 11 Low**，登记 REVIEW_FINDINGS（RF-72~RF-88），**仅登记评估未修复**。
+> 本轮同时完成**第 15 轮 RF-62~RF-71 的消纳批**（下详）：10 项中 9 项修复 + **RF-62 亲验前提不成立定案**。
+> 产出分析报告 [`docs/PROJECT_ANALYSIS.md`](PROJECT_ANALYSIS.md)。
+
+### 16-A：第 15 轮消纳批（RF-62~RF-71）
+
+| 项 | 处理 |
+|----|------|
+| RF-62 | ⭕ **前提不成立，维持现状**。亲验：`WidevineCdm.GetKeysAsync`（`WidevineCdm.cs:26-56`）已在 `:51` 用 `catch (Exception ex) { …; return null; }` 包裹整个取钥链（blame 2026-05-29，早于登记），`ParseResponse:324` 的 `CryptographicException` 在此被吞、异常不出 `WidevineCdm`，"整批中止"面不存在。原拟在 `Decrypt.cs:84` 补类型的修改已回退（死代码）。**登记所述逃逸链失实** |
+| RF-63 | ✅ `PathHelper.cs:66-67` 的 `res`/`fps` 补 `GetValidFileName(..., filterSlash: true).Trim().TrimEnd('.').Trim()`（含 null 合并）；+1 回归测试 |
+| RF-64 | ✅ 评论 catch 补 `TimeoutException or AggregateException or UnauthorizedAccessException`（`Download.cs:819-821`） |
+| RF-65 | ✅ 6 处 fetcher 顶层改逐级判空/先 code 后 data（NormalInfoFetcher ×2、CheeseInfoFetcher、FavListFetcher ×2、IntlBangumiInfoFetcher、SpaceVideoFetcher ×2） |
+| RF-66 | ✅ `HTTPUtil.cs:225-228` 两池超时对齐 `FromMinutes(2)` |
+| RF-67 | ✅ `pr.yml` vulnerability-scan 改 `--format json` + `jq` 真失败语义 |
+| RF-68 | ✅ `EntityTests` 输入改 `"avci"`（含 'i'）——原 `"e-ac-3"` 不含 'i'，tr-TR 规则不触发（假绿） |
+| RF-69 | ✅ `ServeApiHttpTests.cs:74` 客户端改 `SocketsHttpHandler { UseProxy = false }` |
+| RF-70 | ✅ `WatchLaterCommand.cs:81-83`、`LiveCommand.cs:63-65` 服务器字段过 `SanitizeLogString` |
+| RF-71 | ✅ `API.md:125/:129` 改"UTC 纪元秒（与时区无关）" |
+| 测试 | ✅ 全库 **701/701 全绿**（+1：`FormatSavePath_ResAndFps_AreSanitized`）；两个新增/修正的回归测试均经**变异验证**（改回缺陷实现则测试失败） |
+| 基线 | ✅ dotnet build Release 0 警告 0 错误；dotnet format --verify-no-changes exit 0 |
+
+### 16-B：新一轮深查（RF-72~RF-88）登记 + 消纳
+
+> 本轮完成第 16 轮发现的**消纳批**：RF-72~RF-76 已修复，RF-77~RF-88 待续（见下状态）。
+
+| 项 | 结果 |
+|----|------|
+| 基线 | ✅ dotnet build Release 0 警告 0 错误；单测 **716/716 全绿**（+15）；format 通过 |
+| RF-72 (M) | ✅ 两级过滤器 + 命令级过滤器补 `InvalidDataException`（有界响应体/gRPC 帧校验抛型） |
+| RF-73 (M) | ✅ `Page.aid/cid/epid` 属性 setter 经 `PathUtil.SanitizePathSegment` 单一收口；+1 回归测试（含 RF-48 恒等性校验） |
+| RF-74 (M) | ✅ 401 sink 改 `TruncateForLog`；限速分支只记 IP；判断只求值一次 |
+| RF-75 (M) | ✅ 抽生产 `ArchiveTracker`/`ProgressAggregator`，两套测试改驱动生产类型；均经**变异验证** |
+| RF-76 (M) | ✅ AOT 防线 `SettingsTypes` 补齐 10 个类型 |
+| RF-77 (M) | ⏳ 待续 |
+| RF-78~83 (L) | ⏳ 待续（DRM 空文件、有界响应体覆盖、fetcher message 净化、selectPage 上限、废弃开关、429 Retry-After） |
+| RF-84~85 (L 文档) | ⏳ 待续（wiki 文档族、Docker 配方） |
+| RF-86~88 (L) | ⏳ 待续（Snapshot 锁、PR CI docker smoke、DRM 测试精确化） |
+
+> 完整详情见 [`docs/REVIEW_FINDINGS.md`](REVIEW_FINDINGS.md) RF-72~RF-88；分析报告见 [`docs/PROJECT_ANALYSIS.md`](PROJECT_ANALYSIS.md)。
