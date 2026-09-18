@@ -28,7 +28,11 @@ public class WvdDevice : IDisposable
     {
         var allBytes = File.ReadAllBytes(path);
 
-        // 格式1: 带 "WVD" magic header (前3字节 = 0x57 0x56 0x44 = "WVD")
+        // RF-78：零字节文件（中断拷贝/空文件/--wvd-path 指向空文件）遍历三个探测均不命中，
+        // 落到下方索引空数组拋 IndexOutOfRangeException（诊断退化）。提前给可读提示。
+        if (allBytes.Length == 0)
+            throw new InvalidDataException("WVD 文件为空（0 字节）");
+
         if (allBytes.Length >= 4 && allBytes[0] == 0x57 && allBytes[1] == 0x56 && allBytes[2] == 0x44)
             return ParseWvd(allBytes.AsSpan(3));
 

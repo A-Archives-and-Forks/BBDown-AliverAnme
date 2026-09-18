@@ -24,6 +24,10 @@
 - **RF-60 的 tr-TR 回归测试假绿（RF-68）**：原输入 `"e-ac-3"` 不含小写 `'i'`，tr-TR 规则不触发、断言恒成立（把实现改回有缺陷的 `ToUpper()` 仍通过）。现改用含 `'i'` 的 `"avci"`，变异验证确认防线有效。
 - **回环服务测试受本机系统代理干扰假红（RF-69）**：`ServeApiHttpTests` 的 `HttpClient` 未设 `UseProxy=false`，代理在线时回环请求被转发导致 `HostValidation_*` 断言失配。现固定 `SocketsHttpHandler { UseProxy = false }`。
 - **新增 `res`/`fps` 净化回归测试**（RF-63，变异验证）。
+- **AOT 绑定防线补齐 Settings 类型（RF-76）**：`AotCliBindingTests.SettingsTypes` 原只列 3 个类型，子命令参数类型改动不会失败。现补齐全部 10 个。
+- **local-integration 门禁可静默空跑（RF-77）**：测试在找不到 ffmpeg 时 early-return 不产断言，job 仍报绿。现 CI 安装 ffmpeg 后显式断言 `command -v ffmpeg`。
+- **零字节 .wvd 诊断退化（RF-78）**：空文件跑到索引空数组抛 `IndexOutOfRangeException`。现提前给可读提示（新增回归测试）。
+- **DRM/登录响应体无大小上限（RF-79）**：`WidevineCdm`（2 处）与 `BBDownLoginUtil`（2 处）仍用 `ReadAs*Async`；`HTTPUtil.ReadContentBoundedAsync` 提为 public 后 4 处统一改经有界读取（64MB）。
 - **消除两处假绿回归网（RF-75）**：入档粒度（`ArchiveGranularityTests`）与进度聚合（`DownloadProgressAggregationTests`）测试只驱动复刻副本；把生产逻辑改坏仍全绿。现抽为生产类型 `Program.ArchiveTracker`/`BBDownDownloadUtil.ProgressAggregator` 并由测试直接驱动（两个 helper 均经变异验证）。
 - **AOT 绑定防线补齐 Settings 类型（RF-76）**：`AotCliBindingTests.SettingsTypes` 原只列 3 个类型，子命令参数类型改动不会失败。现补齐全部 10 个。
 

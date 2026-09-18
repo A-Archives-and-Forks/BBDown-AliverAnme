@@ -409,18 +409,20 @@
 
 ### 16-B：新一轮深查（RF-72~RF-88）登记 + 消纳
 
-> 本轮完成第 16 轮发现的**消纳批**：RF-72~RF-76 已修复，RF-77~RF-88 待续（见下状态）。
+> 本轮完成第 16 轮发现的**消纳批**：RF-72~RF-79 已修复，RF-80~RF-88 待续（见下状态）。
 
 | 项 | 结果 |
 |----|------|
-| 基线 | ✅ dotnet build Release 0 警告 0 错误；单测 **716/716 全绿**（+15）；format 通过 |
-| RF-72 (M) | ✅ 两级过滤器 + 命令级过滤器补 `InvalidDataException`（有界响应体/gRPC 帧校验抛型） |
-| RF-73 (M) | ✅ `Page.aid/cid/epid` 属性 setter 经 `PathUtil.SanitizePathSegment` 单一收口；+1 回归测试（含 RF-48 恒等性校验） |
-| RF-74 (M) | ✅ 401 sink 改 `TruncateForLog`；限速分支只记 IP；判断只求值一次 |
-| RF-75 (M) | ✅ 抽生产 `ArchiveTracker`/`ProgressAggregator`，两套测试改驱动生产类型；均经**变异验证** |
+| 基线 | ✅ dotnet build Release 0 警告 0 错误；单测 **716/716 全绿**（+16）；format 通过 |
+| RF-72 (M) | ✅ 两级过滤器 + 命令级过滤器补 `InvalidDataException` |
+| RF-73 (M) | ✅ `Page.aid/cid/epid` 属性 setter 经 `PathUtil.SanitizePathSegment` 单一收口；+1 回归测试 |
+| RF-74 (M) | ✅ 401 sink 改 `TruncateForLog`；限速分支只记 IP |
+| RF-75 (M) | ✅ 抽生产 `ArchiveTracker`/`ProgressAggregator`；均经**变异验证** |
 | RF-76 (M) | ✅ AOT 防线 `SettingsTypes` 补齐 10 个类型 |
-| RF-77 (M) | ⏳ 待续 |
-| RF-78~83 (L) | ⏳ 待续（DRM 空文件、有界响应体覆盖、fetcher message 净化、selectPage 上限、废弃开关、429 Retry-After） |
+| RF-77 (M) | ✅ `pr.yml` local-integration 安装 ffmpeg 后断言 `command -v ffmpeg` |
+| RF-78 (L) | ✅ `WvdDevice.Load` 补零长度分支；+1 回归测试 |
+| RF-79 (L) | ✅ `ReadContentBoundedAsync` 提为 public，4 处裸读改有界 |
+| RF-80~83 (L) | ⏳ 待续（fetcher message 净化、selectPage 上限、废弃开关、429 Retry-After） |
 | RF-84~85 (L 文档) | ⏳ 待续（wiki 文档族、Docker 配方） |
 | RF-86~88 (L) | ⏳ 待续（Snapshot 锁、PR CI docker smoke、DRM 测试精确化） |
 

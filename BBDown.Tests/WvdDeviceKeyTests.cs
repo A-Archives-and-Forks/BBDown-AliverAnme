@@ -165,4 +165,24 @@ public class WvdDeviceKeyTests
             File.Delete(path);
         }
     }
+
+    /// <summary>
+    /// RF-78：零字节 .wvd（中断拷贝/空文件/--wvd-path 指向空文件）应给可读诊断，
+    /// 而非落到索引空数组的 IndexOutOfRangeException。
+    /// </summary>
+    [Fact]
+    public void Load_EmptyWvd_ThrowsInvalidDataExceptionWithReadableMessage()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bbdown-empty-{Guid.NewGuid():N}.wvd");
+        File.WriteAllBytes(path, Array.Empty<byte>());
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() => WvdDevice.Load(path));
+            Assert.Contains("为空", ex.Message);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
 }

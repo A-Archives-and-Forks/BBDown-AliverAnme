@@ -35,12 +35,10 @@ public static partial class HTTPUtil
     /// </summary>
     internal const long MaxResponseBodyBytes = 64 * 1024 * 1024;
 
-    /// <summary>
-    /// 有界读取响应体：Content-Length 可信（非 chunked）时超限直接拒读；
-    /// 无长度声明时逐块读取累计计数，超限抛 InvalidDataException（确定性失败，
-    /// 不参与 5xx 重试）。与 ReadAsStringAsync/ReadAsByteArrayAsync 等价但带内存上限。
-    /// </summary>
-    private static async Task<byte[]> ReadContentBoundedAsync(HttpContent content, CancellationToken token)
+    /// <summary>RF-79：有界读取响应体字节（64MB 上限，逐块累计），供直接持有 HttpResponseMessage
+    /// 的调用点（DRM 许可证、TV 登录轮询）复用。ReadAsByteArrayAsync/ReadAsStringAsync 无上限，
+    /// 被攻破端点/分块慢发可打满进程内存。</summary>
+    public static async Task<byte[]> ReadContentBoundedAsync(HttpContent content, CancellationToken token)
     {
         EnsureBodySizeAllowed(content.Headers.ContentLength);
         using var stream = await content.ReadAsStreamAsync(token);

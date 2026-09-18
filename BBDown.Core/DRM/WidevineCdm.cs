@@ -244,7 +244,7 @@ public sealed class WidevineCdm : IDisposable
                     // 给出可操作诊断，替代 EnsureSuccessStatusCode 的裸状态码消息（状态码消息
                     // 不含吊销/证书这类可定位信息）。错误体通常很短且不含密钥材料。
                     string errorBody;
-                    try { errorBody = await resp.Content.ReadAsStringAsync(token); }
+                    try { errorBody = System.Text.Encoding.UTF8.GetString(await HTTPUtil.ReadContentBoundedAsync(resp.Content, token)); }
                     catch (OperationCanceledException) { throw; } // 用户取消向上传播，不吞
                     catch (Exception) { errorBody = ""; }
                     throw new HttpRequestException(
@@ -252,7 +252,7 @@ public sealed class WidevineCdm : IDisposable
                         (string.IsNullOrEmpty(errorBody) ? "" : $": {errorBody}"),
                         null, resp.StatusCode);
                 }
-                return await resp.Content.ReadAsByteArrayAsync(token);
+                return await HTTPUtil.ReadContentBoundedAsync(resp.Content, token);
             }
             catch (HttpRequestException ex) when (attempt < MaxLicenseAttempts
                                                   && (ex.StatusCode is null || (int)ex.StatusCode >= 500))

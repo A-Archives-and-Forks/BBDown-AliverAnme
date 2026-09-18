@@ -84,9 +84,9 @@
 | RF-74 | serve 401 日志 sink 未脱敏且未限速（未认证即可写 `bbdown-api.log`，可灌盘/伪造日志行） | Medium | 采纳（`TruncateForLog` 脱敏+截断；限速分支只记 IP） | ✅ 已修复（第 16 轮消纳批） |
 | RF-75 | 假绿测试族：`ArchiveGranularityTests`/`DownloadProgressAggregationTests` 复刻实现的副本而非被测代码 | Medium | 采纳（抽生产 `ArchiveTracker`/`ProgressAggregator` 后测之） | ✅ 已修复（第 16 轮消纳批） |
 | RF-76 | AOT 绑定防线只覆盖 3/10 个 Settings 类（子命令参数类型改动不会失败） | Medium | 采纳（补齐 10 个类型） | ✅ 已修复（第 16 轮消纳批） |
-| RF-77 | `local-integration` 门禁可静默执行 0 个测试（ffmpeg 缺失时测试 early-return，job 仍绿） | Medium | 采纳（CI 断言 ffmpeg 存在） | ⏳ 待排期（第 16 轮登记） |
-| RF-78 | `WvdDevice.Load` 空文件抛 `IndexOutOfRangeException`（诊断退化，非崩溃） | Low | 采纳（补空文件分支） | ⏳ 待排期（第 16 轮登记） |
-| RF-79 | 有界响应体改造未覆盖 `WidevineCdm`（2 处）与 `BBDownLoginUtil`（2 处）的裸 `ReadAs*Async` | Low | 采纳（改 `ReadContentBoundedAsync`） | ⏳ 待排期（第 16 轮登记） |
+| RF-77 | `local-integration` 门禁可静默执行 0 个测试（ffmpeg 缺失时测试 early-return，job 仍绿） | Medium | 采纳（CI 断言 ffmpeg 存在） | ✅ 已修复（第 16 轮消纳批） |
+| RF-78 | `WvdDevice.Load` 空文件抛 `IndexOutOfRangeException`（诊断退化，非崩溃） | Low | 采纳（补空文件分支） | ✅ 已修复（第 16 轮消纳批） |
+| RF-79 | 有界响应体改造未覆盖 `WidevineCdm`（2 处）与 `BBDownLoginUtil`（2 处）的裸 `ReadAs*Async` | Low | 采纳（改 `ReadContentBoundedAsync`，已提为 public） | ✅ 已修复（第 16 轮消纳批） |
 | RF-80 | fetcher 的服务器 `message` 未净化直拼异常消息落日志（B3-L3/RF-25 同族新实例） | Low | 采纳（过 `SanitizeServerText`/`SanitizeLogString`） | ⏳ 待排期（第 16 轮登记） |
 | RF-81 | serve 下 `selectPage`/`danmakuFilter` 无接受上限且 `MaxExpandedPages` 仅按段（内存/CPU 放大 + 多 MB 日志行） | Low | 采纳（累计上限 + 日志截断） | ⏳ 待排期（第 16 轮登记） |
 | RF-82 | 隐藏废弃开关可绕过 serve "FilePattern 已清零"不变量（当前不可穿越，但防线不密闭） | Low | 采纳（SanitizeUntrustedOptions 清零废弃开关） | ⏳ 待排期（第 16 轮登记） |
@@ -842,7 +842,7 @@
 - **位置**：`.github/workflows/pr.yml:75-94`（安装 ffmpeg 后直接 `dotnet test --filter Category=LocalIntegration`，无"ffmpeg 已就绪"断言）；相关测试 `BBDown.Tests/MuxerArgsTests.cs:337/:378/:504` 使用 `if (!TryLocateFfmpeg(out _)) return;`。
 - **发现**：`pr.yml:73-74` 注释自称该 job "可以作为硬性门禁阻断 PR"，但测试在 ffmpeg 未定位到时**静默 return**（不产生断言）。若 apt 安装成功但 PATH 形态不被测试的探测命中（或镜像变化），job 报绿却零有效断言——又一个"看起来绿、实际没测到"的门禁。
 - **结论**：采纳——CI 在 `dotnet test` 前置一步断言 `command -v ffmpeg`，或测试在 `CI=true` 时 `Assert.True(TryLocateFfmpeg(...))`。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：`pr.yml` 安装 ffmpeg 后插入 `Verify ffmpeg is on PATH`（`command -v ffmpeg`）步骤，封死静默空跑。
 
 ---
 
@@ -851,7 +851,7 @@
 - **位置**：`BBDown.Core/DRM/WvdDevice.cs:45`（`throw new InvalidDataException($"无法识别的 WVD 文件格式 (首字节: {allBytes[0]})")`）；三个格式探测 `:32`（`>= 4`）、`:38`（`>= 1`）、`:42`（`> 0`）对零长度文件全部不命中。
 - **发现**：零字节 `device.wvd`（中断拷贝/空文件/`--wvd-path` 指向空文件）时 `allBytes[0]` 索引空数组，诊断退化为 `Index was outside the bounds of the array.`。不导致崩溃：`WidevineCdm.cs:29-37` 的 `catch (Exception)` 会接住 → `Decrypt.cs:98` 抛可操作的"密钥获取失败"。属诊断质量问题。
 - **结论**：采纳——`Load` 补零长度分支（抛带文件格式提示的 `InvalidDataException`）。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：`WvdDevice.Load` 在三个格式探测前补零长度分支；+1 回归测试 `Load_EmptyWvd_ThrowsInvalidDataExceptionWithReadableMessage`。
 
 ---
 
@@ -860,7 +860,7 @@
 - **位置**：`BBDown.Core/DRM/WidevineCdm.cs:247`（`ReadAsStringAsync` 读许可证错误体）与 `:255`（`ReadAsByteArrayAsync` 读许可证响应）；旁支（应用层，同批登记）：`BBDown/Infrastructure/BBDownLoginUtil.cs:221` 与 `:255`（`ReadAsByteArrayAsync`）。
 - **发现**：RF-28/RF-51 只枚举 `HTTPUtil` 调用点，这 4 处仍用无界 API。因 `LicenseUrl`/`CertUrl` 与 passport 主机均硬编码且 TLS 恒校验，仅端点被攻破或 `--insecure` 降级才可达，故定 Low（登记缺口而非可利用面）。
 - **结论**：采纳——统一改走 `ReadContentBoundedAsync`。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：`HTTPUtil.ReadContentBoundedAsync` 提为 `public`；`WidevineCdm`（错误体 + 许可证响应）与 `BBDownLoginUtil`（TV auth + 轮询）4 处改经有界读取。
 
 ---
 
