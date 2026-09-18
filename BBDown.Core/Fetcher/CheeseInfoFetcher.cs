@@ -17,7 +17,7 @@ public class CheeseInfoFetcher : IFetcher
         int code = infoJson.RootElement.GetInt32Safe("code");
         if (code != 0)
         {
-            string msg = infoJson.RootElement.GetValueAsStringSafe("message");
+            string msg = JsonElementExtensions.SanitizeServerText(infoJson.RootElement.GetValueAsStringSafe("message"));
             throw new InvalidOperationException($"获取课程信息失败 (code={code}): {msg}");
         }
         // RF-65：先查 code 再取 data——错误响应（code≠0 且无 data）经 GetPropertySafe 抛

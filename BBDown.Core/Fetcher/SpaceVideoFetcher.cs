@@ -315,7 +315,7 @@ public class SpaceVideoFetcher : IFetcher
             // 因此两种可能都要给出。
             throw new InvalidOperationException(code is -352 or -403
                 ? BlockedMessage($"code={code}")
-                : $"获取 UP 主投稿列表失败(code={code}): {message}");
+                : $"获取 UP 主投稿列表失败(code={code}): {JsonElementExtensions.SanitizeServerText(message)}");
         }
 
         return json;

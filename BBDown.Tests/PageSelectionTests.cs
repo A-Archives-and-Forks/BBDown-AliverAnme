@@ -44,6 +44,16 @@ public class PageSelectionTests
         Assert.Contains("展开后超过", ex.Message);
     }
 
+    [Fact]
+    public void CumulativeExpansionOverLimit_IsRejected()
+    {
+        // RF-81：单段不超上限，但多段累计超 100000（每段 60000）也应拒——
+        // 否则 "1-60000,1-60000" 类输入可让总量远超单段上限。
+        var input = string.Join(",", Enumerable.Repeat("1-60000", 2));
+        var ex = Assert.Throws<ArgumentException>(() => Program.ParsePageSelection(input));
+        Assert.Contains("总量超过", ex.Message);
+    }
+
     [Theory]
     [InlineData("abc-def")]
     [InlineData("1-")]

@@ -603,6 +603,8 @@ public class ServeApiHttpTests
         using var content = JsonContent.Create(new { Url = "zz-not-a-real-url" });
         using var resp = await server.Client.PostAsync("/add-task", content);
         Assert.Equal(HttpStatusCode.TooManyRequests, resp.StatusCode);
+        // RF-83：队列满的 429 必须带 Retry-After（与认证/查询限速一致）
+        Assert.Equal("60", resp.Headers.RetryAfter?.ToString());
     }
 
     [Fact]

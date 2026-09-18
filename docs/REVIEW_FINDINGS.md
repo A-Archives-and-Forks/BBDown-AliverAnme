@@ -87,10 +87,10 @@
 | RF-77 | `local-integration` 门禁可静默执行 0 个测试（ffmpeg 缺失时测试 early-return，job 仍绿） | Medium | 采纳（CI 断言 ffmpeg 存在） | ✅ 已修复（第 16 轮消纳批） |
 | RF-78 | `WvdDevice.Load` 空文件抛 `IndexOutOfRangeException`（诊断退化，非崩溃） | Low | 采纳（补空文件分支） | ✅ 已修复（第 16 轮消纳批） |
 | RF-79 | 有界响应体改造未覆盖 `WidevineCdm`（2 处）与 `BBDownLoginUtil`（2 处）的裸 `ReadAs*Async` | Low | 采纳（改 `ReadContentBoundedAsync`，已提为 public） | ✅ 已修复（第 16 轮消纳批） |
-| RF-80 | fetcher 的服务器 `message` 未净化直拼异常消息落日志（B3-L3/RF-25 同族新实例） | Low | 采纳（过 `SanitizeServerText`/`SanitizeLogString`） | ⏳ 待排期（第 16 轮登记） |
-| RF-81 | serve 下 `selectPage`/`danmakuFilter` 无接受上限且 `MaxExpandedPages` 仅按段（内存/CPU 放大 + 多 MB 日志行） | Low | 采纳（累计上限 + 日志截断） | ⏳ 待排期（第 16 轮登记） |
-| RF-82 | 隐藏废弃开关可绕过 serve "FilePattern 已清零"不变量（当前不可穿越，但防线不密闭） | Low | 采纳（SanitizeUntrustedOptions 清零废弃开关） | ⏳ 待排期（第 16 轮登记） |
-| RF-83 | `/add-task` 队列满 429 缺 `Retry-After`（与 :195/:243 及代码注释自相矛盾） | Low | 采纳（补 `RetryAfter="60"`） | ⏳ 待排期（第 16 轮登记） |
+| RF-80 | fetcher 的服务器 `message` 未净化直拼异常消息落日志（B3-L3/RF-25 同族新实例） | Low | 采纳（过 `SanitizeServerText`） | ✅ 已修复（第 16 轮消纳批） |
+| RF-81 | serve 下 `selectPage`/`danmakuFilter` 无接受上限且 `MaxExpandedPages` 仅按段（内存/CPU 放大 + 多 MB 日志行） | Low | 采纳（累计上限 + 日志截断 + serve 忽略弹幕过滤） | ✅ 已修复（第 16 轮消纳批） |
+| RF-82 | 隐藏废弃开关可绕过 serve "FilePattern 已清零"不变量（当前不可穿越，但防线不密闭） | Low | 采纳（SanitizeUntrustedOptions 清零废弃开关） | ✅ 已修复（第 16 轮消纳批） |
+| RF-83 | `/add-task` 队列满 429 缺 `Retry-After`（与 :195/:243 及代码注释自相矛盾） | Low | 采纳（补 `RetryAfter="60"`） | ✅ 已修复（第 16 轮消纳批） |
 | RF-84 | 文档族 6 项：wiki API 样例虚构字段/状态、Authentication "退出码 2"、Danmaku "protobuf"、Subcommands/Home 漂移、wiki 缺 413/415 | Low（文档） | 采纳（随文档批消纳） | ⏳ 待排期（第 16 轮登记） |
 | RF-85 | Docker 配方挂载 BBDown 从不使用的路径（下载/凭据落容器可写层）+ token 走 CLI 参数 | Low | 采纳（改挂 `/app` 或用 `BBDOWN_SERVE_TOKEN`） | ⏳ 待排期（第 16 轮登记） |
 | RF-86 | `DownloadTask.Snapshot()` 在锁外读 `Status`/`IsSuccessful`（与自身契约注释不符，可能返回短暂不一致快照） | Low | 采纳（整段入锁或调整读取顺序） | ⏳ 待排期（第 16 轮登记） |
@@ -869,7 +869,7 @@
 - **位置**：`BBDown.Core/Fetcher/NormalInfoFetcher.cs:21`、`BangumiInfoFetcher.cs:24`、`IntlBangumiInfoFetcher.cs:28`、`CheeseInfoFetcher.cs:21`、`FavListFetcher.cs:34/57/152`、`MediaListFetcher.cs:43/72`、`SeriesListFetcher.cs:30/54`、`SpaceVideoFetcher.cs:307`（均 `GetValueAsStringSafe(root, "message")`）。
 - **发现**：这些消息经 `Download.cs:106`（`Logger.LogError`）落日志，serve 侧经 `SanitizeErrorMessage`（`BBDownApiServer.cs:482-486`，仅做绝对路径→文件名替换，不剥控制字符）。`Parser.SanitizeServerText`（B3-L3）只覆盖 `Parser.cs:726/739`，fetcher 消息是其同族新实例（未登记）。
 - **结论**：采纳——异常消息中的 `message` 过 `SanitizeServerText`（或 `SanitizeLogString`）。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：`JsonElementExtensions.SanitizeServerText`（新公开工具）在 8 个 fetcher 共 12 处 `message` 拼接前应用。
 
 ---
 
@@ -878,7 +878,7 @@
 - **位置**：`BBDown/Configuration/MyOption.cs:189`（`SelectPage`）、`:148/:152`（`DanmakuFilter`/`DanmakuFilterUser`）均未被 `SanitizeUntrustedOptions`（`:771-858`）触及；`BBDown/Application/Pages.cs:90`（`MaxExpandedPages = 100_000`）在 `:128` **按段**检查，从不累计；消费点 `Download.cs:35`（`string.Join` 写日志行）、`:41`（`Where` + `Contains`）、`DanmakuUtil.cs:86`。
 - **发现**：64KB 请求体可构造约 10^4 段 `selectPage`（展开约 10^6 串，≈30-40MB 内存）或约 3×10^4 个 `danmakuFilter` 关键词，产生每任务约 500-1000× 内存放大（× 接受队列深度）与 MB 级日志行、槽位内 CPU 抬升。受 64KB 体上限与接受队列限制，定 Low。
 - **结论**：采纳——`ParsePageSelection` 增累计上限，`:35` 日志行截断，serve 下可忽略装饰性的 `DanmakuFilter*`。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：`ParsePageSelection` 增累计上限（+1 回归测试）；`Download.cs:35` 日志行截断为前 20 项 + 计数；`SanitizeUntrustedOptions` 清零 `DanmakuFilter*`。
 
 ---
 
@@ -887,7 +887,7 @@
 - **位置**：`BBDown/Infrastructure/BBDownApiServer.cs:807-808`（`SanitizeUntrustedOptions` 清空 `FilePattern`/`MultiFilePattern`）；`BBDown/Application/Options.cs:27-38`（`--add-dfn-subfix`，隐藏）与 `:60-68`（`--no-padding-page-num`）在两者为空时**重新填充**默认模板，全部隐藏开关是普通 `MyOption` 属性、可从 JSON 反序列化。安全注释在 `:804-806`。
 - **发现**：`{"url":"BV...","addDfnSubfix":true}` 即可复活固定模板。当前仅恢复静态默认模板且值已过 `GetValidFileName`（RF-58），**无当下可达的穿越**；但安全不变量不密闭——以后改默认模板或新增写入 `FilePattern` 的废弃开关会重开路径注入面，且该开关会静默改变 API 客户端产物路径形态。
 - **结论**：采纳——`SanitizeUntrustedOptions` 清零 `AddDfnSuffix`/`NoPaddingPageNum`/`BandwidthAscending`/`OnlyHevc`/`OnlyAvc`/`OnlyAv1`，或在 `HandleDeprecatedOptions` 之后重新断言两个模板。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：`SanitizeUntrustedOptions` 清零 `AddDfnSuffix`/`NoPaddingPageNum`/`BandwidthAscending`/`OnlyHevc`/`OnlyAvc`/`OnlyAv1`。
 
 ---
 
@@ -896,7 +896,7 @@
 - **位置**：`BBDown/Infrastructure/BBDownApiServer.cs:329-335`（接受队列 429 无 `RetryAfter` 头）；对照 `:195`（认证 429）与 `:243`（查询 429）均带 `RetryAfter = "60"`，且 `:183` 注释称"429 的 Retry-After 在各自拒绝点单独附加"。
 - **发现**：客户端队列满时拿到无退避提示的 429，无法统一应用退避（`API.md` 仅记录 `/get-tasks*` 的 Retry-After）；` :183` 注释失实。
 - **结论**：采纳——接受队列分支补 `RetryAfter = "60"`（或修正注释与文档）。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：`/add-task` 队列满 429 补 `RetryAfter = "60"`（handler 注入 `HttpContext`）；+1 断言。
 
 ---
 

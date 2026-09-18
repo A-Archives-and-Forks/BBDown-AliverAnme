@@ -32,7 +32,9 @@ internal partial class Program
         //获取已选择的分P列表
         List<string>? selectedPages = GetSelectedPages(myOption, vInfo, input);
 
-        Logger.Log($"共计 {pagesInfo.Count} 个分P, 已选择：" + (selectedPages == null ? "ALL" : string.Join(",", selectedPages)));
+        // RF-81：selectedPages 最多可达 MaxExpandedPages（100k）项，直接 Join 会产生近 MB 级日志行
+        //（serve 下同时写控制台与无轮转的 bbdown-api.log）。只记前 20 项 + 计数。
+        Logger.Log($"共计 {pagesInfo.Count} 个分P, 已选择：" + (selectedPages == null ? "ALL" : $"{selectedPages.Count} 项 [{string.Join(",", selectedPages.Take(20))}{(selectedPages.Count > 20 ? ",…" : "")}]"));
         var pagesCount = pagesInfo.Count;
 
         //过滤不需要的分P

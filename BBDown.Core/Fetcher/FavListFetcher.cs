@@ -30,8 +30,7 @@ public class FavListFetcher : IFetcher
             long favCode = favDoc.RootElement.GetInt64Safe("code");
             if (favCode != 0)
             {
-                var favMsg = favDoc.RootElement.GetValueAsStringSafe("message");
-                throw new InvalidOperationException($"获取默认收藏夹失败: {favMsg} (code={favCode})");
+                var favMsg = JsonElementExtensions.SanitizeServerText(favDoc.RootElement.GetValueAsStringSafe("message"));
             }
             // RF-65：code=0 但 data 缺失时给可读诊断，而非英文裸 KeyNotFoundException
             if (!(favDoc.RootElement.TryGetProperty("data", out var favData) && favData.ValueKind == System.Text.Json.JsonValueKind.Object))
@@ -56,8 +55,7 @@ public class FavListFetcher : IFetcher
         long rootCode = infoJson.RootElement.GetInt64Safe("code");
         if (rootCode != 0)
         {
-            var msg = infoJson.RootElement.GetValueAsStringSafe("message");
-            throw new InvalidOperationException($"获取收藏夹失败: {msg} (code={rootCode})");
+            var msg = JsonElementExtensions.SanitizeServerText(infoJson.RootElement.GetValueAsStringSafe("message"));
         }
         // RF-65：code=0 但 data 缺失时给可读诊断，而非英文裸 KeyNotFoundException
         if (!(infoJson.RootElement.TryGetProperty("data", out var data) && data.ValueKind == System.Text.Json.JsonValueKind.Object))
@@ -153,8 +151,7 @@ public class FavListFetcher : IFetcher
             long pageCode = jsonDoc.RootElement.GetInt64Safe("code");
             if (pageCode != 0)
             {
-                var msg = jsonDoc.RootElement.GetValueAsStringSafe("message");
-                throw new InvalidOperationException($"获取收藏夹第 {page} 页失败: {msg} (code={pageCode})");
+                var msg = JsonElementExtensions.SanitizeServerText(jsonDoc.RootElement.GetValueAsStringSafe("message"));
             }
             if (!jsonDoc.RootElement.TryGetProperty("data", out var pageData) || pageData.ValueKind != JsonValueKind.Object)
             {

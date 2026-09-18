@@ -17,7 +17,7 @@ public partial class NormalInfoFetcher : IFetcher
         int code = infoJson.RootElement.GetInt32Safe("code");
         if (code != 0)
         {
-            string msg = infoJson.RootElement.GetStringSafe("message");
+            string msg = JsonElementExtensions.SanitizeServerText(infoJson.RootElement.GetStringSafe("message"));
             throw new InvalidOperationException($"获取视频信息失败 (code={code}): {msg}");
         }
         // RF-65：data 节点缺失时给可读中文诊断——原 GetPropertySafe 会抛英文裸

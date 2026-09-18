@@ -409,7 +409,7 @@
 
 ### 16-B：新一轮深查（RF-72~RF-88）登记 + 消纳
 
-> 本轮完成第 16 轮发现的**消纳批**：RF-72~RF-79 已修复，RF-80~RF-88 待续（见下状态）。
+> 本轮完成第 16 轮发现的**消纳批**：RF-72~RF-83 已修复，RF-84~RF-88 待续（见下状态）。
 
 | 项 | 结果 |
 |----|------|
@@ -422,7 +422,10 @@
 | RF-77 (M) | ✅ `pr.yml` local-integration 安装 ffmpeg 后断言 `command -v ffmpeg` |
 | RF-78 (L) | ✅ `WvdDevice.Load` 补零长度分支；+1 回归测试 |
 | RF-79 (L) | ✅ `ReadContentBoundedAsync` 提为 public，4 处裸读改有界 |
-| RF-80~83 (L) | ⏳ 待续（fetcher message 净化、selectPage 上限、废弃开关、429 Retry-After） |
+| RF-80 (L) | ✅ `JsonElementExtensions.SanitizeServerText` 在 12 处 fetcher `message` 拼接前应用 |
+| RF-81 (L) | ✅ `ParsePageSelection` 累计上限；`Download.cs:35` 日志截断；serve 忽略 `DanmakuFilter*` |
+| RF-82 (L) | ✅ `SanitizeUntrustedOptions` 清零 6 个废弃兼容开关 |
+| RF-83 (L) | ✅ `/add-task` 队列满 429 补 `Retry-After` |
 | RF-84~85 (L 文档) | ⏳ 待续（wiki 文档族、Docker 配方） |
 | RF-86~88 (L) | ⏳ 待续（Snapshot 锁、PR CI docker smoke、DRM 测试精确化） |
 

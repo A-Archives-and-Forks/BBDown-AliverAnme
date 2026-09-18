@@ -40,7 +40,7 @@ public class MediaListFetcher : IFetcher
                 var message = root.TryGetProperty("message", out var msgElem) && msgElem.ValueKind == JsonValueKind.String
                     ? msgElem.GetString()
                     : "未知错误";
-                throw new InvalidOperationException($"获取合集信息失败(code={code}): {message}");
+                throw new InvalidOperationException($"获取合集信息失败(code={code}): {JsonElementExtensions.SanitizeServerText(message)}");
             }
         }
         var listTitle = data.GetValueAsStringSafe("title");
@@ -69,7 +69,7 @@ public class MediaListFetcher : IFetcher
                 var message = listRoot.TryGetProperty("message", out var msgElem) && msgElem.ValueKind == JsonValueKind.String
                     ? msgElem.GetString()
                     : "未知错误";
-                throw new InvalidOperationException($"获取合集视频列表失败(code={code}): {message}");
+                throw new InvalidOperationException($"获取合集视频列表失败(code={code}): {JsonElementExtensions.SanitizeServerText(message)}");
             }
             data = listData;
             hasMore = data.GetBooleanSafe("has_more");

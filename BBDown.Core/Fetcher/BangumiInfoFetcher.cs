@@ -20,8 +20,7 @@ public class BangumiInfoFetcher : IFetcher
         long rootCode = infoJson.RootElement.GetInt64Safe("code");
         if (rootCode != 0)
         {
-            var msg = infoJson.RootElement.GetValueAsStringSafe("message");
-            throw new InvalidOperationException($"番剧接口返回错误: {msg} (code={rootCode})");
+            var msg = JsonElementExtensions.SanitizeServerText(infoJson.RootElement.GetValueAsStringSafe("message"));
         }
         if (!infoJson.RootElement.TryGetProperty("result", out var result))
             throw new KeyNotFoundException("Bangumi API response missing 'result' node");

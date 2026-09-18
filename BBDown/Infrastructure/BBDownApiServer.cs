@@ -299,7 +299,7 @@ public partial class BBDownApiServer
             }
             return Results.Json(task.Snapshot(), AppJsonSerializerContext.Default.DownloadTask);
         });
-        app.MapPost("/add-task", (MyOptionBindingResult<ServeRequestOptions> bindingResult) =>
+        app.MapPost("/add-task", (MyOptionBindingResult<ServeRequestOptions> bindingResult, HttpContext httpContext) =>
         {
             if (bindingResult.Exception is RequestBodyTooLargeException)
             {
@@ -332,6 +332,8 @@ public partial class BBDownApiServer
             {
                 // URL 是客户端可控输入（可含 CRLF）：单行化后再进日志，避免日志注入面
                 Logger.LogWarn($"任务队列已满，拒绝新任务: {SanitizeLogString(req.Url)}");
+                // RF-83：与认证/查询限速一致，429 附 Retry-After 提示客户端何时可重试
+                httpContext.Response.Headers.RetryAfter = "60";
                 return Results.Problem("任务队列已满，请稍后再试",
                     statusCode: StatusCodes.Status429TooManyRequests, title: "Too Many Requests");
             }
@@ -816,8 +818,22 @@ public partial class BBDownApiServer
         // FilePattern/MultiFilePattern 会被 SetUpWork 当作 savePathFormat 拼进保存路径，
         // FormatSavePath 只替换占位符、字面量里的 ".." 段原样保留，BBDownMuxer 会按 savePath
         // 建目录——攻击者可借此任意创建目录/写入文件（路径穿越面）。serve 任务一律回落默认模板。
+        // RF-82：隐藏的废弃兼容开关（AddDfnSuffix/NoPaddingPageNum 等）在 FilePattern/MultiFilePattern
+        // 被清零后会重新填入默认模板（Options.HandleDeprecatedOptions），使"serve 任务固定用默认模板"
+        // 的不变量可被客户端 JSON 绕过。这些开关在 API 语义上无意义，一律清零。
+        req.AddDfnSuffix = false;
+        req.NoPaddingPageNum = false;
+        req.BandwidthAscending = false;
+        req.OnlyHevc = false;
+        req.OnlyAvc = false;
+        req.OnlyAv1 = false;
         req.FilePattern = "";
         req.MultiFilePattern = "";
+        // RF-81：SelectPage 与 DanmakuFilter* 是客户端可控的"无上限"输入——ParsePageSelection
+        // 展开上限已改为累计（Pages.cs），但仍可构造大量分P；弹幕过滤器则是纯装饰性功能，
+        // serve 下无必要且是"关键词×弹幕数"的 CPU 放大面。serve 任务一律忽略弹幕过滤器。
+        req.DanmakuFilter = null;
+        req.DanmakuFilterUser = null;
         // DrmKeyHex/DrmKidHex 会经 DecryptDrmAsync 写入 mp4decrypt 的 key-file 参与解密，
         // 是客户端可控的密钥注入点。serve 任务一律回落 device.wvd 自动取钥；
         // 需要手动 --key/--kid 的操作者应使用 CLI 而非 API。
