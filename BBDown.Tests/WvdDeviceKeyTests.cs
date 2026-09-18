@@ -64,9 +64,10 @@ public class WvdDeviceKeyTests
     [Fact]
     public void ImportPrivateKey_Garbage_Throws()
     {
-        // 垃圾输入必须抛异常，触发上层 Create 的 catch-dispose 释放 RSA 句柄
+        // RF-88：断言精确类型（ArgumentException，来自 ImportFromPem 兜底路径）——
+        // ThrowsAny<Exception> 会把意外的 NRE 也当成通过。
         using var rsa = RSA.Create();
-        Assert.ThrowsAny<Exception>(() => WvdDevice.ImportPrivateKey(rsa, new byte[] { 0x01, 0x02, 0x03 }));
+        Assert.Throws<ArgumentException>(() => WvdDevice.ImportPrivateKey(rsa, new byte[] { 0x01, 0x02, 0x03 }));
     }
 
     [Fact]
@@ -76,7 +77,8 @@ public class WvdDeviceKeyTests
         File.WriteAllBytes(path, new byte[] { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 });
         try
         {
-            Assert.ThrowsAny<Exception>(() => WvdDevice.Load(path));
+            // RF-88：断言精确类型（非 ThrowsAny<Exception>——那会把意外的 NRE 也当通过）
+            Assert.Throws<InvalidDataException>(() => WvdDevice.Load(path));
         }
         finally
         {

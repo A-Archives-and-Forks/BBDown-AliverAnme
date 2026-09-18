@@ -409,7 +409,7 @@
 
 ### 16-B：新一轮深查（RF-72~RF-88）登记 + 消纳
 
-> 本轮完成第 16 轮发现的**消纳批**：RF-72~RF-83 已修复，RF-84~RF-88 待续（见下状态）。
+> 本轮完成第 16 轮发现的**消纳批**：RF-72~RF-88 已全部处理（含新增 1 处 RF-86 Snapshot 锁）。
 
 | 项 | 结果 |
 |----|------|
@@ -426,7 +426,10 @@
 | RF-81 (L) | ✅ `ParsePageSelection` 累计上限；`Download.cs:35` 日志截断；serve 忽略 `DanmakuFilter*` |
 | RF-82 (L) | ✅ `SanitizeUntrustedOptions` 清零 6 个废弃兼容开关 |
 | RF-83 (L) | ✅ `/add-task` 队列满 429 补 `Retry-After` |
-| RF-84~85 (L 文档) | ⏳ 待续（wiki 文档族、Docker 配方） |
-| RF-86~88 (L) | ⏳ 待续（Snapshot 锁、PR CI docker smoke、DRM 测试精确化） |
+| RF-84 (L 文档) | ✅ wiki 6 项（退出码/格式/占位符计数/子命令选项/错误码/样例字段） |
+| RF-85 (L 文档) | ✅ Docker 配方改挂 `/app` + token 环境变量 |
+| RF-86 (L) | ✅ `Snapshot()` 状态字段入锁 |
+| RF-87 (L) | ✅ PR CI 加 docker-build-smoke；build_latest 加 concurrency |
+| RF-88 (L 测试) | ✅ DRM 测试精确异常类型/改名 |
 
 > 完整详情见 [`docs/REVIEW_FINDINGS.md`](REVIEW_FINDINGS.md) RF-72~RF-88；分析报告见 [`docs/PROJECT_ANALYSIS.md`](PROJECT_ANALYSIS.md)。

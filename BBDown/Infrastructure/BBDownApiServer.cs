@@ -1537,9 +1537,21 @@ public record DownloadTask(string Aid, string Url, long TaskCreateTime)
     /// </summary>
     public DownloadTask Snapshot()
     {
+        // RF-86：Status/IsSuccessful 由 SetStatus 在 _savePathLock 内成对写入——读取也须在同一把
+        // 锁内，否则查询端点与任务完成赛跑时可返回 status=Succeeded 而 isSuccessful=false 的不一致快照
+        // （与 SetAid 注释声称的"共用锁避免半更新状态"一致）。SavePaths 同锁复制副本。
         List<string> paths;
-        lock (_savePathLock) { paths = new List<string>(SavePaths); }
-        return new(Aid, Url, TaskCreateTime)
+        DownloadTaskStatus status;
+        bool isSuccessful;
+        string aid;
+        lock (_savePathLock)
+        {
+            paths = new List<string>(SavePaths);
+            status = Status;
+            isSuccessful = IsSuccessful;
+            aid = Aid;
+        }
+        return new(aid, Url, TaskCreateTime)
         {
             JobId = JobId,
             Title = Title,
@@ -1549,10 +1561,10 @@ public record DownloadTask(string Aid, string Url, long TaskCreateTime)
             Progress = Progress,
             DownloadSpeed = DownloadSpeed,
             TotalDownloadedBytes = TotalDownloadedBytes,
-            IsSuccessful = IsSuccessful,
+            IsSuccessful = isSuccessful,
             ErrorMessage = ErrorMessage,
             SavePaths = paths,
-            Status = Status,
+            Status = status,
         };
     }
 };

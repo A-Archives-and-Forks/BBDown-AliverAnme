@@ -13,7 +13,7 @@
 | 参数 | 默认值 | 功能说明 |
 | :--- | :--- | :--- |
 | `-d, --download-danmaku` | `false` | 开启弹幕下载 |
-| `--download-danmaku-formats` | `xml` | 指定下载的弹幕格式（支持 `xml,protobuf`） |
+| `--download-danmaku-formats` | `xml,ass` | 指定下载的弹幕格式（支持 `xml,ass`） |
 | `--danmaku-only` | `false` | 仅下载弹幕，跳过音视频下载与混流 |
 | `--danmaku-filter` | *(无)* | 弹幕关键词黑名单过滤（逗号分隔） |
 | `--danmaku-filter-user` | *(无)* | 弹幕发送者 `midHash` 黑名单过滤（逗号分隔） |

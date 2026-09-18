@@ -17,6 +17,7 @@
 - **未认证客户端可刷爆 serve 日志盘（RF-74）**：401 认证失败日志把客户端可控的 `Request.Path`/XFF 未脱敏、未截断地写入无轮转的 `bbdown-api.log`，未认证客户端可无限刷盘。现 sink 改 `TruncateForLog`（单行化 + 截断），限速分支只记 IP。
 - **serve 下 selectPage/danmakuFilter 无接受上限（RF-81）**：分P 选择展开仅按段限上限、弹幕过滤器无上限，客户端可构造内存/CPU 放大与 MB 级日志行。现 `ParsePageSelection` 增累计上限，日志行截断，serve 忽略装饰性弹幕过滤。
 - **隐藏废弃开关绕过 serve 的 FilePattern 不变量（RF-82）**：`addDfnSubfix` 等在模板被清零后会重新填入默认模板。现 `SanitizeUntrustedOptions` 一并清零。
+- **`DownloadTask.Snapshot()` 锁外读状态（RF-86）**：`Status`/`IsSuccessful` 由 `SetStatus` 在锁内成对写、读取却在锁外——查询与任务完成赛跑可返回 `status=Succeeded` 而 `isSuccessful=false` 的不一致快照。现读取一并入锁。
 - **`/add-task` 队列满 429 缺 Retry-After（RF-83）**：与认证/查询限速不一致，客户端无法统一退避。现补齐。
 
 ### 改进
@@ -32,11 +33,15 @@
 - **local-integration 门禁可静默空跑（RF-77）**：测试在找不到 ffmpeg 时 early-return 不产断言，job 仍报绿。现 CI 安装 ffmpeg 后显式断言 `command -v ffmpeg`。
 - **零字节 .wvd 诊断退化（RF-78）**：空文件跑到索引空数组抛 `IndexOutOfRangeException`。现提前给可读提示（新增回归测试）。
 - **DRM/登录响应体无大小上限（RF-79）**：`WidevineCdm`（2 处）与 `BBDownLoginUtil`（2 处）仍用 `ReadAs*Async`；`HTTPUtil.ReadContentBoundedAsync` 提为 public 后 4 处统一改经有界读取（64MB）。
+- **DRM 测试名实不符/假绿（RF-88）**：`WvdDeviceKeyTests` 的 `ThrowsAny<Exception>` 会把意外 NRE 当通过，改精确类型；`WidevineCdmTests` 方法名含 `Logs` 却不断言日志，去名。
+- **PR CI 不构建 Docker 镜像（RF-87）**：新增 `docker-build-smoke` job（构建 + serve 默认拒绝启动 + token 启动并 200/401）；`build_latest.yml` 加 `concurrency`。
 - **消除两处假绿回归网（RF-75）**：入档粒度（`ArchiveGranularityTests`）与进度聚合（`DownloadProgressAggregationTests`）测试只驱动复刻副本；把生产逻辑改坏仍全绿。现抽为生产类型 `Program.ArchiveTracker`/`BBDownDownloadUtil.ProgressAggregator` 并由测试直接驱动（两个 helper 均经变异验证）。
 
 ### 文档
 
 - **`API.md` 时间戳字段措辞修正（RF-71）**：`TaskCreateTime`/`TaskFinishTime` 标注"本机时区"，实际为 `ToUnixTimeSeconds()` 的 UTC 纪元秒（与时区无关）。
+- **wiki 文档族 6 项（RF-84）**：Authentication 充电专属"退出码 2"（实为跳过/计失败）、Danmaku 格式 `protobuf`（实为 `xml,ass`）、Home 占位符计数 18→19、Subcommands 缺 live/article/watchlater 多个选项、API-Server 错误码缺 413/415、任务详情样例虚构 `TotalPages`/`Status:Finished`/`ErrorReason`（改为真实字段）。
+- **Docker 配方挂载死路径（RF-85）**：文档挂载 `/app/downloads`、`/app/data`，但 serve 产物与凭据均在 `/app`（进程 CWD + 程序目录）——挂载无效、产物落容器可写层丢失。现改挂 `/app`，token 改经 `BBDOWN_SERVE_TOKEN` 环境变量。
 
 > 注：第 15 轮登记的 RF-62（DRM `CryptographicException` 穿透两级过滤器）经消纳亲验**前提不成立**——`WidevineCdm.GetKeysAsync` 已有的 `catch (Exception) → return null` 已吞掉该类，异常不出取钥链。登记其逃逸链的记录失实，无需改动（已在 REVIEW_FINDINGS 标注）。
 

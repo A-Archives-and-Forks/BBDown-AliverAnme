@@ -82,9 +82,13 @@ BBDown serve -l http://0.0.0.0:23333 --max-concurrent 5 --serve-token "secret_to
   }
   ```
 - **错误状态码**：
-  - `400 Bad Request`：请求体不是合法 JSON 或缺少 `Url`。
+  - `400 Bad Request`：请求体不是合法 JSON。
   - `401 Unauthorized`：缺少或错误的 `X-Serve-Token`。
-  - `429 Too Many Requests`：排队队列已满（排队队列上限为 `--max-concurrent` × 9）。
+  - `413 Payload Too Large`：请求体超过 64KB 上限。
+  - `415 Unsupported Media Type`：`Content-Type` 不是 `application/json`。
+  - `429 Too Many Requests`：排队队列已满（排队队列上限为 `--max-concurrent` × 9）；响应带 `Retry-After: 60`。
+
+> 注：缺少 `Url`（如 `{}`）会被接受（返回 `202` + JobId），该任务随后在解析阶段失败并在 `/get-tasks/{id}` 中报告原因。
 
 #### 查询任务详情 (`GET /get-tasks/{id}`)
 - **Response (`200 OK`)**:
@@ -92,13 +96,19 @@ BBDown serve -l http://0.0.0.0:23333 --max-concurrent 5 --serve-token "secret_to
   {
     "JobId": "c7a8b9e0-1234-5678-90ab-cdef12345678",
     "Aid": "170001",
+    "Url": "https://www.bilibili.com/video/BV1qt4y1X7TW",
+    "TaskCreateTime": 1758000000,
     "Title": "测试视频",
     "Pic": "http://i0.hdslb.com/bfs/archive/xxx.jpg",
-    "TotalPages": 1,
-    "Progress": 100.0,
-    "Status": "Finished",
+    "VideoPubTime": 1700000000,
+    "TaskFinishTime": 1758000060,
+    "Progress": 1.0,
+    "DownloadSpeed": 0.0,
+    "TotalDownloadedBytes": 12345678.0,
     "IsSuccessful": true,
-    "ErrorReason": ""
+    "Status": "Succeeded",
+    "ErrorMessage": null,
+    "SavePaths": ["/app/测试视频.mp4"]
   }
   ```
 
@@ -146,8 +156,6 @@ print(status_resp.json())
 ### 5.1 Docker Compose 一键启动 (`docker-compose.yml`)
 
 ```yaml
-version: '3.8'
-
 services:
   bbdown-server:
     image: aliveranme/bbdown:latest
@@ -155,18 +163,22 @@ services:
     restart: unless-stopped
     ports:
       - "23333:23333"
+    environment:
+      # 令牌经环境变量注入，避免出现在进程命令行（ps）/docker inspect
+      - BBDOWN_SERVE_TOKEN=your_super_secret_token
     volumes:
-      - /mnt/storage/downloads:/app/downloads   # 挂载下载产物目录
-      - /mnt/storage/bbdown_config:/app/data    # 挂载 BBDown.data / device.wvd
+      # serve 以进程 CWD（镜像内为 /app）为工作目录：下载产物、bbdown-tasks.json、
+      # bbdown-api.log 与 BBDown.data/device.wvd 均在 /app 下。挂载 /app 持久化。
+      - /mnt/storage/bbdown:/app
     command:
       - "serve"
       - "-l"
       - "http://0.0.0.0:23333"
       - "--max-concurrent"
       - "5"
-      - "--serve-token"
-      - "your_super_secret_token"
 ```
+
+> 说明：BBDown 不使用 `/app/downloads` 或 `/app/data` —— 产物目录即进程工作目录 `/app`（默认单文件模板 `<videoTitle>`），凭据 `BBDown.data` 也读自程序目录 `/app`。把宿主机目录挂到 `/app` 才能同时持久化产物与凭据。
 
 启动服务：
 ```bash
@@ -179,11 +191,10 @@ docker run -d \
   --name bbdown \
   --restart unless-stopped \
   -p 23333:23333 \
-  -v $(pwd)/downloads:/app/downloads \
-  -v $(pwd)/config:/app/data \
+  -e BBDOWN_SERVE_TOKEN="your_super_secret_token" \
+  -v $(pwd)/bbdown:/app \
   aliveranme/bbdown:latest \
-  serve -l http://0.0.0.0:23333 --serve-token "your_super_secret_token"
-```
+  serve -l http://0.0.0.0:23333
 
 ---
 

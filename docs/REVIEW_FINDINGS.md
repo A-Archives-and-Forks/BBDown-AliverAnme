@@ -91,11 +91,11 @@
 | RF-81 | serve 下 `selectPage`/`danmakuFilter` 无接受上限且 `MaxExpandedPages` 仅按段（内存/CPU 放大 + 多 MB 日志行） | Low | 采纳（累计上限 + 日志截断 + serve 忽略弹幕过滤） | ✅ 已修复（第 16 轮消纳批） |
 | RF-82 | 隐藏废弃开关可绕过 serve "FilePattern 已清零"不变量（当前不可穿越，但防线不密闭） | Low | 采纳（SanitizeUntrustedOptions 清零废弃开关） | ✅ 已修复（第 16 轮消纳批） |
 | RF-83 | `/add-task` 队列满 429 缺 `Retry-After`（与 :195/:243 及代码注释自相矛盾） | Low | 采纳（补 `RetryAfter="60"`） | ✅ 已修复（第 16 轮消纳批） |
-| RF-84 | 文档族 6 项：wiki API 样例虚构字段/状态、Authentication "退出码 2"、Danmaku "protobuf"、Subcommands/Home 漂移、wiki 缺 413/415 | Low（文档） | 采纳（随文档批消纳） | ⏳ 待排期（第 16 轮登记） |
-| RF-85 | Docker 配方挂载 BBDown 从不使用的路径（下载/凭据落容器可写层）+ token 走 CLI 参数 | Low | 采纳（改挂 `/app` 或用 `BBDOWN_SERVE_TOKEN`） | ⏳ 待排期（第 16 轮登记） |
-| RF-86 | `DownloadTask.Snapshot()` 在锁外读 `Status`/`IsSuccessful`（与自身契约注释不符，可能返回短暂不一致快照） | Low | 采纳（整段入锁或调整读取顺序） | ⏳ 待排期（第 16 轮登记） |
-| RF-87 | CI 卫生：PR CI 从不构建 Docker 镜像；`build_latest.yml` 无 `concurrency` 组 | Low | 采纳（PR CI 加 docker smoke + concurrency） | ⏳ 待排期（第 16 轮登记） |
-| RF-88 | 测试假绿/名实不符：`WvdDeviceKeyTests` 用 `ThrowsAny<Exception>`；`WidevineCdmTests` 名含 Logs 却不断言日志 | Low（测试） | 采纳（改精确异常类型/补或改名） | ⏳ 待排期（第 16 轮登记） |
+| RF-84 | 文档族 6 项：wiki API 样例虚构字段/状态、Authentication "退出码 2"、Danmaku "protobuf"、Subcommands/Home 漂移、wiki 缺 413/415 | Low（文档） | 采纳（随文档批消纳） | ✅ 已修复（第 16 轮消纳批） |
+| RF-85 | Docker 配方挂载 BBDown 从不使用的路径（下载/凭据落容器可写层）+ token 走 CLI 参数 | Low | 采纳（改挂 `/app` 用 `BBDOWN_SERVE_TOKEN`） | ✅ 已修复（第 16 轮消纳批） |
+| RF-86 | `DownloadTask.Snapshot()` 在锁外读 `Status`/`IsSuccessful`（与自身契约注释不符，可能返回短暂不一致快照） | Low | 采纳（整段入锁） | ✅ 已修复（第 16 轮消纳批） |
+| RF-87 | CI 卫生：PR CI 从不构建 Docker 镜像；`build_latest.yml` 无 `concurrency` 组 | Low | 采纳（PR CI 加 docker smoke + concurrency） | ✅ 已修复（第 16 轮消纳批） |
+| RF-88 | 测试假绿/名实不符：`WvdDeviceKeyTests` 用 `ThrowsAny<Exception>`；`WidevineCdmTests` 名含 Logs 却不断言日志 | Low（测试） | 采纳（改精确异常类型/改名） | ✅ 已修复（第 16 轮消纳批） |
 
 ---
 
@@ -910,7 +910,7 @@
   ⑤ `docs/wiki/Subcommands.md:18-23`/`:43-46`/`:61-67` 分别缺 `live`/`article` 的 `-w`、`watchlater` 的 `-c`/`--access-token`/`--use-intl-api`。
   ⑥ `docs/wiki/API-Server-and-Docker.md:84-87` 错误码清单缺 413（`BBDownApiServer.cs:306`）与 415（`ServeApiHttpTests.cs:393`）。
 - **结论**：采纳——随下一文档批一并消纳。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：wiki 6 项——Authentication 退出码、Danmaku 格式、Home 占位符计数/弹幕格式、Subcommands 选项（live -w / article -w / watchlater -c/--access-token/--use-intl-api）、API-Server 错误码 413/415 + 样例字段。
 
 ---
 
@@ -919,7 +919,7 @@
 - **位置**：`docs/wiki/API-Server-and-Docker.md:158-160` 与 `:182-184`（compose 挂 `/app/downloads`、`/app/data`）；token 走 CLI 参数（`:168/:185`）。
 - **发现**：镜像 `WORKDIR /app`（`Dockerfile:21/:46-47`），产物经 `PathUtil.ResolveWorkPath` → `Config.Current.WorkDir`（serve 下清零）→ 进程 CWD（`/app`）；凭据读自 `APP_DIR`（=`/app`）下 `BBDown.data` 等。因此 `/app/downloads`、`/app/data` 是死挂载——下载与 `bbdown-tasks.json`/`bbdown-api.log` 落容器可写层、`docker recreate` 即丢；放入被挂 config 目录的 `BBDown.data`/`device.wvd` 永不被找到（用户易报"刚登录却说尚未登录"）；token 出现在 `docker inspect`。
 - **结论**：采纳——改挂 `/app`（或用显式 entrypoint 设工作目录），文档用 `-e BBDOWN_SERVE_TOKEN=`。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：Docker 配方改挂 `/app`（产物+凭据均在此），token 改 `BBDOWN_SERVE_TOKEN` 环境变量。
 
 ---
 
@@ -928,7 +928,7 @@
 - **位置**：`BBDown/Infrastructure/BBDownApiServer.cs:1510-1529`（仅 `SavePaths` 在 `_savePathLock` 下复制 `:1513`）；`SetStatus`/`SetAid`（`:1487-1503`）在锁内写并注释"与 SetStatus 共用 `_savePathLock`，避免 Snapshot 枚举期间读到半更新状态"（`:1496-1498`）。
 - **发现**：`IsSuccessful`（`:1524`）与 `Status`（`:1527`）在锁外读。`GET /get-tasks*` 与任务完成（`:1229-1245`）赛跑时可短暂返回 `status:Succeeded` 而 `isSuccessful:false`（各字段原子，无损坏，仅短暂不一致），与自身契约注释不符。
 - **结论**：采纳——整段复制入锁，或调整读取顺序并修正注释。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：`Snapshot()` 的 `Status`/`IsSuccessful`/`Aid` 读取移入 `_savePathLock`。
 
 ---
 
@@ -937,7 +937,7 @@
 - **位置**：`.github/workflows/pr.yml:14-155`（6 个 job，无 `docker build`；镜像契约仅在 master `build_latest.yml:197-243` 与 release `:265-291` 验证）；`build_latest.yml:1-13` 无 `concurrency` 组（对照 `pr.yml:6-8` 有）。
 - **发现**：破坏 `Dockerfile` 或 serve 镜像 token 契约的 PR 在合入前始终绿；快速连续 master push 会排队并发跑完整 5 目标构建。
 - **结论**：采纳——PR CI 加一个 docker-build-smoke（一次构建 + 两次 curl），`build_latest.yml` 加 `concurrency`。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：`pr.yml` 新增 `docker-build-smoke` job；`build_latest.yml` 加 `concurrency`（cancel-in-progress）。
 
 ---
 
@@ -946,7 +946,7 @@
 - **位置**：`BBDown.Tests/WvdDeviceKeyTests.cs:69` 与 `:79`（`Assert.ThrowsAny<Exception>`）；`BBDown.Tests/WidevineCdmTests.cs:14-19`（方法名含 `Logs` 却只断言 `Assert.Null`）。
 - **发现**：变异实验：让 `WvdDevice.ImportPrivateKey`/`Load` 抛 `NullReferenceException` 或 `ArgumentNullException` 而非预期的解析错误，`ThrowsAny<Exception>` 仍通过（"解析错误且释放 RSA 句柄"契约未被钉住）；删除 `WidevineCdm.cs:35` 的 `LogWarn` 也不影响 `GetKeysAsync_InvalidWvdPath_ReturnsNullAndLogs`。
 - **结论**：采纳——改精确异常类型（如 `InvalidDataException`/`ArgumentException`，参照同文件 `:142` 的精确断言）；日志用例改名或补日志 sink 断言。
-- **状态**：⏳ 待排期（第 16 轮登记，仅评估未修复）。
+- **状态**：✅ 已修复（2026-09-18，第 16 轮消纳批）：`WvdDeviceKeyTests` 两处 `ThrowsAny<Exception>` 改精确类型（`ArgumentException`/`InvalidDataException`）；`WidevineCdmTests` 方法改名去掉不实的 `AndLogs`。
 
 ---
 

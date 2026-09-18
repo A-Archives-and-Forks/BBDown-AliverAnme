@@ -167,3 +167,43 @@ jobs:
         run: |
           test -x BBDown/bin/Release/net10.0/linux-x64/publish/BBDown
           BBDown/bin/Release/net10.0/linux-x64/publish/BBDown --version
+
+  # RF-87：Docker 镜像构建 + serve 启动冒烟在 PR CI 中验证——此前仅在 master push /
+  # release 验证，破坏 Dockerfile 或 serve token 契约的 PR 在合入前始终绿。
+  docker-build-smoke:
+    name: Docker image smoke
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build Docker image
+        run: docker build -t bbdown:test .
+
+      - name: Smoke test — 默认 CMD（0.0.0.0 无 token）应拒绝启动
+        run: |
+          set +e
+          output=$(docker run --rm bbdown:test 2>&1)
+          exit_code=$?
+          set -e
+          echo "$output"
+          if [ $exit_code -eq 0 ]; then
+            echo "错误：非回环监听未配置 token 应拒绝启动（非零退出），实际却成功了" >&2
+            exit 1
+          fi
+
+      - name: Smoke test — 显式 token 应正常启动并可调用 API
+        run: |
+          docker run -d --name bbdown-smoke -p 23333:23333 bbdown:test \
+            serve -l http://0.0.0.0:23333 --serve-token smoketest
+          for i in $(seq 1 20); do
+            if curl -sf -H "X-Serve-Token: smoketest" http://127.0.0.1:23333/get-tasks/ >/dev/null 2>&1; then
+              break
+            fi
+            sleep 1
+          done
+          code_no_token=$(curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:23333/get-tasks/)
+          code_with_token=$(curl -s -o /dev/null -w "%{http_code}" -H "X-Serve-Token: smoketest" http://127.0.0.1:23333/get-tasks/)
+          echo "no-token=$code_no_token with-token=$code_with_token"
+          [ "$code_no_token" = "401" ] || { echo "无 token 应返回 401，实际 $code_no_token" >&2; exit 1; }
+          [ "$code_with_token" = "200" ] || { echo "带 token 应返回 200，实际 $code_with_token" >&2; exit 1; }
+          docker rm -f bbdown-smoke >/dev/null

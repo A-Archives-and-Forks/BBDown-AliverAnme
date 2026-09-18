@@ -42,13 +42,13 @@ mindmap
 | 文档 | 说明 | 核心内容 |
 | :--- | :--- | :--- |
 | 🔑 [账号登录与鉴权 (Authentication)](Authentication) | 账号凭据与权限提升 | 网页/TV 端扫码登录、APP Token 抓包提取、Cookie 传递、充电专属防御机制 |
-| 📝 [配置文件与命名规则 (Configuration)](Configuration-and-Templates) | 自动化配置与路径模板 | `BBDown.config` 语法、18 种文件名占位符变量、目录分级归档实战 |
+| 📝 [配置文件与命名规则 (Configuration)](Configuration-and-Templates) | 自动化配置与路径模板 | `BBDown.config` 语法、19 种文件名占位符变量、目录分级归档实战 |
 | 🛠️ [子命令使用指南 (Subcommands)](Subcommands) | 独立扩展功能集 | 直播录制 (`live`)、专栏文章下载 (`article`)、稍后再看 (`watchlater`)、订阅管理 (`sub`) |
 
 ### 三、 进阶特性与自动化
 | 文档 | 说明 | 核心内容 |
 | :--- | :--- | :--- |
-| 💬 [弹幕与评论区抓取 (Danmaku & Comments)](Danmaku-and-Comments) | 文本与互动元数据抓取 | 弹幕 XML / Protobuf 下载、ASS 字幕转换规范、黑名单过滤、评论区 JSON 导出 |
+| 💬 [弹幕与评论区抓取 (Danmaku & Comments)](Danmaku-and-Comments) | 文本与互动元数据抓取 | 弹幕 XML / ASS 字幕、ASS 转换规范、黑名单过滤、评论区 JSON 导出 |
 | 📦 [批量下载与自动化 (Batch & Automation)](Batch-and-Automation) | 海量抓取与工程流水线 | UP 主空间全量解析、合集/播单抓取、`--save-archives-to-file` 历史防重、Webhook 回调 |
 | 🔓 [Widevine DRM 原生解密 (DRM Decryption)](DRM-Decryption) | 版权与付费课程解密 | 原生 C# CDM 运行机制、`device.wvd` 放置规则、B 站付费课程/保护番剧自动解密 |
 
