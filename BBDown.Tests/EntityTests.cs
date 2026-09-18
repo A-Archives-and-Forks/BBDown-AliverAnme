@@ -40,10 +40,12 @@ public class EntityTests
         var originalCulture = System.Globalization.CultureInfo.CurrentCulture;
         try
         {
-            // tr-TR 下 'i' 经文化敏感 ToUpper() 变 'İ'（U+0130），查表失败静默退化选轨优先级
+            // RF-68：tr-TR 下 'i' 经文化敏感 ToUpper() 变 'İ'（U+0130），查表失败静默退化选轨优先级。
+            // 输入必须含小写 'i' 才能触发该规则——原输入 "e-ac-3" 不含 'i'，ToUpperInvariant
+            // 与回退后的 ToUpper() 在 tr-TR 下产出相同，断言恒成立（假绿）。此处用 "avci"（AVC Intra）作回归输入。
             System.Globalization.CultureInfo.CurrentCulture = new System.Globalization.CultureInfo("tr-TR");
-            var a = new Audio { id = "1", dfn = "", baseUrl = "https://x", codecs = "e-ac-3", bandwidth = 0, dur = 0 };
-            Assert.Equal("EAC3", a.shortCodecs);
+            var a = new Audio { id = "1", dfn = "", baseUrl = "https://x", codecs = "avci", bandwidth = 0, dur = 0 };
+            Assert.Equal("AVCI", a.shortCodecs);
         }
         finally
         {

@@ -16,6 +16,34 @@ namespace BBDown;
 
 internal static class BBDownDownloadUtil
 {
+    /// <summary>
+    /// 多线程下载的跨分片进度聚合（RF-75）：回调传入的是「该分片已下载的累计字节数」而非增量，
+    /// 因此必须用「新值 - 上次值」推进总量；分片重试时该值回退到较小值，总量也必须随之回退，
+    /// 否则进度条会越过 100%。抽为生产类型供下载管线与单测共用（此前测试复刻副本，
+    /// 生产逻辑变异仍全绿）。
+    /// </summary>
+    internal sealed class ProgressAggregator
+    {
+        private readonly long[] _perClip;
+        private long _total;
+
+        public ProgressAggregator(int clipCount, long fileSize)
+        {
+            _perClip = new long[clipCount];
+            FileSize = fileSize;
+        }
+
+        public long FileSize { get; }
+
+        /// <summary>上报某分片当前的累计下载字节数，返回跨分片累计总量（永不倒退超过重试回退）。</summary>
+        public long Report(int index, long cumulativeForClip)
+        {
+            var previous = Interlocked.Exchange(ref _perClip[index], cumulativeForClip);
+            return Interlocked.Add(ref _total, cumulativeForClip - previous);
+        }
+
+        public long Total => Interlocked.Read(ref _total);
+    }
     public class DownloadConfig
     {
         public bool UseAria2c { get; set; } = false;
@@ -748,8 +776,7 @@ internal static class BBDownDownloadUtil
             // 此前每次回调都要对 ConcurrentDictionary.Values 求两次和，
             // 而 Values 每次访问都会复制出一份快照 —— 回调频率是每分片每 256KB 一次，
             // 10GB 的下载会触发约 4 万次 O(分片数) 的遍历。
-            var clipProgress = new long[total];
-            long downloadedTotal = 0;
+            var progressAggregator = new ProgressAggregator(total, fileSize);
 
             using var progress = new ProgressBar(config.RelatedTask);
             progress.Report(0);
@@ -778,8 +805,7 @@ internal static class BBDownDownloadUtil
                             {
                                 // 同一分片的回调只在它自己的任务里串行发生，
                                 // 因此这里只需保证跨分片累加的原子性
-                                var previous = Interlocked.Exchange(ref clipProgress[index], downloaded);
-                                var current = Interlocked.Add(ref downloadedTotal, downloaded - previous);
+                                var current = progressAggregator.Report(index, downloaded);
                                 progress.Report(fileSize > 0 ? (double)current / fileSize : 0, current);
                             }, true, expectedTotalSize: fileSize, token: _);
                             break;

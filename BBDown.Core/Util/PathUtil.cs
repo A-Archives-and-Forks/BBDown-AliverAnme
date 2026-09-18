@@ -95,4 +95,15 @@ public static class PathUtil
         var workDir = Config.Current.WorkDir;
         return string.IsNullOrEmpty(workDir) ? Path.GetFullPath(path) : Path.Combine(workDir, path);
     }
+
+    /// <summary>
+    /// 把服务器可控的视频标识（aid/cid/epid）净化为安全的路径段（RF-73）。
+    /// 这些值逐字来自 API 响应（Fetcher 的 GetValueAsStringSafe("id") 等，无数字校验），
+    /// 且直接拼入工作区路径（ResolveWorkPath($"{aid}/{aid}.{cid}")）与 <aid>/<cid> 占位符：
+    /// 镜像站 / --insecure 中间人下发 "..\\..\\..\\tmp\\x" 可令产物写出 --work-dir 之外。
+    /// 用与 RF-18 同款的 RF-18 净化（GetValidFileName）——剔除路径分隔符/控制字符/保留名/纯点段，
+    /// 但保留 BV 号等非纯数字形态：RF-48 的 bvid getter 需靠原始 aid 做非数字回退。
+    /// </summary>
+    public static string SanitizePathSegment(string? value)
+        => GetValidFileName(value ?? "", filterSlash: true);
 }

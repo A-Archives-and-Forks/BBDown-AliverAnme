@@ -61,8 +61,10 @@ internal partial class Program
                 // RF-58：dfn/res/fps/codecs 是服务器透传值（镜像站 --host 或 --insecure 中间人
                 // 可控，可含 '/' 或 '..'），与 title 族一致统一过 GetValidFileName（RF-18 同族）。
                 "dfn" => videoTrack == null ? "" : BBDownUtil.GetValidFileName(videoTrack.dfn, filterSlash: true).Trim().TrimEnd('.').Trim(),
-                "res" => videoTrack == null ? "" : videoTrack.res,
-                "fps" => videoTrack == null ? "" : videoTrack.fps,
+                // RF-63：res/fps 同为服务器透传值（width x height / frame_rate），与 dfn/codecs
+                // 同构过 GetValidFileName——RF-58 声称"该分支统一净化"但漏了两者。
+                "res" => videoTrack == null ? "" : BBDownUtil.GetValidFileName(videoTrack.res ?? "", filterSlash: true).Trim().TrimEnd('.').Trim(),
+                "fps" => videoTrack == null ? "" : BBDownUtil.GetValidFileName(videoTrack.fps ?? "", filterSlash: true).Trim().TrimEnd('.').Trim(),
                 "videoCodecs" => videoTrack == null ? "" : BBDownUtil.GetValidFileName(videoTrack.codecs, filterSlash: true).Trim().TrimEnd('.').Trim(),
                 "videoBandwidth" => videoTrack == null ? "" : videoTrack.bandwidth.ToString(),
                 "audioCodecs" => audioTrack == null ? "" : BBDownUtil.GetValidFileName(audioTrack.codecs, filterSlash: true).Trim().TrimEnd('.').Trim(),

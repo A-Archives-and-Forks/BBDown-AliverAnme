@@ -60,7 +60,9 @@ public class LiveCommand : AsyncCommand<LiveSettings>
 
             Logger.Log($"正在解析直播间 {settings.RoomId}...");
             var info = await LiveStreamUtil.ResolveAsync(settings.RoomId, cancellationToken);
-            Logger.Log($"直播间: {info.Title} (UP: {info.Uname})，画质: {LiveStreamUtil.QualityName(info.Quality)} (qn={info.Quality})");
+            // RF-70：Title/Uname 为 LiveStreamUtil.ResolveAsync 解析出的服务器字段，
+            // 可含 CRLF 伪造日志行；与 RF-54 同构过 SanitizeLogString 后再写日志。
+            Logger.Log($"直播间: {BBDownApiServer.SanitizeLogString(info.Title)} (UP: {BBDownApiServer.SanitizeLogString(info.Uname)})，画质: {LiveStreamUtil.QualityName(info.Quality)} (qn={info.Quality})");
             // 直播录制默认输出目录尊重 --work-dir（与主下载命令一致）。
             // 相对 --output 同样相对 --work-dir 解析（Path.Combine 对已根化第二参数
             // 直接透传，绝对路径不受影响）；workDir 为空串时保持 CWD 语义。

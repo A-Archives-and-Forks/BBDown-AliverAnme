@@ -218,7 +218,8 @@ internal static class BBDownLoginUtil
             using var authResponse = await HTTPUtil.NoRedirectClient.PostAsync(loginUrl, new FormUrlEncodedContent(parameters.ToDictionary()), cancellationToken);
             if ((int)authResponse.StatusCode is >= 300 and <= 399)
                 throw new InvalidOperationException($"TV 登录端点返回重定向({(int)authResponse.StatusCode})，已拒绝跟随");
-            byte[] responseArray = await authResponse.Content.ReadAsByteArrayAsync(cancellationToken);
+            // RF-79：有界读取（TV 端点响应无上限时被攻破端点可打满内存）
+            byte[] responseArray = await HTTPUtil.ReadContentBoundedAsync(authResponse.Content, cancellationToken);
             string web = Encoding.UTF8.GetString(responseArray);
             using var authDoc = JsonDocument.Parse(web);
             string url = authDoc.RootElement.GetPropertySafe("data").GetStringSafe("url")!;
@@ -252,7 +253,7 @@ internal static class BBDownLoginUtil
                 using var pollResponse = await HTTPUtil.NoRedirectClient.PostAsync(pollUrl, new FormUrlEncodedContent(parameters.ToDictionary()), cancellationToken);
                 if ((int)pollResponse.StatusCode is >= 300 and <= 399)
                     throw new InvalidOperationException($"TV 登录轮询遇到重定向({(int)pollResponse.StatusCode})，已拒绝跟随");
-                responseArray = await pollResponse.Content.ReadAsByteArrayAsync(cancellationToken);
+                responseArray = await HTTPUtil.ReadContentBoundedAsync(pollResponse.Content, cancellationToken);
                 web = Encoding.UTF8.GetString(responseArray);
                 using var pollDoc2 = JsonDocument.Parse(web);
                 // 该轮询接口的 code 是 JSON 数字，而 GetStringSafe 只接受字符串类型、

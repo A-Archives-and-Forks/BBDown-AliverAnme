@@ -2,6 +2,49 @@
 
 本文件遵循 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/) 规范，版本号遵循 [Semantic Versioning](https://semver.org/lang/zh-CN/)。
 
+## [1.6.19] - 2026-09-18
+
+### 修复
+
+- **fetcher 错误响应诊断不可达（RF-65）**：`SpaceVideoFetcher`/`CheeseInfoFetcher`/`FavListFetcher`/`NormalInfoFetcher`/`IntlBangumiInfoFetcher` 的顶层 `GetPropertySafe` 未先查 `code`——错误响应（`code≠0` 且无 `data` 节点）时抛英文裸 `KeyNotFoundException`，掩盖精心编写的中文诊断。现 6 处顶层取节点统一为逐级判空，缺节点给可读提示。
+- **服务器可控 `res`/`fps` 可穿越保存路径（RF-63）**：`--file-pattern` 含 `<res>`/`<fps>` 时，镜像站/`--insecure` 中间人下发含 `/` 或 `..` 的宽高/帧率即可写出预期目录之外。现与 `dfn`/codecs 同构过 `GetValidFileName`（RF-58 消纳缺口）。
+- **评论抓取超时/本地权限错误误将成功页判为失败（RF-64）**：评论保存 catch 白名单窄于页面级过滤器，评论 API 超时（TimeoutException）等逃逸后被页面级过滤器记为失败——已成功下载并混流的页面报错、退出码非 0 且不入档。现 catch 补齐超时/聚合/权限异常。
+- **PR CI 漏洞扫描门禁形同虚设（RF-67）**：`dotnet list package --vulnerable` 无论是否发现漏洞退出码恒为 0（NuGet/Home#11315），依赖出现已知漏洞时 PR 照常合并。现改用 `--format json` + `jq` 判定并 `exit 1`，使门禁具备真实失败语义。
+- **日志注入旁支——`watchlater`/`live` 服务器可控标题未脱敏（RF-70）**：视频/直播间标题可含 CRLF 伪造日志行。现与 RF-54 同构过 `SanitizeLogString`。
+- **服务器 message 未净化直拼异常消息（RF-80）**：接口 `message` 字段可含控制字符（ANSI/换行），经异常消息进入日志（B3-L3/RF-25 同族）。现 8 个 fetcher 共 12 处统一过 `JsonElementExtensions.SanitizeServerText`。
+- **巨包/畸形 gRPC 帧令整批分 P 中止（RF-72）**：RF-28/RF-51 新增的 64MB 响应体上限与 gRPC 帧校验抛出的 `InvalidDataException`（继承 `SystemException` 而非 `IOException`）不在下载两级失败隔离过滤器内，一次命中即放弃剩余分 P、丢 webhook/failedPages。现两级过滤器与命令级过滤器（sub/watchlater）补齐该类型。
+- **服务器可控 aid/cid 可穿越保存路径（RF-73）**：`Page` 的 aid/cid/epid 逐字来自 API 响应（无数字校验）且直接拼入工作区路径与 `<aid>`/`<cid>` 占位符；镜像站/`--insecure` 中间人下发含分隔符或 `..` 的值可令产物写出 `--work-dir` 之外。现 `Page` 属性 setter 经 `PathUtil.SanitizePathSegment` 单一收口（合法值恒等，不影响 bvid 回退）。
+- **未认证客户端可刷爆 serve 日志盘（RF-74）**：401 认证失败日志把客户端可控的 `Request.Path`/XFF 未脱敏、未截断地写入无轮转的 `bbdown-api.log`，未认证客户端可无限刷盘。现 sink 改 `TruncateForLog`（单行化 + 截断），限速分支只记 IP。
+- **serve 下 selectPage/danmakuFilter 无接受上限（RF-81）**：分P 选择展开仅按段限上限、弹幕过滤器无上限，客户端可构造内存/CPU 放大与 MB 级日志行。现 `ParsePageSelection` 增累计上限，日志行截断，serve 忽略装饰性弹幕过滤。
+- **隐藏废弃开关绕过 serve 的 FilePattern 不变量（RF-82）**：`addDfnSubfix` 等在模板被清零后会重新填入默认模板。现 `SanitizeUntrustedOptions` 一并清零。
+- **`DownloadTask.Snapshot()` 锁外读状态（RF-86）**：`Status`/`IsSuccessful` 由 `SetStatus` 在锁内成对写、读取却在锁外——查询与任务完成赛跑可返回 `status=Succeeded` 而 `isSuccessful=false` 的不一致快照。现读取一并入锁。
+- **`/add-task` 队列满 429 缺 Retry-After（RF-83）**：与认证/查询限速不一致，客户端无法统一退避。现补齐。
+
+### 改进
+
+- **携 Cookie 请求的头阶段超时隐性减半（RF-66）**：`NoRedirectClient` 超时 1 分钟为超时矩阵唯一非 2 分钟项，RF-50 把 `GetWebSourceCoreAsync` 的 sendCookie 路径切到该池后，响应头阶段上限被 60s 截断。现对齐 `FromMinutes(2)`（与 `AppHttpClient`/`ApiTimeoutMs` 同不变量）。
+
+### 测试
+
+- **RF-60 的 tr-TR 回归测试假绿（RF-68）**：原输入 `"e-ac-3"` 不含小写 `'i'`，tr-TR 规则不触发、断言恒成立（把实现改回有缺陷的 `ToUpper()` 仍通过）。现改用含 `'i'` 的 `"avci"`，变异验证确认防线有效。
+- **回环服务测试受本机系统代理干扰假红（RF-69）**：`ServeApiHttpTests` 的 `HttpClient` 未设 `UseProxy=false`，代理在线时回环请求被转发导致 `HostValidation_*` 断言失配。现固定 `SocketsHttpHandler { UseProxy = false }`。
+- **新增 `res`/`fps` 净化回归测试**（RF-63，变异验证）。
+- **AOT 绑定防线补齐 Settings 类型（RF-76）**：`AotCliBindingTests.SettingsTypes` 原只列 3 个类型，子命令参数类型改动不会失败。现补齐全部 10 个。
+- **local-integration 门禁可静默空跑（RF-77）**：测试在找不到 ffmpeg 时 early-return 不产断言，job 仍报绿。现 CI 安装 ffmpeg 后显式断言 `command -v ffmpeg`。
+- **零字节 .wvd 诊断退化（RF-78）**：空文件跑到索引空数组抛 `IndexOutOfRangeException`。现提前给可读提示（新增回归测试）。
+- **DRM/登录响应体无大小上限（RF-79）**：`WidevineCdm`（2 处）与 `BBDownLoginUtil`（2 处）仍用 `ReadAs*Async`；`HTTPUtil.ReadContentBoundedAsync` 提为 public 后 4 处统一改经有界读取（64MB）。
+- **DRM 测试名实不符/假绿（RF-88）**：`WvdDeviceKeyTests` 的 `ThrowsAny<Exception>` 会把意外 NRE 当通过，改精确类型；`WidevineCdmTests` 方法名含 `Logs` 却不断言日志，去名。
+- **PR CI 不构建 Docker 镜像（RF-87）**：新增 `docker-build-smoke` job（构建 + serve 默认拒绝启动 + token 启动并 200/401）；`build_latest.yml` 加 `concurrency`。
+- **消除两处假绿回归网（RF-75）**：入档粒度（`ArchiveGranularityTests`）与进度聚合（`DownloadProgressAggregationTests`）测试只驱动复刻副本；把生产逻辑改坏仍全绿。现抽为生产类型 `Program.ArchiveTracker`/`BBDownDownloadUtil.ProgressAggregator` 并由测试直接驱动（两个 helper 均经变异验证）。
+
+### 文档
+
+- **`API.md` 时间戳字段措辞修正（RF-71）**：`TaskCreateTime`/`TaskFinishTime` 标注"本机时区"，实际为 `ToUnixTimeSeconds()` 的 UTC 纪元秒（与时区无关）。
+- **wiki 文档族 6 项（RF-84）**：Authentication 充电专属"退出码 2"（实为跳过/计失败）、Danmaku 格式 `protobuf`（实为 `xml,ass`）、Home 占位符计数 18→19、Subcommands 缺 live/article/watchlater 多个选项、API-Server 错误码缺 413/415、任务详情样例虚构 `TotalPages`/`Status:Finished`/`ErrorReason`（改为真实字段）。
+- **Docker 配方挂载死路径（RF-85）**：文档挂载 `/app/downloads`、`/app/data`，但 serve 产物与凭据均在 `/app`（进程 CWD + 程序目录）——挂载无效、产物落容器可写层丢失。现改挂 `/app`，token 改经 `BBDOWN_SERVE_TOKEN` 环境变量。
+
+> 注：第 15 轮登记的 RF-62（DRM `CryptographicException` 穿透两级过滤器）经消纳亲验**前提不成立**——`WidevineCdm.GetKeysAsync` 已有的 `catch (Exception) → return null` 已吞掉该类，异常不出取钥链。登记其逃逸链的记录失实，无需改动（已在 REVIEW_FINDINGS 标注）。
+
 ## [1.6.18] - 2026-09-15
 
 ### 修复
@@ -449,7 +492,8 @@
 
 ---
 
-[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.6.18...HEAD
+[Unreleased]: https://github.com/AliverAnme/BBDown/compare/v1.6.19...HEAD
+[1.6.19]: https://github.com/AliverAnme/BBDown/compare/v1.6.18...v1.6.19
 [1.6.18]: https://github.com/AliverAnme/BBDown/compare/v1.6.17...v1.6.18
 [1.6.17]: https://github.com/AliverAnme/BBDown/compare/v1.6.16...v1.6.17
 [1.6.16]: https://github.com/AliverAnme/BBDown/compare/v1.6.15...v1.6.16

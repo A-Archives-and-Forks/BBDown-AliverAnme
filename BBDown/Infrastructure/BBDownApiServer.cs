@@ -186,16 +186,18 @@ public partial class BBDownApiServer
                 if (!string.IsNullOrEmpty(_serveToken) && !FixedTimeEquals(context.Request.Headers["X-Serve-Token"], _serveToken!))
                 {
                     var clientIp = GetClientIp(context);
-                    // 每次失败都记录日志：401 此前完全静默，暴力尝试对运维/用户不可见。
-                    Logger.LogWarn($"serve 认证失败（401）: {clientIp} {context.Request.Path}");
                     if (IsAuthLockedOut(clientIp))
                     {
                         // 1 分钟窗口内失败超阈值：限速拒绝，令 X-Serve-Token 暴力枚举失效。
+                        // 仅记客户端 IP，不回显攻击者可控的路径/XFF（日志体积与注入面同时收口）。
                         Logger.LogWarn($"serve 认证失败过于频繁，已限速: {clientIp}");
                         context.Response.Headers.RetryAfter = "60";
                         context.Response.StatusCode = StatusCodes.Status429TooManyRequests;
                         return;
                     }
+                    // RF-74：认证失败日志必须单行化（RF-25/RF-54 同族：Request.Path/XFF 可含 CRLF）
+                    // 并截断——未认证客户端可无限刷此 sink（Logger 无轮转），不截断可灌盘。
+                    Logger.LogWarn($"serve 认证失败（401）: {clientIp} {TruncateForLog(context.Request.Path)}");
                     context.Response.StatusCode = StatusCodes.Status401Unauthorized;
                     return;
                 }
@@ -297,7 +299,7 @@ public partial class BBDownApiServer
             }
             return Results.Json(task.Snapshot(), AppJsonSerializerContext.Default.DownloadTask);
         });
-        app.MapPost("/add-task", (MyOptionBindingResult<ServeRequestOptions> bindingResult) =>
+        app.MapPost("/add-task", (MyOptionBindingResult<ServeRequestOptions> bindingResult, HttpContext httpContext) =>
         {
             if (bindingResult.Exception is RequestBodyTooLargeException)
             {
@@ -330,6 +332,8 @@ public partial class BBDownApiServer
             {
                 // URL 是客户端可控输入（可含 CRLF）：单行化后再进日志，避免日志注入面
                 Logger.LogWarn($"任务队列已满，拒绝新任务: {SanitizeLogString(req.Url)}");
+                // RF-83：与认证/查询限速一致，429 附 Retry-After 提示客户端何时可重试
+                httpContext.Response.Headers.RetryAfter = "60";
                 return Results.Problem("任务队列已满，请稍后再试",
                     statusCode: StatusCodes.Status429TooManyRequests, title: "Too Many Requests");
             }
@@ -493,6 +497,16 @@ public partial class BBDownApiServer
     {
         if (string.IsNullOrEmpty(s)) return "";
         return s.Replace("\r", "\\r").Replace("\n", "\\n");
+    }
+
+    /// <summary>客户端可控字符串进日志前的单行化 + 截断（RF-74）。
+    /// Logger 写持久文件且无轮转：未认证客户端可无限刷 401 日志 sink，
+    /// 不限制单条长度（受 Kestrel 请求行上限约束但仍可达数 KB）时可灌满磁盘。
+    /// 截断到固定长度，保留首段便于排查。</summary>
+    internal static string TruncateForLog(string? s, int maxLength = 200)
+    {
+        var sanitized = SanitizeLogString(s);
+        return sanitized.Length <= maxLength ? sanitized : sanitized[..maxLength] + "…";
     }
 
     /// <summary>匹配盘符/UNC/Unix 根绝对路径（含尾随文件名或目录段），保留路径最后一段。
@@ -804,8 +818,22 @@ public partial class BBDownApiServer
         // FilePattern/MultiFilePattern 会被 SetUpWork 当作 savePathFormat 拼进保存路径，
         // FormatSavePath 只替换占位符、字面量里的 ".." 段原样保留，BBDownMuxer 会按 savePath
         // 建目录——攻击者可借此任意创建目录/写入文件（路径穿越面）。serve 任务一律回落默认模板。
+        // RF-82：隐藏的废弃兼容开关（AddDfnSuffix/NoPaddingPageNum 等）在 FilePattern/MultiFilePattern
+        // 被清零后会重新填入默认模板（Options.HandleDeprecatedOptions），使"serve 任务固定用默认模板"
+        // 的不变量可被客户端 JSON 绕过。这些开关在 API 语义上无意义，一律清零。
+        req.AddDfnSuffix = false;
+        req.NoPaddingPageNum = false;
+        req.BandwidthAscending = false;
+        req.OnlyHevc = false;
+        req.OnlyAvc = false;
+        req.OnlyAv1 = false;
         req.FilePattern = "";
         req.MultiFilePattern = "";
+        // RF-81：SelectPage 与 DanmakuFilter* 是客户端可控的"无上限"输入——ParsePageSelection
+        // 展开上限已改为累计（Pages.cs），但仍可构造大量分P；弹幕过滤器则是纯装饰性功能，
+        // serve 下无必要且是"关键词×弹幕数"的 CPU 放大面。serve 任务一律忽略弹幕过滤器。
+        req.DanmakuFilter = null;
+        req.DanmakuFilterUser = null;
         // DrmKeyHex/DrmKidHex 会经 DecryptDrmAsync 写入 mp4decrypt 的 key-file 参与解密，
         // 是客户端可控的密钥注入点。serve 任务一律回落 device.wvd 自动取钥；
         // 需要手动 --key/--kid 的操作者应使用 CLI 而非 API。
@@ -1509,9 +1537,21 @@ public record DownloadTask(string Aid, string Url, long TaskCreateTime)
     /// </summary>
     public DownloadTask Snapshot()
     {
+        // RF-86：Status/IsSuccessful 由 SetStatus 在 _savePathLock 内成对写入——读取也须在同一把
+        // 锁内，否则查询端点与任务完成赛跑时可返回 status=Succeeded 而 isSuccessful=false 的不一致快照
+        // （与 SetAid 注释声称的"共用锁避免半更新状态"一致）。SavePaths 同锁复制副本。
         List<string> paths;
-        lock (_savePathLock) { paths = new List<string>(SavePaths); }
-        return new(Aid, Url, TaskCreateTime)
+        DownloadTaskStatus status;
+        bool isSuccessful;
+        string aid;
+        lock (_savePathLock)
+        {
+            paths = new List<string>(SavePaths);
+            status = Status;
+            isSuccessful = IsSuccessful;
+            aid = Aid;
+        }
+        return new(aid, Url, TaskCreateTime)
         {
             JobId = JobId,
             Title = Title,
@@ -1521,10 +1561,10 @@ public record DownloadTask(string Aid, string Url, long TaskCreateTime)
             Progress = Progress,
             DownloadSpeed = DownloadSpeed,
             TotalDownloadedBytes = TotalDownloadedBytes,
-            IsSuccessful = IsSuccessful,
+            IsSuccessful = isSuccessful,
             ErrorMessage = ErrorMessage,
             SavePaths = paths,
-            Status = Status,
+            Status = status,
         };
     }
 };

@@ -17,10 +17,13 @@ public class CheeseInfoFetcher : IFetcher
         int code = infoJson.RootElement.GetInt32Safe("code");
         if (code != 0)
         {
-            string msg = infoJson.RootElement.GetValueAsStringSafe("message");
+            string msg = JsonElementExtensions.SanitizeServerText(infoJson.RootElement.GetValueAsStringSafe("message"));
             throw new InvalidOperationException($"获取课程信息失败 (code={code}): {msg}");
         }
-        var data = infoJson.RootElement.GetPropertySafe("data");
+        // RF-65：先查 code 再取 data——错误响应（code≠0 且无 data）经 GetPropertySafe 抛
+        // 英文裸 KeyNotFoundException，使上方 code 诊断不可达。
+        if (!infoJson.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("获取课程信息失败: 响应缺少 data 节点");
         string cover = data.GetValueAsStringSafe("cover");
         string title = data.GetValueAsStringSafe("title");
         string desc = data.GetValueAsStringSafe("subtitle");

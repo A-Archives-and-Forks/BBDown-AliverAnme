@@ -130,8 +130,12 @@ internal partial class Program
                 throw new ArgumentException($"分P范围 \"{segment}\" 展开后超过 {MaxExpandedPages} 项");
             }
 
+            // RF-81：总量累计上限——单段各自 ≤ MaxExpandedPages，但 1-100000,1-100000,… 类输入
+            // 可让总量远超上限（内存/CPU 放大 + 多 MB 日志行）。累计越界即拒。
             for (var i = start; i <= end; i++)
             {
+                if (pages.Count >= MaxExpandedPages)
+                    throw new ArgumentException($"分P选择表达式展开后总量超过 {MaxExpandedPages} 项");
                 pages.Add(i.ToString());
             }
         }

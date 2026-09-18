@@ -120,4 +120,19 @@ public static class JsonElementExtensions
             return null;
         return element.TryGetProperty(propertyName, out var prop) ? prop : null;
     }
+
+    /// <summary>
+    /// 净化服务器可控文本后再拼入异常消息（RF-80，与 Parser.SanitizeServerText 同族）：
+    /// 接口的 message 字段来自响应体，可含控制字符（ANSI 转义/换行），异常消息会经
+    /// Logger 落盘并经 serve API 返回——直接拼入会让远端内容向操作者日志/终端注入转义序列。
+    /// 只剔离控制字符（替换为空格），保留可读内容。
+    /// </summary>
+    public static string SanitizeServerText(string? text)
+    {
+        if (string.IsNullOrEmpty(text)) return "";
+        var sb = new System.Text.StringBuilder(text.Length);
+        foreach (var ch in text)
+            sb.Append(char.IsControl(ch) ? ' ' : ch);
+        return sb.ToString().Trim();
+    }
 }

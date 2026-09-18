@@ -27,7 +27,7 @@ public class SeriesListFetcher : IFetcher
         {
             var code = infoRoot.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0;
             var message = infoRoot.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.String ? msg.GetString() : "未知错误";
-            throw new InvalidOperationException($"获取系列信息失败(code={code}): {message}");
+            throw new InvalidOperationException($"获取系列信息失败(code={code}): {JsonElementExtensions.SanitizeServerText(message)}");
         }
         var listTitle = data.GetValueAsStringSafe("title");
         var intro = data.GetValueAsStringSafe("intro");
@@ -51,7 +51,7 @@ public class SeriesListFetcher : IFetcher
             {
                 var code = listRoot.TryGetProperty("code", out var c) && c.ValueKind == JsonValueKind.Number ? c.GetInt32() : 0;
                 var message = listRoot.TryGetProperty("message", out var msg) && msg.ValueKind == JsonValueKind.String ? msg.GetString() : "未知错误";
-                throw new InvalidOperationException($"获取系列分页列表失败(code={code}): {message}");
+                throw new InvalidOperationException($"获取系列分页列表失败(code={code}): {JsonElementExtensions.SanitizeServerText(message)}");
             }
             data = listData;
             hasMore = data.GetBooleanSafe("has_more");

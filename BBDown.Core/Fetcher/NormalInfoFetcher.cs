@@ -17,10 +17,13 @@ public partial class NormalInfoFetcher : IFetcher
         int code = infoJson.RootElement.GetInt32Safe("code");
         if (code != 0)
         {
-            string msg = infoJson.RootElement.GetStringSafe("message");
+            string msg = JsonElementExtensions.SanitizeServerText(infoJson.RootElement.GetStringSafe("message"));
             throw new InvalidOperationException($"获取视频信息失败 (code={code}): {msg}");
         }
-        var data = infoJson.RootElement.GetPropertySafe("data");
+        // RF-65：data 节点缺失时给可读中文诊断——原 GetPropertySafe 会抛英文裸
+        // KeyNotFoundException（"JSON property not found: 'data' ..."），且 code 诊断已在上方。
+        if (!infoJson.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)
+            throw new InvalidOperationException("获取视频信息失败: 响应缺少 data 节点");
         string title = data.GetStringSafe("title");
         string desc = data.GetStringSafe("desc");
         string pic = data.GetStringSafe("pic");
@@ -92,7 +95,9 @@ public partial class NormalInfoFetcher : IFetcher
                 var edgeInfoApi = $"https://api.bilibili.com/x/stein/edgeinfo_v2?graph_version={graphVersion}&bvid={bvid}";
                 var edgeInfoJson = await HTTPUtil.GetWebSourceAsync(edgeInfoApi, token: cancellationToken);
                 using var edgeDoc = JsonDocument.Parse(edgeInfoJson);
-                var edgeInfoData = edgeDoc.RootElement.GetPropertySafe("data");
+                // RF-65：互动视频边信息接口的 data/edges 缺失时给可读中文诊断，而非英文裸 KNFE
+                if (!(edgeDoc.RootElement.TryGetProperty("data", out var edgeInfoData) && edgeInfoData.ValueKind == JsonValueKind.Object))
+                    throw new InvalidOperationException("互动视频边信息接口响应缺少 data 节点");
                 var questions = edgeInfoData.GetPropertySafe("edges").EnumerateArraySafe("questions")
                     .ToList();
                 var index = 2; // 互动视频分P索引从2开始

@@ -35,12 +35,10 @@ public static partial class HTTPUtil
     /// </summary>
     internal const long MaxResponseBodyBytes = 64 * 1024 * 1024;
 
-    /// <summary>
-    /// 有界读取响应体：Content-Length 可信（非 chunked）时超限直接拒读；
-    /// 无长度声明时逐块读取累计计数，超限抛 InvalidDataException（确定性失败，
-    /// 不参与 5xx 重试）。与 ReadAsStringAsync/ReadAsByteArrayAsync 等价但带内存上限。
-    /// </summary>
-    private static async Task<byte[]> ReadContentBoundedAsync(HttpContent content, CancellationToken token)
+    /// <summary>RF-79：有界读取响应体字节（64MB 上限，逐块累计），供直接持有 HttpResponseMessage
+    /// 的调用点（DRM 许可证、TV 登录轮询）复用。ReadAsByteArrayAsync/ReadAsStringAsync 无上限，
+    /// 被攻破端点/分块慢发可打满进程内存。</summary>
+    public static async Task<byte[]> ReadContentBoundedAsync(HttpContent content, CancellationToken token)
     {
         EnsureBodySizeAllowed(content.Headers.ContentLength);
         using var stream = await content.ReadAsStreamAsync(token);
@@ -218,10 +216,14 @@ public static partial class HTTPUtil
     /// 每次跳转新建 HttpClient 会重复建连接池；共享实例避免 socket 泄漏与握手开销。
     /// 与 AppHttpClient 相同的策略隔离（校验/不安全两个池）。
     /// </summary>
+    // RF-66：超时对齐 2 分钟（与 AppHttpClient 同不变量、与 ApiTimeoutMs=120s 一致）。
+    // 此前为 1 分钟：ResponseHeadersRead 下 HttpClient.Timeout 只约束"收到响应头"阶段，
+    // RF-50 把 GetWebSourceCoreAsync 的 sendCookie 路径切到本客户端后，带 Cookie 请求的
+    // 头阶段上限被隐性砍半，与 ApiTimeoutMs 不符。
     private static readonly Lazy<HttpClient> _noRedirectClient =
-        new(() => CreateClient(allowRedirect: false, TimeSpan.FromMinutes(1), skipSslCheck: false), LazyThreadSafetyMode.ExecutionAndPublication);
+        new(() => CreateClient(allowRedirect: false, TimeSpan.FromMinutes(2), skipSslCheck: false), LazyThreadSafetyMode.ExecutionAndPublication);
     private static readonly Lazy<HttpClient> _insecureNoRedirectClient =
-        new(() => CreateClient(allowRedirect: false, TimeSpan.FromMinutes(1), skipSslCheck: true), LazyThreadSafetyMode.ExecutionAndPublication);
+        new(() => CreateClient(allowRedirect: false, TimeSpan.FromMinutes(2), skipSslCheck: true), LazyThreadSafetyMode.ExecutionAndPublication);
 
     /// <summary>
     /// 禁自动跳转客户端的公开访问点：应用层登录轮询（TV）需要它做 3xx 显式拦截

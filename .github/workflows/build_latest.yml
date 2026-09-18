@@ -6,6 +6,11 @@ on:
       - master
   workflow_dispatch:
 
+# RF-87：快速连续 master push 会排队并发跑完整 5 目标构建；同分支新 push 取消在途。
+concurrency:
+  group: build-latest-${{ github.ref }}
+  cancel-in-progress: true
+
 env:
   DOTNET_SDK_VERSION: "10.0.300"
   FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true

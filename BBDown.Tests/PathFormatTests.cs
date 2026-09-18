@@ -68,4 +68,53 @@ public class PathFormatTests
             CultureInfo.CurrentCulture = originalCulture;
         }
     }
+
+    /// <summary>
+    /// RF-63：<res>/<fps> 与 dfn/codecs 同为服务器透传值，必须过 GetValidFileName（RF-58 漏网）。
+    /// 恶意镜像站/中间人下发含 '/' 或 '..' 的 width/frame_rate 时，未净化的模板会穿越路径。
+    /// </summary>
+    [Fact]
+    public void FormatSavePath_ResAndFps_AreSanitized()
+    {
+        var page = new BBDown.Core.Entity.Entity.Page(1, "123", "456", "", "t", 60, "", 0);
+        var video = new BBDown.Core.Entity.Entity.Video
+        {
+            id = "1",
+            dfn = "1080P",
+            baseUrl = "https://x",
+            codecs = "avc",
+            res = "../../etc/passwd",
+            fps = "a/b",
+        };
+
+        var result = Program.FormatSavePath("<res>_<fps>", "t", video, null, page, 1, "web", 0);
+
+        // 关键性质：路径分隔符被 GetValidFileName 替换为 '_'，服务器可控值无法再作为
+        // 路径段穿越工作目录（'..' 不跟分隔符时不构成穿越）
+        Assert.DoesNotContain("/", result);
+        Assert.DoesNotContain("\\", result);
+        // "../../etc/passwd" 里的 '/' 已被 '_' 取代：不再出现可作路径段的连续片段
+        Assert.DoesNotContain("etc/passwd", result);
+        Assert.Contains("etc_passwd", result);
+    }
+
+    /// <summary>
+    /// RF-73：服务器可控 aid/cid 直接拼入工作区路径与 &lt;aid&gt;/&lt;cid&gt; 占位符。
+    /// 镜像站/中间人下发含路径分隔符或 ".." 的值时不得穿越出工作目录。
+    /// </summary>
+    [Fact]
+    public void PageIds_AreSanitizedAgainstPathTraversal()
+    {
+        var p = new BBDown.Core.Entity.Entity.Page(1, "..\\..\\..\\tmp\\evil", "../../etc/x", "", "t", 60, "", 0);
+
+        // 路径分隔符被替换，无法作为路径段穿越
+        Assert.DoesNotContain("/", p.aid);
+        Assert.DoesNotContain("\\", p.aid);
+        Assert.DoesNotContain("/", p.cid);
+        Assert.DoesNotContain("\\", p.cid);
+        // 合法值（纯数字 / BV 号）保持恒等，不影响 RF-48 的 bvid 回退
+        var normal = new BBDown.Core.Entity.Entity.Page(1, "170001", "123456", "", "t", 60, "", 0);
+        Assert.Equal("170001", normal.aid);
+        Assert.Equal("BV1xx411c7mD", new BBDown.Core.Entity.Entity.Page(1, "BV1xx411c7mD", "1", "", "t", 60, "", 0).aid);
+    }
 }

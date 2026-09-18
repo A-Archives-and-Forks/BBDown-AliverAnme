@@ -38,7 +38,13 @@ public class SpaceVideoFetcher : IFetcher
         // using the live API can bypass w_rid
         string userInfoApi = $"https://api.live.bilibili.com/live_user/v1/Master/info?uid={id}";
         using var userDoc = JsonDocument.Parse(await HTTPUtil.GetWebSourceAsync(userInfoApi, token: cancellationToken));
-        string userName = userDoc.RootElement.GetPropertySafe("data").GetPropertySafe("info").GetValueAsStringSafe("uname");
+        // RF-65：逐级判空——live_user 响应缺 data/info 时给可读中文诊断，
+        // 而非 GetPropertySafe 抛英文裸 KNFE（同族顶层取节点）。
+        var liveData = userDoc.RootElement.TryGetPropertySafe("data")
+            ?? throw new InvalidOperationException($"获取 UP 主信息失败: 响应缺少 data 节点 (mid={id})");
+        var liveInfo = liveData.TryGetPropertySafe("info")
+            ?? throw new InvalidOperationException($"获取 UP 主信息失败: data 中缺少 info 节点 (mid={id})");
+        string userName = liveInfo.GetValueAsStringSafe("uname");
         if (string.IsNullOrWhiteSpace(userName)) userName = $"UP主{id}";
 
         var entries = await FetchAllEntriesAsync(id, userName, cancellationToken);
@@ -233,9 +239,14 @@ public class SpaceVideoFetcher : IFetcher
         var json = await FetchSpaceListAsync(api, cancellationToken);
 
         using var doc = JsonDocument.Parse(json);
-        var data = doc.RootElement.GetPropertySafe("data");
+        // RF-65：code 已在 FetchSpaceListAsync 校验，但 data/list 节点仍可能缺失——
+        // 逐级判空给可读诊断，而非 GetPropertySafe 抛英文裸 KNFE（使下方 page 诊断不可达）。
+        var data = doc.RootElement.TryGetPropertySafe("data")
+            ?? throw new InvalidOperationException("获取 UP 主投稿列表失败: 响应中缺少 data 节点");
+        var listElem = data.TryGetPropertySafe("list")
+            ?? throw new InvalidOperationException("获取 UP 主投稿列表失败: data 中缺少 list 节点");
         var entries = new List<SpaceEntry>();
-        foreach (var item in data.GetPropertySafe("list").EnumerateArraySafe("vlist"))
+        foreach (var item in listElem.EnumerateArraySafe("vlist"))
         {
             entries.Add(new SpaceEntry(
                 item.GetValueAsStringSafe("aid"),
@@ -304,7 +315,7 @@ public class SpaceVideoFetcher : IFetcher
             // 因此两种可能都要给出。
             throw new InvalidOperationException(code is -352 or -403
                 ? BlockedMessage($"code={code}")
-                : $"获取 UP 主投稿列表失败(code={code}): {message}");
+                : $"获取 UP 主投稿列表失败(code={code}): {JsonElementExtensions.SanitizeServerText(message)}");
         }
 
         return json;

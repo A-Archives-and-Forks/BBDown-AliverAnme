@@ -27,7 +27,19 @@ public class AotCliBindingTests
 
     public static TheoryData<Type> SettingsTypes =>
     [
-        typeof(MyOption), typeof(ServeSettings), typeof(LoginSettings),
+        // RF-76：必须覆盖全部命令的 Settings 类型——先前列了 3 个（MyOption/Serve/Login），
+        // 子命令参数类型改动不会失败（如把 WatchLaterSettings.Limit 改成非 AOT 安全类型），
+        // 直到用户拿到 release 二进制才发现。
+        typeof(MyOption),
+        typeof(ServeSettings),
+        typeof(LoginSettings),
+        typeof(LiveSettings),
+        typeof(ArticleSettings),
+        typeof(WatchLaterSettings),
+        typeof(SubAddSettings),
+        typeof(SubListSettings),
+        typeof(SubRemoveSettings),
+        typeof(SubCheckSettings),
     ];
 
     [Theory]

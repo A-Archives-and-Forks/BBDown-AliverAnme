@@ -19,6 +19,7 @@ BBDown live <room_id> [选项]
 | :--- | :--- | :--- | :--- |
 | *(参数0)*| `<room_id>` | `string` | 直播间短号或长号房间 ID（如 `6` 或 `12345`） |
 | `-o` | `--output` | `string?` | 最终输出文件路径（默认：`直播间标题_直播录制_时间.flv`） |
+| `-w` | `--work-dir` | `string ("")` | 设置工作目录（默认当前目录；未指定 `--output` 时录制文件输出到该目录） |
 | `-c` | `--cookie` | `string ("")` | 手动指定 Cookie（若省略则自动加载 `BBDown.data`） |
 | | `--access-token` | `string ("")` | 手动指定 Access Token |
 
@@ -44,6 +45,7 @@ BBDown article <cv_id或链接> [选项]
 | :--- | :--- | :--- |
 | `<cv_id>` | `string` | 专栏 ID（如 `cv12345`）或完整文章链接 |
 | `-o, --output` | `string?` | 输出 Markdown 路径（默认：`<专栏标题>.md`） |
+| `-w, --work-dir` | `string ("")` | 设置工作目录（默认当前目录；未指定 `--output` 时输出到该目录） |
 
 ---
 
@@ -62,9 +64,11 @@ BBDown watchlater [选项]
 | :--- | :--- | :--- |
 | `--limit <N>` | `int (0)` | 最大下载视频数量（默认 0 代表下载全部） |
 | `-w, --work-dir` | `string ("")` | 设置下载输出目录 |
+| `-c, --cookie` | `string ("")` | 手动指定 Cookie（若省略则自动加载 `BBDown.data`） |
+| `--access-token` | `string ("")` | 手动指定 Access Token |
 | `-q, --dfn-priority` | `string?` | 画质优先级 |
 | `-e, --encoding-priority` | `string?` | 编码优先级 |
-| `-t` / `-a` | `bool` | 使用 TV 端或 APP 端解析模式 |
+| `-t` / `-a` / `--use-intl-api` | `bool` | 使用 TV 端 / APP 端 / 国际版解析模式 |
 
 ---
 

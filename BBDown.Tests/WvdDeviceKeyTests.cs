@@ -64,9 +64,10 @@ public class WvdDeviceKeyTests
     [Fact]
     public void ImportPrivateKey_Garbage_Throws()
     {
-        // 垃圾输入必须抛异常，触发上层 Create 的 catch-dispose 释放 RSA 句柄
+        // RF-88：断言精确类型（ArgumentException，来自 ImportFromPem 兜底路径）——
+        // ThrowsAny<Exception> 会把意外的 NRE 也当成通过。
         using var rsa = RSA.Create();
-        Assert.ThrowsAny<Exception>(() => WvdDevice.ImportPrivateKey(rsa, new byte[] { 0x01, 0x02, 0x03 }));
+        Assert.Throws<ArgumentException>(() => WvdDevice.ImportPrivateKey(rsa, new byte[] { 0x01, 0x02, 0x03 }));
     }
 
     [Fact]
@@ -76,7 +77,8 @@ public class WvdDeviceKeyTests
         File.WriteAllBytes(path, new byte[] { 0x00, 0x01, 0x02, 0x03, 0x04, 0x05 });
         try
         {
-            Assert.ThrowsAny<Exception>(() => WvdDevice.Load(path));
+            // RF-88：断言精确类型（非 ThrowsAny<Exception>——那会把意外的 NRE 也当通过）
+            Assert.Throws<InvalidDataException>(() => WvdDevice.Load(path));
         }
         finally
         {
@@ -159,6 +161,26 @@ public class WvdDeviceKeyTests
         {
             var ex = Assert.Throws<InvalidDataException>(() => WvdDevice.Load(path));
             Assert.Contains("超出数据范围", ex.Message);
+        }
+        finally
+        {
+            File.Delete(path);
+        }
+    }
+
+    /// <summary>
+    /// RF-78：零字节 .wvd（中断拷贝/空文件/--wvd-path 指向空文件）应给可读诊断，
+    /// 而非落到索引空数组的 IndexOutOfRangeException。
+    /// </summary>
+    [Fact]
+    public void Load_EmptyWvd_ThrowsInvalidDataExceptionWithReadableMessage()
+    {
+        var path = Path.Combine(Path.GetTempPath(), $"bbdown-empty-{Guid.NewGuid():N}.wvd");
+        File.WriteAllBytes(path, Array.Empty<byte>());
+        try
+        {
+            var ex = Assert.Throws<InvalidDataException>(() => WvdDevice.Load(path));
+            Assert.Contains("为空", ex.Message);
         }
         finally
         {

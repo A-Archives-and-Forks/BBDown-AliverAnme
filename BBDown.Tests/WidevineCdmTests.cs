@@ -11,9 +11,9 @@ namespace BBDown.Tests;
 public class WidevineCdmTests
 {
     [Fact]
-    public async Task GetKeysAsync_InvalidWvdPath_ReturnsNullAndLogs()
+    public async Task GetKeysAsync_InvalidWvdPath_ReturnsNull()
     {
-        // 不存在的 wvd 文件 → 应返回 null 而非抛异常
+        // 不存在的 wvd 文件 → 应返回 null 而非抛异常（RF-88：原名含 Logs 但不断言日志，名实不符，已修正）。
         var result = await WidevineCdm.GetKeysAsync("CAESEDE=", "/nonexistent/path/device.wvd");
         Assert.Null(result);
     }
