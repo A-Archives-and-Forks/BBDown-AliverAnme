@@ -14,12 +14,7 @@ public partial class NormalInfoFetcher : IFetcher
         string api = $"https://api.bilibili.com/x/web-interface/view?aid={id}";
         string json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
-        int code = infoJson.RootElement.GetInt32Safe("code");
-        if (code != 0)
-        {
-            string msg = JsonElementExtensions.SanitizeServerText(infoJson.RootElement.GetStringSafe("message"));
-            throw new InvalidOperationException($"获取视频信息失败 (code={code}): {msg}");
-        }
+        FetcherJson.ThrowIfApiError(infoJson.RootElement, "获取视频信息失败");
         // RF-65：data 节点缺失时给可读中文诊断——原 GetPropertySafe 会抛英文裸
         // KeyNotFoundException（"JSON property not found: 'data' ..."），且 code 诊断已在上方。
         if (!infoJson.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)

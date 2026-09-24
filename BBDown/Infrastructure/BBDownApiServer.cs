@@ -19,6 +19,7 @@ using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.Hosting;
 namespace BBDown;
 
 public partial class BBDownApiServer
@@ -123,6 +124,8 @@ public partial class BBDownApiServer
     // 已完成任务持久化：serve 是长驻进程，任务记录只留在内存会在重启后丢失。
     // 默认写到进程当前目录；测试可通过构造函数注入临时路径，避免多实例互相污染
     private readonly string _taskFile;
+    private readonly SemaphoreSlim _finishedTasksLoadLock = new(1, 1);
+    private bool _finishedTasksLoaded;
 
     public BBDownApiServer(int maxConcurrent = 3, string? serveToken = null, string? taskFilePath = null, string? notifyWebhook = null, bool trustProxy = false)
     {
@@ -143,7 +146,6 @@ public partial class BBDownApiServer
     public void SetupServer()
     {
         if (app is not null) return;
-        LoadFinishedTasks();
         var builder = WebApplication.CreateSlimBuilder();
         builder.Services.ConfigureHttpJsonOptions((options) =>
         {
@@ -424,9 +426,10 @@ public partial class BBDownApiServer
         app.Urls.Add(url);
         try
         {
+            await LoadFinishedTasksAsync(cancellationToken);
             // RF-2：命令层已迁移 AsyncCommand，serve 全程 await——不再用
             // Task.Run + GetAwaiter().GetResult() 让一个线程池线程阻塞整个服务生命周期。
-            await app.RunAsync(cancellationToken);
+            await ((IHost)app).RunAsync(cancellationToken);
         }
         catch (OperationCanceledException)
         {
@@ -460,8 +463,9 @@ public partial class BBDownApiServer
                 // 个别任务取消路径抛出的异常不影响整体退出
             }
         }
-        // 最后一次持久化：确保取消前已完成的任务记录落盘
-        PersistFinishedTasks();
+        // 最后一次持久化：确保取消前已完成的任务记录落盘。若启动时取消发生在历史
+        // 文件恢复完成前，必须保留磁盘上的旧记录，不能用尚未加载的空列表覆盖。
+        if (_finishedTasksLoaded) PersistFinishedTasks();
     }
 
     /// <summary>
@@ -743,16 +747,28 @@ public partial class BBDownApiServer
 
     /// <summary>
     /// serve 启动时恢复上次运行留下的已完成任务记录。
-    /// 文件损坏时静默忽略，且不因恢复出的记录破坏启动。
+    /// 文件读取或格式错误时记录警告并继续启动，不因历史记录恢复失败阻断服务。
     /// </summary>
-    private void LoadFinishedTasks()
+    private async Task LoadFinishedTasksAsync(CancellationToken cancellationToken)
     {
+        await _finishedTasksLoadLock.WaitAsync(cancellationToken);
         try
         {
-            if (!File.Exists(_taskFile)) return;
-            var json = File.ReadAllText(_taskFile);
+            if (_finishedTasksLoaded) return;
+            if (!File.Exists(_taskFile))
+            {
+                _finishedTasksLoaded = true;
+                return;
+            }
+
+            var json = await File.ReadAllTextAsync(_taskFile, cancellationToken);
             var loaded = JsonSerializer.Deserialize(json, AppJsonSerializerContext.Default.ListDownloadTask);
-            if (loaded is null) return;
+            if (loaded is null)
+            {
+                _finishedTasksLoaded = true;
+                return;
+            }
+
             lock (_taskLock)
             {
                 finishedTasks.AddRange(loaded);
@@ -763,12 +779,22 @@ public partial class BBDownApiServer
             // 但进程被杀/断电等异常退出会让上次的排队/下载中任务永久丢失且无提示。
             // 启动时给出提示，让运维知道哪些记录可能缺失。
             Logger.LogWarn($"serve 重启：已恢复 {loaded.Count} 条历史任务记录；排队/下载中的在途任务不持久化，异常退出后不会恢复");
+            _finishedTasksLoaded = true;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex) when (ex is IOException or UnauthorizedAccessException or JsonException)
         {
             // 升 Warn：加载失败意味着上次的全部任务记录无法恢复（损坏/权限/磁盘故障），
             // 此前仅 LogDebug（默认抑制）会让记录静默丢失。
             Logger.LogWarn($"加载历史任务记录失败（记录可能丢失）: {ex.Message}");
+            _finishedTasksLoaded = true;
+        }
+        finally
+        {
+            _finishedTasksLoadLock.Release();
         }
     }
 
@@ -853,8 +879,9 @@ public partial class BBDownApiServer
         // 占满并发槽并使服务瘫痪。将 API 任务重试次数限制在 [1, 3]，延迟限制在 [0, 5000]ms 内。
         // 下限 1：显式传 0 会被 ValidateNumericOptions 的 --retry-count ≥ 1 判为非法任务 Failed，
         // 与这里 Clamp(0,3) 矛盾（A4）——统一为 [1,3]，0 自动升为 1。
-        req.RetryCount = Math.Clamp(req.RetryCount, 1, 3);
-        req.RetryDelay = Math.Clamp(req.RetryDelay, 0, 5000);
+        var retryPolicy = RetryPolicy.NormalizeForServe(req.RetryCount, req.RetryDelay);
+        req.RetryCount = retryPolicy.RetryCount;
+        req.RetryDelay = retryPolicy.RetryDelayMs;
 
         // 慢速 DoS 面：ValidateNumericOptions 的合法上界（MuxerTimeout 35000 分钟≈583h、
         // DelayPerPage 600s/分P、ThreadSegmentSize 1024MB）允许 API 客户端用合法值占满
@@ -1126,6 +1153,7 @@ public partial class BBDownApiServer
             TvHost = option.TvHost,
             Area = option.Area ?? "",
             SkipSslCheck = option.Insecure,
+            IsServeMode = true,
         });
 
         // 并发闸门：等待信号量放在 URL 解析之前。此前闸门只在解析完成后才生效，
@@ -1211,7 +1239,7 @@ public partial class BBDownApiServer
         try
         {
             task.SetStatus(DownloadTaskStatus.Running);
-            var (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay) = Program.SetUpWork(option);
+            var (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, lang, aidOri, delay) = Program.SetUpWork(option);
             var (fetchedAid, vInfo, apiType, session) = await Program.GetVideoInfoAsync(option, aidOri, input, linkedCts.Token);
             // GetVideoInfoAsync 在子异步流程中加载的凭据与提取的 wbi 不会自动回流父流程
             // （AsyncLocal 语义），这里在父流程内显式应用，确保后续 DownloadPagesAsync →
@@ -1221,7 +1249,7 @@ public partial class BBDownApiServer
             task.Pic = vInfo.Pic;
             task.VideoPubTime = vInfo.PubTime;
             await Program.DownloadPagesAsync(option, vInfo, encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
-                        input, savePathFormat, lang, fetchedAid, delay, apiType, task, linkedCts.Token);
+                        input, lang, fetchedAid, delay, apiType, task, linkedCts.Token);
             task.SetStatus(DownloadTaskStatus.Succeeded);
         }
         catch (OperationCanceledException)

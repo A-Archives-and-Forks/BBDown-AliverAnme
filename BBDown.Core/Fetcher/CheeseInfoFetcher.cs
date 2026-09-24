@@ -14,12 +14,7 @@ public class CheeseInfoFetcher : IFetcher
         string api = $"https://api.bilibili.com/pugv/view/web/season?ep_id={id}";
         string json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
-        int code = infoJson.RootElement.GetInt32Safe("code");
-        if (code != 0)
-        {
-            string msg = JsonElementExtensions.SanitizeServerText(infoJson.RootElement.GetValueAsStringSafe("message"));
-            throw new InvalidOperationException($"获取课程信息失败 (code={code}): {msg}");
-        }
+        FetcherJson.ThrowIfApiError(infoJson.RootElement, "获取课程信息失败");
         // RF-65：先查 code 再取 data——错误响应（code≠0 且无 data）经 GetPropertySafe 抛
         // 英文裸 KeyNotFoundException，使上方 code 诊断不可达。
         if (!infoJson.RootElement.TryGetProperty("data", out var data) || data.ValueKind != JsonValueKind.Object)

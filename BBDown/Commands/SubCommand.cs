@@ -76,21 +76,21 @@ public class SubCheckSettings : SubSettings
 }
 
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
-public class SubAddCommand : Command<SubAddSettings>
+public class SubAddCommand : AsyncCommand<SubAddSettings>
 {
-    protected override int Execute(CommandContext context, SubAddSettings settings, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, SubAddSettings settings, CancellationToken cancellationToken)
     {
-        SubscriptionStore.Add(settings.Target, settings.Name);
+        await SubscriptionStore.AddAsync(settings.Target, settings.Name, cancellationToken);
         return 0;
     }
 }
 
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
-public class SubListCommand : Command<SubListSettings>
+public class SubListCommand : AsyncCommand<SubListSettings>
 {
-    protected override int Execute(CommandContext context, SubListSettings settings, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, SubListSettings settings, CancellationToken cancellationToken)
     {
-        var subs = SubscriptionStore.Load();
+        var subs = await SubscriptionStore.LoadAsync(cancellationToken);
         if (subs.Count == 0)
         {
             Logger.Log("当前没有订阅，请先用 BBDown sub add <目标> 添加");
@@ -106,11 +106,11 @@ public class SubListCommand : Command<SubListSettings>
 }
 
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
-public class SubRemoveCommand : Command<SubRemoveSettings>
+public class SubRemoveCommand : AsyncCommand<SubRemoveSettings>
 {
-    protected override int Execute(CommandContext context, SubRemoveSettings settings, CancellationToken cancellationToken)
+    protected override async Task<int> ExecuteAsync(CommandContext context, SubRemoveSettings settings, CancellationToken cancellationToken)
     {
-        SubscriptionStore.Remove(settings.Target);
+        await SubscriptionStore.RemoveAsync(settings.Target, cancellationToken);
         return 0;
     }
 }
@@ -120,27 +120,28 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, SubCheckSettings settings, CancellationToken cancellationToken)
     {
-        // 批量检查期间 Ctrl+C 会取消当前下载；直接退出进程则等效于整体取消。
-        var subs = SubscriptionStore.Load();
-        if (subs.Count == 0)
-        {
-            Logger.LogWarn("当前没有订阅，请先用 BBDown sub add <目标> 添加");
-            return 0;
-        }
-
-        // 订阅解析与拉取（VIP/登录态内容）需要凭据：
-        // LoadCredentials 会优先应用命令行 --cookie/--access-token，否则加载本地 BBDown.data。
-        // 此前只处理显式传参，已登录但未传参时枚举阶段以匿名身份执行，VIP/区域订阅会被误判为空。
-        var sessionOption = new MyOption
-        {
-            Cookie = settings.Cookie,
-            AccessToken = settings.AccessToken,
-            UseTvApi = settings.UseTvApi,
-            UseAppApi = settings.UseAppApi,
-            UseIntlApi = settings.UseIntlApi,
-        };
         try
         {
+            // 批量检查期间 Ctrl+C 会取消当前下载；直接退出进程则等效于整体取消。
+            var subs = await SubscriptionStore.LoadAsync(cancellationToken);
+            if (subs.Count == 0)
+            {
+                Logger.LogWarn("当前没有订阅，请先用 BBDown sub add <目标> 添加");
+                return 0;
+            }
+
+            // 订阅解析与拉取（VIP/登录态内容）需要凭据：
+            // LoadCredentials 会优先应用命令行 --cookie/--access-token，否则加载本地 BBDown.data。
+            // 此前只处理显式传参，已登录但未传参时枚举阶段以匿名身份执行，VIP/区域订阅会被误判为空。
+            var sessionOption = new MyOption
+            {
+                Cookie = settings.Cookie,
+                AccessToken = settings.AccessToken,
+                UseTvApi = settings.UseTvApi,
+                UseAppApi = settings.UseAppApi,
+                UseIntlApi = settings.UseIntlApi,
+            };
+
             // 统一初始化请求会话：订阅枚举（mid: 空间/收藏夹/合集等）经 SpaceVideoFetcher →
             // Parser.WbiSign 签名，必须先取得 wbi，否则空 wbi 的 w_rid 会被 B 站拒绝。
             // 返回的完整会话（含本地凭据与新 wbi）在父流程（SubCheck 自身异步流）内显式应用——
@@ -192,7 +193,7 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
                 var vInfo = await fetcher.FetchAsync(resolved, cancellationToken);
 
                 var allAids = vInfo.PagesInfo.Select(p => p.aid).Where(a => !string.IsNullOrEmpty(a)).Distinct().ToList();
-                var history = SubscriptionStore.LoadHistory(sub.Target);
+                var history = await SubscriptionStore.LoadHistoryAsync(sub.Target, cancellationToken);
                 var newAids = allAids.Where(a => !history.Contains(a)).ToList();
 
                 if (newAids.Count == 0)
@@ -209,7 +210,7 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
                     {
                         var opt = BuildOption($"av{aid}", settings);
                         await Program.DoWorkAsync(opt, cancellationToken);
-                        SubscriptionStore.RecordDownloaded(sub.Target, aid);
+                        await SubscriptionStore.RecordDownloadedAsync(sub.Target, aid, cancellationToken);
                     }
                     catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                     {

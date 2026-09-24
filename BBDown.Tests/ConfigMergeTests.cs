@@ -26,10 +26,10 @@ public class ConfigMergeTests
     }
 
     [Fact]
-    public void SpaceStyleCliOption_OverridesConfigFile()
+    public async Task SpaceStyleCliOption_OverridesConfigFile()
     {
         var cfg = WriteConfig("--dfn-priority\n1080P 高清\n");
-        var merged = BBDownConfigParser.MergeWithConfig(
+        var merged = await BBDownConfigParser.MergeWithConfigAsync(
             ["--dfn-priority", "720P 高清", "--config-file", cfg, "URL"]);
         File.Delete(cfg);
 
@@ -37,12 +37,12 @@ public class ConfigMergeTests
     }
 
     [Fact]
-    public void EqualsStyleCliOption_OverridesConfigFile()
+    public async Task EqualsStyleCliOption_OverridesConfigFile()
     {
         // 旧实现按精确 token 匹配识别"已显式指定"，--dfn-priority=X 匹配不到，
         // 配置文件的值被追加到末尾，按 Spectre 后者胜出反向覆盖了命令行
         var cfg = WriteConfig("--dfn-priority\n1080P 高清\n");
-        var merged = BBDownConfigParser.MergeWithConfig(
+        var merged = await BBDownConfigParser.MergeWithConfigAsync(
             ["--dfn-priority=720P 高清", "--config-file", cfg, "URL"]);
         File.Delete(cfg);
 
@@ -50,11 +50,11 @@ public class ConfigMergeTests
     }
 
     [Fact]
-    public void EqualsStyleConfigFilePath_IsHonored()
+    public async Task EqualsStyleConfigFilePath_IsHonored()
     {
         // --config-file=path 形式此前匹配不到，会回落到默认配置路径而忽略用户指定
         var cfg = WriteConfig("--dfn-priority\n1080P 高清\n");
-        var merged = BBDownConfigParser.MergeWithConfig(
+        var merged = await BBDownConfigParser.MergeWithConfigAsync(
             [$"--config-file={cfg}", "URL"]);
         File.Delete(cfg);
 
@@ -62,35 +62,35 @@ public class ConfigMergeTests
     }
 
     [Fact]
-    public void ConfigOptionNotOnCommandLine_IsApplied()
+    public async Task ConfigOptionNotOnCommandLine_IsApplied()
     {
         var cfg = WriteConfig("--dfn-priority\n1080P 高清\n");
-        var merged = BBDownConfigParser.MergeWithConfig(["--config-file", cfg, "URL"]);
+        var merged = await BBDownConfigParser.MergeWithConfigAsync(["--config-file", cfg, "URL"]);
         File.Delete(cfg);
 
         Assert.Equal("1080P 高清", EffectiveValue(merged, "--dfn-priority"));
     }
 
     [Fact]
-    public void ConfigValueStartingWithDash_IsNotSwallowed()
+    public async Task ConfigValueStartingWithDash_IsNotSwallowed()
     {
         // 值本身以 - 开头（如 access-token 的值、负数参数）时，
         // 旧实现把它误判为下一个选项而丢弃该值
         var cfg = WriteConfig("--access-token\n-access-token-value\n");
-        var merged = BBDownConfigParser.MergeWithConfig(["--config-file", cfg, "URL"]);
+        var merged = await BBDownConfigParser.MergeWithConfigAsync(["--config-file", cfg, "URL"]);
         File.Delete(cfg);
 
         Assert.Equal("-access-token-value", EffectiveValue(merged, "--access-token"));
     }
 
     [Fact]
-    public void SubCommandInvocation_SkipsConfigMerge()
+    public async Task SubCommandInvocation_SkipsConfigMerge()
     {
         // 子命令的 Settings 只声明各自少量选项：把配置文件里的下载选项全集合并进去，
         // Spectre 会以 unknown option 拒绝解析——存在 BBDown.config 时 sub/live 等命令
         // 必须仍然可用。合并结果应原样等于命令行参数。
         var cfg = WriteConfig("--dfn-priority\n1080P 高清\n--cookie\nSESSDATA=abc\n");
-        var merged = BBDownConfigParser.MergeWithConfig(["--config-file", cfg, "sub", "list"]);
+        var merged = await BBDownConfigParser.MergeWithConfigAsync(["--config-file", cfg, "sub", "list"]);
         File.Delete(cfg);
 
         Assert.Equal(["--config-file", cfg, "sub", "list"], merged);
@@ -102,12 +102,12 @@ public class ConfigMergeTests
     }
 
     [Fact]
-    public void CliUrl_Present_ConfigUrlIsSkipped()
+    public async Task CliUrl_Present_ConfigUrlIsSkipped()
     {
         // 命令行已给 URL 时，配置文件里的 URL 不再合并：
         // 两个位置参数会让 MyOption 解析失败（unexpected positional argument）
         var cfg = WriteConfig("https://www.bilibili.com/video/BV1AAAAAAAAAA\n--dfn-priority\n1080P 高清\n");
-        var merged = BBDownConfigParser.MergeWithConfig(
+        var merged = await BBDownConfigParser.MergeWithConfigAsync(
             ["--config-file", cfg, "https://www.bilibili.com/video/BV1qt4y1X7TW"]);
         File.Delete(cfg);
 
@@ -116,13 +116,13 @@ public class ConfigMergeTests
     }
 
     [Fact]
-    public void UrlLikeOptionValue_DoesNotSuppressConfigUrl()
+    public async Task UrlLikeOptionValue_DoesNotSuppressConfigUrl()
     {
         // RF-7 回归：--aria2c-proxy 的值（http://127.0.0.1:7890）形似 URL。
         // 旧实现对全部 argv 应用 URL 启发式，"URL 在配置文件 + 命令行有 URL 形值选项"
         // 被误判成"命令行已给出 URL"，配置文件里的 URL 被丢弃 → Spectre 报缺少必填参数。
         var cfg = WriteConfig("https://www.bilibili.com/video/BV1AAAAAAAAAA\n--dfn-priority\n1080P 高清\n");
-        var merged = BBDownConfigParser.MergeWithConfig(
+        var merged = await BBDownConfigParser.MergeWithConfigAsync(
             ["--config-file", cfg, "--aria2c-proxy", "http://127.0.0.1:7890"]);
         File.Delete(cfg);
 
@@ -132,11 +132,11 @@ public class ConfigMergeTests
     }
 
     [Fact]
-    public void IdLikeOptionValue_DoesNotSuppressConfigUrl()
+    public async Task IdLikeOptionValue_DoesNotSuppressConfigUrl()
     {
         // 同 RF-7：--work-dir av123 的值命中 av\d+ 形态，同样不应算作"命令行已给 URL"
         var cfg = WriteConfig("https://www.bilibili.com/video/BV1AAAAAAAAAA\n");
-        var merged = BBDownConfigParser.MergeWithConfig(
+        var merged = await BBDownConfigParser.MergeWithConfigAsync(
             ["--config-file", cfg, "--work-dir", "av123"]);
         File.Delete(cfg);
 

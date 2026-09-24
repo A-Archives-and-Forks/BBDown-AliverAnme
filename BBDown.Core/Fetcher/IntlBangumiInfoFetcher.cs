@@ -20,12 +20,7 @@ public partial class IntlBangumiInfoFetcher : IFetcher
         // JsonDocument.Parse 会正确解码；预替换会把原文 \\+\/（值为"反斜杠+斜杠"）错误归并丢数据。
         string json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
-        // 与 BangumiInfoFetcher 一致：顶层 code/message 不能丢弃，区域限制/失效/风控需可诊断。
-        long rootCode = infoJson.RootElement.GetInt64Safe("code");
-        if (rootCode != 0)
-        {
-            var msg = JsonElementExtensions.SanitizeServerText(infoJson.RootElement.GetValueAsStringSafe("message"));
-        }
+        FetcherJson.ThrowIfApiError(infoJson.RootElement, "获取国际版番剧信息失败");
         if (!infoJson.RootElement.TryGetProperty("result", out var result))
             throw new KeyNotFoundException("Intl Bangumi API response missing 'result' node");
         string seasonId = result.GetValueAsStringSafe("season_id");

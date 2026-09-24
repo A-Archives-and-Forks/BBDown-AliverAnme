@@ -19,8 +19,8 @@ public class MediaListFetcher : IFetcher
         var json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
         var root = infoJson.RootElement;
-        // RF-52：先查 code 再取 data——错误响应（{"code":-400,...} 无 data 键）经 GetPropertySafe
-        // 抛英文裸 KeyNotFoundException，精心编写的 code 诊断不可达。
+        // data 缺失时保留“合集被误识别为系列”的回退；data 存在时再检查 code，
+        // 避免带错误 code 的响应被当作有效合集解析。
         if (!(root.TryGetProperty("data", out var data) && data.ValueKind == JsonValueKind.Object))
         {
             // 部分情况下（合集被删除、设为私密或无权访问）data 会是 null
@@ -43,6 +43,7 @@ public class MediaListFetcher : IFetcher
                 throw new InvalidOperationException($"获取合集信息失败(code={code}): {JsonElementExtensions.SanitizeServerText(message)}");
             }
         }
+        FetcherJson.ThrowIfApiError(root, "获取合集信息失败");
         var listTitle = data.GetValueAsStringSafe("title");
         var intro = data.GetValueAsStringSafe("intro");
         long pubTime = data.GetInt64Safe("ctime");
@@ -60,6 +61,7 @@ public class MediaListFetcher : IFetcher
             json = await HTTPUtil.GetWebSourceAsync(listApi, token: cancellationToken);
             using var listJson = JsonDocument.Parse(json);
             var listRoot = listJson.RootElement;
+            FetcherJson.ThrowIfApiError(listRoot, "获取合集视频列表失败");
             // RF-52：先查 code 再取 data（与首屏一致，错误响应不再抛裸 KeyNotFoundException）。
             if (!(listRoot.TryGetProperty("data", out var listData) && listData.ValueKind == JsonValueKind.Object))
             {

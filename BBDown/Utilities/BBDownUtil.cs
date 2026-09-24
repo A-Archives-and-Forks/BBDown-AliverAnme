@@ -92,7 +92,7 @@ public static partial class BBDownUtil
         }
 
         var outDir = Path.GetDirectoryName(outputFilePath);
-        if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
+        if (!string.IsNullOrEmpty(outDir))
             Directory.CreateDirectory(outDir);
 
         try
@@ -112,9 +112,23 @@ public static partial class BBDownUtil
             // 清理失败绝不能掩盖原始异常——若删除因 ACL/只读抛 UnauthorizedAccessException 而
             // 只捕 IOException，会替换原始异常（含取消的 OperationCanceledException，导致取消
             // 被误判为失败）。IOException 会传播给调用方触发页面级重试——重试前必须清掉损坏产物。
-            try { if (File.Exists(outputFilePath)) File.Delete(outputFilePath); } catch (Exception) { }
+            try { File.Delete(outputFilePath); } catch (Exception) { }
             throw;
         }
+    }
+
+    /// <summary>
+    /// 判断文本文件是否包含至少一个字符，而不把整份内容载入内存。
+    /// StreamReader 会自动识别并跳过 UTF BOM，与 ReadAllText 对 BOM-only 文件的空内容语义一致。
+    /// </summary>
+    internal static async Task<bool> HasTextContentAsync(string path, CancellationToken token = default)
+    {
+        await using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read,
+            bufferSize: 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var reader = new StreamReader(stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true,
+            bufferSize: 1024, leaveOpen: true);
+        var buffer = new char[1];
+        return await reader.ReadAsync(buffer.AsMemory(), token) > 0;
     }
 
     public static string GetValidFileName(string input, string re = "_", bool filterSlash = false, int maxBaseNameLength = 100)

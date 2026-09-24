@@ -20,6 +20,7 @@ public class SeriesListFetcher : IFetcher
         var json = await HTTPUtil.GetWebSourceAsync(api, token: cancellationToken);
         using var infoJson = JsonDocument.Parse(json);
         var infoRoot = infoJson.RootElement;
+        FetcherJson.ThrowIfApiError(infoRoot, "获取系列信息失败");
         // RF-52：先查 code 再取 data——错误响应（{"code":-400,...} 无 data 键）经 GetPropertySafe
         // 抛英文裸 KeyNotFoundException，精心编写的 code 诊断不可达。与 NormalInfoFetcher 等
         // "先查 code"的正确序对齐。
@@ -46,6 +47,7 @@ public class SeriesListFetcher : IFetcher
             json = await HTTPUtil.GetWebSourceAsync(listApi, token: cancellationToken);
             using var listJson = JsonDocument.Parse(json);
             var listRoot = listJson.RootElement;
+            FetcherJson.ThrowIfApiError(listRoot, "获取系列分页列表失败");
             // RF-52：先查 code 再取 data（与首屏一致，错误响应不再抛裸 KeyNotFoundException）。
             if (!(listRoot.TryGetProperty("data", out var listData) && listData.ValueKind == JsonValueKind.Object))
             {

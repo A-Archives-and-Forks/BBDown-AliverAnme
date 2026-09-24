@@ -13,7 +13,7 @@ namespace BBDown;
 internal partial class Program
 {
     public static (Dictionary<string, byte> encodingPriority, Dictionary<string, int> dfnPriority, string? firstEncoding,
-        bool downloadDanmaku, BBDownDanmakuFormat[] downloadDanmakuFormats, string input, string savePathFormat, string lang, string aidOri, int delay)
+        bool downloadDanmaku, BBDownDanmakuFormat[] downloadDanmakuFormats, string input, string lang, string aidOri, int delay)
         SetUpWork(MyOption myOption)
     {
         //处理废弃选项
@@ -31,6 +31,7 @@ internal partial class Program
         //切换工作目录（返回解析后的绝对目录，并入下方 AppSettings 的 WorkDir）。
         // 不能在 ChangeWorkingDir 内部自行写配置：下方 Config.Apply(new AppSettings(...))
         // 会整体替换配置快照，WorkDir 会被重置为空。
+        bool isServeMode = Config.Current.IsServeMode;
         string workDir = ChangeWorkingDir(myOption);
 
         //解析优先级
@@ -41,10 +42,6 @@ internal partial class Program
         BBDownDanmakuFormat[] downloadDanmakuFormats = ParseDownloadDanmakuFormats(myOption);
 
         string input = myOption.Url;
-        // 此处 savePathFormat 仅是透传给 DownloadPagesAsync 的冗余输入——入口内部
-        //（Download.cs 的 ResolveSavePathFormat）会基于 myOption.FilePattern/MultiFilePattern
-        // 与【实际下载的分P数】统一重算（含单选1P走单P模板等语义），本行赋值仅保证 API 形状。
-        string savePathFormat = myOption.FilePattern;
         string lang = myOption.Language;
         string aidOri = ""; // 用户输入的原始资源标识（URL/BV/av 等解析前的形态），
                             // 供 Parser.ExtractTracksAsync 的 aidOri 参数做回退/展示——
@@ -69,7 +66,8 @@ internal partial class Program
             // 不再改进程级静态 HTTPUtil.UserAgent，serve 并发任务互不污染
             UserAgent: myOption.UserAgent,
             // 任务流工作目录：serve 下经 AsyncLocal 隔离，PathUtil.ResolveWorkPath 据此解析相对路径
-            WorkDir: workDir
+            WorkDir: workDir,
+            IsServeMode: isServeMode
         ));
 
         Logger.LogDebug("AppDirectory: {0}", APP_DIR);
@@ -83,7 +81,7 @@ internal partial class Program
             myOption.Cookie = savedCookie;
             myOption.AccessToken = savedToken ?? "";
         }
-        return (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, savePathFormat, lang, aidOri, delay);
+        return (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats, input, lang, aidOri, delay);
     }
 
     public static async Task<(string fetchedAid, VInfo vInfo, string apiType, AppSettings? session)> GetVideoInfoAsync(MyOption myOption, string aidOri, string input, CancellationToken cancellationToken = default)
@@ -198,7 +196,7 @@ internal partial class Program
     {
         // 计算加载后的凭据（显式传参优先，否则本地文件），但不 Apply——
         // 由调用方拿返回值在自身流内应用，避免子方法内的 AsyncLocal 写入丢失。
-        var (cookie, token) = LoadCredentials(myOption);
+        var (cookie, token) = await LoadCredentialsAsync(myOption, cancellationToken);
 
         // Cookie 即将过期的提前警告：B 站 SESSDATA 有效期约数月，serve 长驻进程跨周/月
         // 运行会静默失效，任务在运行中突然大面积鉴权失败。这里纯本地解析 SESSDATA

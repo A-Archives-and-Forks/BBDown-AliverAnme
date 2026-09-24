@@ -5,6 +5,8 @@ using System.Diagnostics.CodeAnalysis;
 using System.IO;
 using System.Linq;
 using System.Reflection;
+using System.Threading;
+using System.Threading.Tasks;
 using Spectre.Console.Cli;
 
 namespace BBDown;
@@ -93,7 +95,8 @@ internal static partial class BBDownConfigParser
         return positionals;
     }
 
-    public static List<string> MergeWithConfig(string[] cliArgs)
+    public static async Task<List<string>> MergeWithConfigAsync(
+        string[] cliArgs, CancellationToken cancellationToken = default)
     {
         var result = new List<string>(cliArgs);
 
@@ -129,7 +132,7 @@ internal static partial class BBDownConfigParser
         Logger.Log($"加载配置文件: {configPath}");
 
         // 加载发生在 Main 的异常处理器建立之前，裸异常会直接打印堆栈崩溃：
-        // File.Exists 对目录也返回 true，ReadAllLines 会抛 UnauthorizedAccessException。
+        // File.Exists 对目录也返回 true，ReadAllLinesAsync 会抛 UnauthorizedAccessException。
         List<string> configArgs;
         try
         {
@@ -138,7 +141,7 @@ internal static partial class BBDownConfigParser
                 Logger.LogWarn($"配置文件路径是一个目录，已忽略: {configPath}");
                 return result;
             }
-            configArgs = File.ReadAllLines(configPath)
+            configArgs = (await File.ReadAllLinesAsync(configPath, cancellationToken))
                 .Where(s => !string.IsNullOrWhiteSpace(s) && !s.TrimStart().StartsWith('#'))
                 .SelectMany(line =>
                 {

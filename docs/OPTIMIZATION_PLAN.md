@@ -26,40 +26,59 @@
 
 #### P0-1 拆分 `Program` 局部类巨石
 
-- **位置**：`BBDown/Application/Download.cs`（`DownloadPageAsync` 约 760 行（:356–1118）、`Download.cs:548` 自注"此处代码简直灾难"）；`Workflow.cs:13` / `Options.cs:16` 等 **12 个文件**为 `partial class Program` 扩散（Download/Program/PathHelper/Workflow/Options/Pages/Decrypt/Archive/Display/ToolFinder/TrackSort/Regex.cs）；`BBDown/Infrastructure/BBDownDownloadUtil.cs:17` 为 `internal static class`（同为静态可变状态面）；`BBDown/Program.cs:35` `IsServeMode` 静态状态
-- **问题**：单文件过长导致 review / 单测困难；`Program` 静态字段是并发污染根因（虽已靠 `AsyncLocal` 修补，但静态可变状态本身仍是风险源）；`Download.cs` 内 dash/flv 双分支、弹幕/封面/字幕/章节清理多处重复
+- **部分消纳（2026-09-24）**：`DownloadPageAssets.cs` 承载封面/字幕准备、SubOnly 早退、弹幕处理、CoverOnly 与已有产物跳过；`DownloadPageSetup.cs` 承载预览策略和调试响应持久化；`DownloadTrackPreparation.cs` 负责 DASH 识别、轨道过滤/排序/展示，以及 FLV DRM 检查、交互选档和轨道展示。`DownloadPageExecution.cs` 现为独立 `DownloadPageExecutor`，通过 `DownloadPageExecutionServices` 接收路径格式化、弹幕/封面、轨道下载、DRM 与 PCDN 操作；单页执行上下文也已移出 `Program`。DASH/FLV 共用 `DownloadDanmakuAsync`、`DownloadCoverOnlyAsync`、`TrySkipExistingOutput`，保留零产物失败、任务产物登记、取消传播及各自的空目录清理条件。当前 Release 构建零警告、格式检查通过；win-x64 AOT 发布成功，仅有已知 Spectre.Console.Cli `IL3053`。
+- **部分消纳（2026-09-24）**：serve 任务模式标记并入 `AppSettings.IsServeMode`，由 `Config` 的 `AsyncLocal` 快照按请求流隔离；API 下载入口显式标记 serve 流，CLI 工作流保留并传递该标记。`SinglePageDefaultSavePath` / `MultiPageDefaultSavePath` 改为编译期常量，移除未使用的可变静态保存路径。
+- **部分消纳（2026-09-24）**：页面列表调度移入可构造的 `DownloadOrchestrator`，分页器、归档读写、单页执行、通知及日志均由构造参数提供；`Program.DownloadPagesAsync` 只负责组装依赖。`ArchiveTracker` 从 `Program` 嵌套类型移为独立生产类型。
+- **性能优化（2026-09-24）**：分P选择筛选将 `List.Contains` 的线性查找改为 ordinal `HashSet` 查找，最坏 100k 选择项下由平方级比较降为线性构建 + 线性筛选，并保持原页面顺序。
+- **部分消纳（2026-09-24）**：混流提交与临时轨道清理移入 `DownloadFinalizer`，muxer、任务工作路径和日志从构造函数注入；章节文件清理移入无状态 `DownloadFileCleanup`。DASH/FLV 仍在原有最终路径锁中调用 finalizer，事务化临时输出、锁内跳过、取消与 finally 清理语义保持。
+- **位置**：`BBDown/Application/Download.cs` 的 `DownloadPageAsync` 仍持有单页重试、解析和准备逻辑；`DownloadPageExecutor` 的生产组装仍绑定 `Program` 当前的页面辅助方法，日志、路径锁、媒体工具仍调用静态设施。`Workflow.cs` / `Options.cs` 等 **12 个文件**仍为 `partial class Program` 扩散；`BBDown/Infrastructure/BBDownDownloadUtil.cs` 为 `internal static class`
+- **问题**：页面调度、DASH/FLV 执行、混流收尾已有独立构造边界，但页面解析/重试主体与部分全局设施尚未迁出；当前注入可替换页面操作回调，外部进程、日志及媒体工具仍需进一步收敛
 - **建议**：
- 1. 新建 `BBDown/Services/DownloadOrchestrator.cs` 接管 `DownloadPagesAsync` / `DownloadPageAsync` / `MuxAndFinalizeAsync` / `DeleteResidualChapterFiles`
- 2. `BBDownDownloadUtil` 从 `internal static` 改为 `IDownloadService` 接口，构造函数注入 `IExternalProcessRunner` / `ILogger`，`BBDownApiServer` 与 CLI 共用实例而非静态方法
- 3. `Options.cs` 的 `HandleDeprecatedOptions` / `ParseEncodingPriority` / `FindBinaries` 抽为 `OptionNormalizer` 纯静态工具，去掉对 `Program.SinglePageDefaultSavePath` / `MultiPageDefaultSavePath` 静态字段的读写
-- **收益**：单测可 `new DownloadOrchestrator(fakeRunner, fakeHttp)` 直测，`InternalsVisibleTo` 白盒测试可逐步转为黑盒；`IsServeMode` 可收敛为 `AppSettings` 字段
+ 1. 继续把 `DownloadPageAsync` 的重试、解析和轨道准备流程移入单页处理器，并逐步将页面辅助方法从 `Program` 回调组装中搬出
+ 2. 评估把 `BBDownDownloadUtil` 从 `internal static` 改为 `IDownloadService`，并注入外部进程与日志边界；保持 CLI 与 `serve` 的共享语义
+ 3. `Options.cs` 的 `HandleDeprecatedOptions` / `ParseEncodingPriority` / `FindBinaries` 抽为 `OptionNormalizer` 纯静态工具，后续可再去掉对 `Program` 默认路径常量的直接依赖
+- **收益**：页面调度器已可通过假分页器、归档存储和通知器独立构造；后续继续把单页执行器与媒体服务迁入接口，逐步减少 `Program` 的静态入口；serve 模式标记已收敛为 `AppSettings` 字段
 - **工作量**：3–5 天（含回归用例补齐）
 
 #### P0-2 同步 IO 阻塞异步路径
 
-- **位置**：`BBDown/Application/Download.cs:445` `File.ReadAllText`、`BBDown/Configuration/BBDownConfigParser.cs:141` `File.ReadAllLines`（位于启动期一次性同步方法 `MergeWithConfig`，非 serve 热路径）、`BBDown/Application/Options.cs:327/333/339` `File.ReadAllText`（`BBDown.data` / `BBDownTV.data` / `BBDownApp.data`）、`BBDown/Utilities/BBDownUtil.cs:106` `CopyToAsync` 已异步但外层仍有同步 `File.Exists` / `Directory.Exists` 紧邻
-- **补充锚点**（第 13 轮验收补遗，同属同步 IO 面）：`BBDown/Infrastructure/BBDownApiServer.cs:739`（serve 任务清单 `File.ReadAllText`）、`BBDown/Application/Download.cs:530`（debug JSON `File.WriteAllText`）、`BBDown/Infrastructure/BBDownDownloadUtil.cs:1058/1095/1151`（续传清单同步读写，下载核心路径）、`BBDown/Infrastructure/BBDownMuxer.cs:139/167/292/325`、`BBDown/Infrastructure/SubscriptionStore.cs:93/112/163/207`、`BBDown/Application/Archive.cs:21/32`
+- **已消纳（2026-09-24）**：
+  - `Download.cs` 与 `BBDownMuxer.cs` 的字幕空内容判断改为 `BBDownUtil.HasTextContentAsync`，只异步解码首字符，保留 BOM-only 文件视为空内容的语义。
+  - `BBDownDownloadUtil` 的续传清单读写、aria2c 预检及多线程轨道身份检查改为异步，并传递下载取消令牌；写入仍保留同目录临时文件 + 原子改名。
+  - `BBDownMuxer` 章节元数据、`Download.cs` 调试 JSON、`Options.cs` 本地凭据读取改为异步并可取消。
+  - CLI 启动时的 `BBDown.config` 合并改为可取消异步读取；启动阶段捕获 Ctrl+C 取消并返回 130。
+  - `Archive.cs` 归档读写改用异步 I/O 与 `SemaphoreSlim` 串行化；归档成员检查改为 span 扫描，避免 `Split` 为每个条目分配字符串数组。
+  - `BBDownUtil.CombineMultipleFilesIntoSingleFileAsync` 移除 `Directory.Exists` / `File.Exists` 前置检查：目录创建与文件删除本身具备幂等语义，避免在异步复制前后额外同步探测文件系统，并消除检查与操作之间的竞态窗口。
+- `SubscriptionStore` 的清单/历史读取与原子写入改为异步；CLI add/list/remove 命令也迁移到 `AsyncCommand`，读改写仍由 `SemaphoreSlim` 串行化。
+- serve 启动时的历史任务读取移到 `RunAsync` 并改为可取消异步读取；通过 `SemaphoreSlim` 保证同一服务实例只恢复一次。恢复被取消时跳过最终写回，避免未加载的空列表覆盖磁盘上的历史记录。
+- **剩余位置**：未发现已审阅异步文件内容读写周围可安全移除的重复存在性探测；仍保留需要做分支判断的同步文件元数据 API（没有对应异步接口）。
+- **保留的同步操作**：`BBDownApiServer.PersistFinishedTasks` 使用 `Flush(flushToDisk: true)` 保证持久化语义；当前没有等价的可取消异步 fsync API，不纳入机械替换。
 - **问题**：`async` 链上同步阻塞线程池；`serve` 并发下放大（启动期一次性读取不在此列）
 - **建议**：对应改为 `ReadAllTextAsync` / `ReadAllLinesAsync` 并透传 `CancellationToken`；`File.Exists` 保留同步（无异步替代）但避免在热路径重复 `GetFileName` / `GetFullPath`
 - **工作量**：半天
 
 #### P0-3 依赖停滞与供应链可重现性
 
+- **已消纳（2026-09-24）**：
+  - 全仓没有 SharpZipLib API 或类型引用，移除未使用的 `SharpZipLib 1.4.2` 包。
+  - 新增根目录 `Directory.Packages.props` 集中管理现有 NuGet 版本，并提交三项目的 `packages.lock.json`；应用与 Core 锁文件覆盖 win/linux/osx 的 x64 与 arm64 RID。
+  - PR、release、latest workflow 中的 `setup-dotnet` 开启 NuGet 缓存；Docker 构建上下文复制中央包版本文件。
+  - AOT 警告审计发现 `TypeRegistrar.Register` 与 `ITypeRegistrar` 未标注的动态注册契约，将 IL2067 局部抑制在该方法；Spectre CLI 的 IL3050 仅在 `Program.Main` 局部抑制，并说明静态根保留的命令类型。两项从全局 `NoWarn` 移除。
+- **仍待处理**：`NoWarn` 仍包含 Spectre.Console.Cli 产生的 IL3000/IL3001/IL3002/IL2104；清空屏蔽后观察到 IL2104、IL3000、IL3053 均来自该依赖。CI 暂未强制 NuGet locked mode。当前 AOT 项目按宿主机推导 RID，NuGet locked mode 会把锁文件与单个宿主 RID 绑定，需先调整 restore/publish 流程再启用。
 - **位置**：
-  - `BBDown/BBDown.csproj:39` `SharpZipLib 1.4.2`（1.4.2 为 2023-01 发布、此后无新版本；外部安全公告记录以上游 advisory 为准，升级前先核对）
- - `BBDown/BBDown.csproj:18` `NoWarn` 一揽子抑制 `IL3050;IL3000;IL3001;IL3002;IL2067;IL2104`
-  - 无 `packages.lock.json` / `Directory.Packages.props`（CPM）；`pr.yml:26` 显式 `dotnet restore`、`build_latest.yml` 无显式 restore 步骤（随 test/publish 隐式还原）——两 workflow 均无 NuGet/restore 缓存
+  - `BBDown/BBDown.csproj` 中的剩余 `NoWarn` 依赖诊断抑制
 - **建议**：
- 1. 评估 `SharpZipLib` → `System.IO.Compression`（.NET 内置已支持 Zip，项目仅用于解压）或 `SharpCompress`；若仅解压可直接迁移，移除外部依赖
- 2. 引入 `Directory.Packages.props` + `packages.lock.json`，`actions/setup-dotnet@v4` 开 `cache:true`，`pr.yml` 六个 job 可省 30–40s `restore`
- 3. `NoWarn` 改为按文件局部 `#pragma warning disable IL3050` 或确认 `TrimmerRootAssembly` 已覆盖后移除全局抑制；CI 新增 `dotnet publish -p:TreatWarningsAsErrors=true` 定时审计
+ 1. SharpZipLib 已确认没有源码引用，外部依赖已移除。
+ 2. 中央版本、RID lock files 与 Actions NuGet 缓存已落地；后续需用适配 AOT RID 的 restore/publish 流程启用 locked mode。
+ 3. 升级或替换 Spectre.Console.Cli 后重新审计其 trimming/AOT 诊断，清理剩余全局抑制；CI 增加 `dotnet publish -p:TreatWarningsAsErrors=true` 定时审计。
 - **工作量**：1–2 天
 
 #### P0-4 `Sdk="Microsoft.NET.Sdk.Web"` 收敛
 
+- **已消纳（2026-09-24）**：主项目改用 `Microsoft.NET.Sdk`，显式引用 `Microsoft.AspNetCore.App` 并移除 `EnableStaticWebAssets`；补齐 Web SDK 原先带入的 DI/Hosting 命名空间，serve 以 `IHost.RunAsync` 保持取消与关停流程。Release 构建及 Windows Native AOT 发布通过。
 - **位置**：`BBDown/BBDown.csproj:1`
 - **问题**：主程序是 CLI + 嵌入式 Kestrel（`BBDownApiServer.cs` 仅需 Minimal API），Web SDK 隐式引入静态资源/Razor 等与 AOT 无关的裁剪分析；`Directory.Build.props:6` 已 `PublishAot=true`，Web SDK 的 AOT 兼容面比普通 SDK 窄；`EnableStaticWebAssets:false` 是为此打的补丁
-- **建议**：改 `Microsoft.NET.Sdk`，显式 `<FrameworkReference Include="Microsoft.AspNetCore.App" />`，移除 `EnableStaticWebAssets` 补丁，裁剪更可控
+- **处置**：按上面的消纳记录收敛 SDK；Minimal API 所需框架通过 `FrameworkReference` 显式引用。
 - **工作量**：半天（含 `dotnet publish -r win-x64/linux-x64` 冒烟）
 
 ---
@@ -68,16 +87,18 @@
 
 #### P1-1 Fetcher 重复解析逻辑
 
+- **部分消纳（2026-09-24）**：新增 `FetcherJson.ThrowIfApiError`，Normal/Cheese/Bangumi/Intl/Fav/MediaList/Series 共用顶层 code 校验和消息净化；修复 Bangumi、Intl 与 Fav 的多个错误分支只读取 message 却继续解析的问题。MediaList 在 `data` 缺失时仍保留 Series 回退；SpaceVideo 保留针对登录风控 code 的专用提示。
 - **位置**：`BBDown.Core/Fetcher/NormalInfoFetcher.cs:16` / `BangumiInfoFetcher.cs:16` / `CheeseInfoFetcher.cs` / `IntlBangumiInfoFetcher.cs` / `FavListFetcher.cs` / `MediaListFetcher.cs` / `SeriesListFetcher.cs` / `SpaceVideoFetcher.cs` 共 8 实现
-- **问题**：共享模式 `HTTPUtil.GetWebSourceAsync` → `JsonDocument.Parse` → `code != 0` 抛错 → `EnumerateArraySafe` 组装 `VInfo` 重复；仅 `FetcherFactory` 有路由测试，8 个 Fetcher 零覆盖（`BBDown.Tests` 最大盲区，B 站接口变更最先断裂处）
-- **建议**：抽 `FetcherBase` 提供 `FetchJsonAsync<T>(url, token)` + `EnsureSuccessCode(doc)` 模板，子类只实现 `ParseVInfo(JsonElement data)`；为每个 Fetcher 补 1 个离线 JSON 快照用例（仿 `ParserFixtureTests` 的 `Fixtures/parser/` 夹具回放，已有 `FakeBilibiliApiServer` 先例）
+- **问题**：各接口响应节点和回退策略不同，不宜强制成单一 `ParseVInfo` 模板；SpaceVideo 的 -352/-403 错误还需专门文案。Fetcher 离线夹具覆盖仍不足，接口结构回归风险未消除。
+- **建议**：保留逐接口解析，继续用共享 envelope helper 收敛 code/消息处理；为每个 Fetcher 补离线 JSON 快照用例（仿 `ParserFixtureTests` 的 `Fixtures/parser/` 夹具回放，已有 `FakeBilibiliApiServer` 先例）
 - **工作量**：2–3 天
 
 #### P1-2 `Parser.cs` JsonDocument 生命周期与解析性能
 
-- **位置**：`BBDown.Core/Parser.cs:251` Dash 分支 `try/catch + finally` 双重 `Dispose`、`intl` 分支 `code=0/1` 两次 `Parse`、全程 `GetInt32Safe` / `GetValueAsStringSafe` 反复 `TryGetProperty` 线性扫描
-- **问题**：整体正确但易误改；高频 `TryGetProperty` 在超大 `playurl` 响应上为线性扫描
-- **建议**：统一 `using var` 作用域；对固定结构引入 `JsonSerializerContext` 源生成反序列化（AOT 兼容，`Program.cs:63` 已有 `MyOptionJsonContext` 范例），减少 `JsonElement` 反复查找
+- **部分消纳（2026-09-24）**：主播放响应统一由一个 `try/finally` 释放，移除校验失败手动释放与正常返回前重复释放；DASH/FLV 最高清晰度重请求的临时文档在失败、取消、无效响应路径释放，只有接管成功时才转交主响应所有权。
+- **位置**：`BBDown.Core/Parser.cs:235` 主响应生命周期与响应替换；`intl` 分支的 `code=0/1` 是两次不同 API 请求，各响应只解析一次，不属于同一 JSON 的重复解析。其余解析继续通过 `JsonElement` 扩展方法访问字段。
+- **问题**：响应替换涉及 `JsonElement` 对所属 `JsonDocument` 的引用，异常路径的释放和所有权转移容易漏改；大响应上的属性访问成本尚无基准数据。
+- **建议**：先用代表性播放响应建立解析耗时/分配基准，再决定是否对固定结构引入 `JsonSerializerContext` 源生成反序列化（AOT 兼容，`Program.cs:63` 已有 `MyOptionJsonContext` 范例）；基准未证明收益前保留现有 `JsonElement` 解析方式。
 - **工作量**：1–2 天
 
 #### P1-3 CI 重复与 EOL 镜像
@@ -88,8 +109,9 @@
 
 #### P1-4 重试参数双轨收敛
 
-- **位置**：CLI `BBDown/Application/Options.cs:238` `ValidateNumericOptions`（`RetryCount 1–100 / RetryDelay 0–600s`）与 serve `BBDown/Infrastructure/BBDownApiServer.cs:818-819` `SanitizeUntrustedOptions` 的 `Math.Clamp(1,3) / (0,5000)` 二次收敛分散
-- **建议**：抽 `RetryPolicy.NormalizeForCli` / `NormalizeForServe` 统一入口，`SanitizeUntrustedOptions` 仅调后者；新增参数时不遗漏 clamp
+- **已消纳（2026-09-24）**：新增 `RetryPolicy` 集中定义 CLI/serve 的重试次数与延迟范围。CLI 仍拒绝越界值并保留原错误信息；serve 仍将不可信输入钳制到较窄范围，两种入口共用边界常量，避免限制漂移。
+- **位置**：CLI `BBDown/Application/Options.cs:239` `ValidateNumericOptions` 与 serve `BBDown/Infrastructure/BBDownApiServer.cs:882` `SanitizeUntrustedOptions`；二者现统一调用 `RetryPolicy`，CLI 范围为 `1–100 / 0–600000ms`，serve 为 `1–3 / 0–5000ms`
+- **处置**：`RetryPolicy.NormalizeForCli` 负责 CLI 验证，`NormalizeForServe` 负责 API 输入钳制；其它 serve 数值限制仍由各自安全边界处理。
 - **工作量**：半天
 
 ---
@@ -119,7 +141,7 @@
 
 | 阶段 | 工作 | 产出 | 依赖 |
 |------|------|------|------|
-| 第 1 周 | P0-3 依赖与供应链：SharpZipLib 评估 + `NoWarn` 收敛 + `lock` 文件 + CI 缓存 | PR 1 | 无 |
+| 第 1 周 | P0-3 依赖与供应链：清理未用包、CPM/RID lock files/CI 缓存、本地 AOT 警告收敛已落地；剩余第三方警告升级与 AOT locked restore 设计 | PR 1（部分完成） | 无 |
 | 第 1 周 | P0-2 同步 IO 异步化 + P0-4 Sdk.Web 收敛 | PR 2 | 无 |
 | 第 2–3 周 | P0-1 巨石拆分（`DownloadOrchestrator` + `IDownloadService`） | PR 3（大） | 需补回归用例 |
 | 第 4 周 | P1-1 Fetcher 基类 + 快照用例 + P1-2 Parser 源生成 | PR 4 | PR 3 合入后 |

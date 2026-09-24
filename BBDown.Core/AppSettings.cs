@@ -31,7 +31,10 @@ public record AppSettings(
     // 时效窗口即被 B 站拒绝签名。首次请求从响应头 Date 校准后写入，后续签名时间戳
     // 经 ServerClock.Now 补偿。UTC 偏移是服务器物理属性而非账号凭据，serve 并发任务
     // 间共享无害。
-    long ServerClockOffsetSeconds = 0
+    long ServerClockOffsetSeconds = 0,
+    // 当前异步流是否由 serve 接受的下载任务驱动。serve 的 --work-dir 不能修改进程 CWD，
+    // 因此该标志和 WorkDir 一样按任务流隔离。
+    bool IsServeMode = false
 )
 {
     /// <summary>

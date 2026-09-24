@@ -249,18 +249,9 @@ internal partial class Program
             throw new ArgumentException(
                 $"参数有误：--muxer-timeout 需在 1 ~ {maxMuxerTimeoutMinutes} 分钟之间，当前为 {myOption.MuxerTimeout}");
         }
-        if (myOption.RetryCount < 1 || myOption.RetryCount > 100)
-        {
-            throw new ArgumentException(
-                $"参数有误：--retry-count 需在 1 ~ 100 之间，当前为 {myOption.RetryCount}（设为 0 将不会发起任何下载，过大则无限重试拖垮任务）");
-        }
-        if (myOption.RetryDelay < 0 || myOption.RetryDelay > 600_000)
-        {
-            // 上限 600 秒：退避基数 (retry+1) * RetryDelayMs 会随重试次数线性放大，
-            // 过大值会导致单次等待长达数小时、且乘积累加可能溢出 int
-            throw new ArgumentException(
-                $"参数有误：--retry-delay 需在 0 ~ 600000 ms 之间，当前为 {myOption.RetryDelay}");
-        }
+        var retryPolicy = RetryPolicy.NormalizeForCli(myOption.RetryCount, myOption.RetryDelay);
+        myOption.RetryCount = retryPolicy.RetryCount;
+        myOption.RetryDelay = retryPolicy.RetryDelayMs;
         if (myOption.ThreadSegmentSize < 1 || myOption.ThreadSegmentSize > 1024)
         {
             throw new ArgumentException(
@@ -288,7 +279,7 @@ internal partial class Program
             // 解析时依赖进程 CWD，单任务场景无并发污染问题，保留既有行为。
             // serve 模式绝不写进程 CWD——并发任务各自的 --work-dir 不能互相覆盖进程级状态，
             // 相对路径由 PathUtil.ResolveWorkPath 基于各任务流配置里的 WorkDir 解析。
-            if (!IsServeMode) Environment.CurrentDirectory = dir;
+            if (!Config.Current.IsServeMode) Environment.CurrentDirectory = dir;
             Logger.LogDebug("切换工作目录至：{0}", dir);
         }
         return dir;
@@ -313,7 +304,8 @@ internal partial class Program
     /// 计算用户最终应使用的凭据（cookie/token）：显式传入优先，否则本地凭据文件。
     /// 纯函数：不写 Config（AsyncLocal 语义下写入不回流父流程），由调用方拿返回值应用。
     /// </summary>
-    internal static (string cookie, string token) LoadCredentials(MyOption myOption)
+    internal static async Task<(string cookie, string token)> LoadCredentialsAsync(
+        MyOption myOption, CancellationToken cancellationToken = default)
     {
         // 用户显式传入的凭据优先于本地文件；否则从 Config.Current / BBDown.data 加载
         string cookie = !string.IsNullOrEmpty(myOption.Cookie) ? myOption.Cookie : Config.Current.Cookie;
@@ -325,19 +317,19 @@ internal partial class Program
         {
             Logger.Log("加载本地cookie...");
             Logger.LogDebug("文件路径：{0}", Path.Combine(APP_DIR, "BBDown.data"));
-            cookie = File.ReadAllText(Path.Combine(APP_DIR, "BBDown.data"));
+            cookie = await File.ReadAllTextAsync(Path.Combine(APP_DIR, "BBDown.data"), cancellationToken);
         }
         if (string.IsNullOrEmpty(token) && File.Exists(Path.Combine(APP_DIR, "BBDownTV.data")) && myOption.UseTvApi)
         {
             Logger.Log("加载本地token...");
             Logger.LogDebug("文件路径：{0}", Path.Combine(APP_DIR, "BBDownTV.data"));
-            token = File.ReadAllText(Path.Combine(APP_DIR, "BBDownTV.data")).Replace("access_token=", "");
+            token = (await File.ReadAllTextAsync(Path.Combine(APP_DIR, "BBDownTV.data"), cancellationToken)).Replace("access_token=", "");
         }
         if (string.IsNullOrEmpty(token) && File.Exists(Path.Combine(APP_DIR, "BBDownApp.data")) && myOption.UseAppApi)
         {
             Logger.Log("加载本地token...");
             Logger.LogDebug("文件路径：{0}", Path.Combine(APP_DIR, "BBDownApp.data"));
-            token = File.ReadAllText(Path.Combine(APP_DIR, "BBDownApp.data")).Replace("access_token=", "");
+            token = (await File.ReadAllTextAsync(Path.Combine(APP_DIR, "BBDownApp.data"), cancellationToken)).Replace("access_token=", "");
         }
 
         return (cookie?.Trim() ?? "", token?.Trim() ?? "");

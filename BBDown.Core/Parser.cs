@@ -233,26 +233,14 @@ public static partial class Parser
         }
 
         var respJson = JsonDocument.Parse(parsedResult.WebJsonString);
-        var data = respJson.RootElement;
         try
         {
+            var data = respJson.RootElement;
             ThrowIfPlayLimited(data);
             // UGC 的播放限制通过顶层业务 code 表达（区域限制 -86038、风控 -412、视频失效 -404 等），
-            // 而 play_check 只在 pgc 响应的 result 节点出现、对 UGC 不可达，这里统一兜底
+            // 而 play_check 只在 pgc 响应的 result 节点出现、对 UGC 不可达，这里统一兜底。
             ThrowIfBizError(data);
-        }
-        catch
-        {
-            // 校验抛出的异常路径不会走到方法末尾的 respJson.Dispose()：
-            // JsonDocument 内部租用 ArrayPool 缓冲，不释放会造成池化内存积压
-            respJson.Dispose();
-            throw;
-        }
-        // 外层 try/finally：覆盖 DRM 提取 throw、GetPlayJsonAsync await 抛错等所有中途
-        // 异常路径——respJson 已 parse 但未走到方法末尾 dispose 时，由 finally 统一释放
-        //（JsonDocument.Dispose 幂等，与显式释放路径不冲突）。
-        try
-        {
+
             // 根据API版本自动定位数据节点
             JsonElement root;
             if (data.TryGetProperty("result", out var resultElem) && resultElem.ValueKind == JsonValueKind.Object)
@@ -302,10 +290,11 @@ public static partial class Parser
                     if (reparsePass == 1)
                     {
                         if (appApi) break; //只有非APP接口需要免二压
+                        JsonDocument? newResp = null;
                         try
                         {
                             var reparsePlayJson = await GetPlayJsonAsync(encoding, aidOri, aid, cid, epId, tvApi, intlApi, appApi, wantDrm, GetMaxQn(), token);
-                            var newResp = JsonDocument.Parse(reparsePlayJson);
+                            newResp = JsonDocument.Parse(reparsePlayJson);
                             var newRoot = newResp.RootElement;
                             ThrowIfBizError(newRoot);
                             ThrowIfPlayLimited(newRoot);
@@ -314,8 +303,10 @@ public static partial class Parser
                                    newRoot.TryGetProperty("data", out var dd) ? dd : newRoot;
                             if (pickedRoot.TryGetProperty("dash", out var newDash) && newDash.TryGetProperty("video", out _))
                             {
-                                respJson.Dispose(); // 旧文档退役，新文档接管生命周期
+                                var previousResp = respJson;
                                 respJson = newResp;
+                                newResp = null; // 文档所有权转交给主响应变量
+                                previousResp.Dispose();
                                 root = pickedRoot;
                                 parsedResult.WebJsonString = reparsePlayJson;
                                 video = newDash.TryGetProperty("video", out var newVidArr) ? newVidArr.EnumerateArray().ToList() : null;
@@ -323,10 +314,6 @@ public static partial class Parser
                                 // 新文档的 audio 是全新列表：dolby/flac 需要重新追加
                                 dolbyApplied = false;
                                 flacApplied = false;
-                            }
-                            else
-                            {
-                                newResp.Dispose();
                             }
                         }
                         catch (OperationCanceledException) when (token.IsCancellationRequested)
@@ -340,6 +327,10 @@ public static partial class Parser
                         catch (Exception ex) when (ex is HttpRequestException or JsonException or InvalidOperationException or TimeoutException or TaskCanceledException)
                         {
                             Logger.LogDebug("免二压重新请求失败（降级沿用第一轮结果）: {0}", ex.Message);
+                        }
+                        finally
+                        {
+                            newResp?.Dispose();
                         }
                     }
                     // RF-45：列表重赋值仅在 pass 0 执行。pass 1 的新文档接管分支已自带
@@ -563,44 +554,52 @@ public static partial class Parser
                 }
                 if (retriedResp is not null)
                 {
-                    var pickedRoot = retriedResp.RootElement;
-                    bool usable = true;
                     try
                     {
-                        ThrowIfPlayLimited(retriedResp.RootElement);
-                        ThrowIfBizError(retriedResp.RootElement);
+                        var pickedRoot = retriedResp.RootElement;
+                        bool usable = true;
+                        try
+                        {
+                            ThrowIfPlayLimited(retriedResp.RootElement);
+                            ThrowIfBizError(retriedResp.RootElement);
+                        }
+                        catch (InvalidOperationException ex)
+                        {
+                            // 校验失败：沿用首次响应；下面的 finally 负责释放重发文档。
+                            // 只捕业务校验异常（两者仅抛 InvalidOperationException），不吞编程错误。
+                            usable = false;
+                            Logger.LogWarn($"最高清晰度重发被接口拒绝，沿用首次解析结果: {ex.Message}");
+                        }
+                        if (usable)
+                        {
+                            if (pickedRoot.TryGetProperty("result", out var r) && r.ValueKind == JsonValueKind.Object)
+                                pickedRoot = r.TryGetProperty("video_info", out var vi) ? vi : r;
+                            else if (pickedRoot.TryGetProperty("data", out var d))
+                                pickedRoot = d;
+                            // 只查键存在会放行 "durl": null/空数组 的退化响应（code=0 但零轨道）；
+                            // 要求非空数组才接管，否则沿用首次响应，封死静默零轨道路径。
+                            usable = pickedRoot.TryGetProperty("durl", out var durlElem)
+                                && durlElem.ValueKind == JsonValueKind.Array
+                                && durlElem.GetArrayLength() > 0;
+                        }
+                        if (usable)
+                        {
+                            var previousResp = respJson;
+                            respJson = retriedResp;
+                            retriedResp = null; // 文档所有权转交给主响应变量
+                            previousResp.Dispose();
+                            root = pickedRoot;
+                        }
+                        else
+                        {
+                            // 最高清晰度重发无可用 durl：沿用首次（已校验）响应
+                            parsedResult.WebJsonString = firstWebJson;
+                            root = firstRoot;
+                        }
                     }
-                    catch (InvalidOperationException ex)
+                    finally
                     {
-                        // 校验失败：沿用首次响应（fallback 分支负责 Dispose retriedResp）。
-                        // 只捕业务校验异常（两者仅抛 InvalidOperationException），不吞编程错误。
-                        usable = false;
-                        Logger.LogWarn($"最高清晰度重发被接口拒绝，沿用首次解析结果: {ex.Message}");
-                    }
-                    if (usable)
-                    {
-                        if (pickedRoot.TryGetProperty("result", out var r) && r.ValueKind == JsonValueKind.Object)
-                            pickedRoot = r.TryGetProperty("video_info", out var vi) ? vi : r;
-                        else if (pickedRoot.TryGetProperty("data", out var d))
-                            pickedRoot = d;
-                        // 只查键存在会放行 "durl": null/空数组 的退化响应（code=0 但零轨道）；
-                        // 要求非空数组才接管，否则沿用首次响应，封死静默零轨道路径。
-                        usable = pickedRoot.TryGetProperty("durl", out var durlElem)
-                            && durlElem.ValueKind == JsonValueKind.Array
-                            && durlElem.GetArrayLength() > 0;
-                    }
-                    if (usable)
-                    {
-                        respJson.Dispose(); // 旧文档退役，新文档接管生命周期
-                        respJson = retriedResp;
-                        root = pickedRoot;
-                    }
-                    else
-                    {
-                        // 最高清晰度重发无可用 durl：沿用首次（已校验）响应
-                        retriedResp.Dispose();
-                        parsedResult.WebJsonString = firstWebJson;
-                        root = firstRoot;
+                        retriedResp?.Dispose();
                     }
                 }
                 string quality = "";
@@ -673,7 +672,6 @@ public static partial class Parser
 
             }
 
-            respJson.Dispose();
             return parsedResult;
         }
         finally
