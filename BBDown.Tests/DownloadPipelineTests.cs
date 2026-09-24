@@ -135,7 +135,7 @@ public class DownloadPipelineTests
     [InlineData(3, 1, 0)]
     [InlineData(0, 0, -1)]  // 无音频 → 标记跳过
     public void ClampRoleAudioIndex_HandlesOutOfRange(int aIndex, int count, int expected)
-        => Assert.Equal(expected, Program.ClampRoleAudioIndex(aIndex, count));
+        => Assert.Equal(expected, DownloadPageExecutor.ClampRoleAudioIndex(aIndex, count));
 
     [Fact]
     public void DeleteResidualChapterFiles_RemovesChapterPrefixedFiles()
@@ -155,7 +155,7 @@ public class DownloadPipelineTests
             File.WriteAllText(uniqueName, "x");
             File.WriteAllText(otherName, "x");
 
-            Program.DeleteResidualChapterFiles(dir);
+            DownloadFileCleanup.DeleteResidualChapterFiles(dir);
 
             Assert.False(File.Exists(fixedName), "固定名 chapters 应被清理");
             Assert.False(File.Exists(uniqueName), "muxer 唯一名 chapters-* 应被清理");
@@ -171,7 +171,7 @@ public class DownloadPipelineTests
     public void DeleteResidualChapterFiles_MissingOrEmptyDir_DoesNotThrow()
     {
         // 目录不存在 / 无匹配文件时静默返回：跳过路径兜底清理不能因 IO 异常掩盖主流程结果
-        Program.DeleteResidualChapterFiles(Path.Combine(Path.GetTempPath(), "bbdown-no-such-" + Guid.NewGuid().ToString("N")));
+        DownloadFileCleanup.DeleteResidualChapterFiles(Path.Combine(Path.GetTempPath(), "bbdown-no-such-" + Guid.NewGuid().ToString("N")));
     }
 
     [Fact]
@@ -457,7 +457,7 @@ public class DownloadPipelineTests
     /// （同一输出路径被另一清晰度/编码资源复用）必须被拒绝，不能仅凭长度采用。
     /// </summary>
     [Fact]
-    public void CanResumeFrom_SameLengthButDifferentUrl_RejectsResume()
+    public async Task CanResumeFrom_SameLengthButDifferentUrl_RejectsResume()
     {
         var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -471,7 +471,9 @@ public class DownloadPipelineTests
                 System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
 
             // 清单 URL 与当前请求 URL 不同 → 拒绝续传
-            Assert.False(BBDownDownloadUtil.CanResumeFrom(tmp, "https://cdn.example.com/720p.mp4", 12345, out var reason));
+            var (canResume, reason) = await BBDownDownloadUtil.CanResumeFromAsync(
+                tmp, "https://cdn.example.com/720p.mp4", 12345);
+            Assert.False(canResume);
             Assert.NotNull(reason);
             Assert.Contains("不一致", reason);
         }
@@ -509,7 +511,7 @@ public class DownloadPipelineTests
     /// 验证 CanResumeFrom 用稳定身份匹配——签名刷新后的同一资源仍可续传。
     /// </summary>
     [Fact]
-    public void CanResumeFrom_RefreshedSignature_SameResourceStillResumable()
+    public async Task CanResumeFrom_RefreshedSignature_SameResourceStillResumable()
     {
         var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -525,8 +527,9 @@ public class DownloadPipelineTests
                 System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
 
             // 当前请求是签名刷新的同一资源 → 稳定身份一致 → 可续传
-            Assert.True(BBDownDownloadUtil.CanResumeFrom(tmp,
-                "https://cdn.example.com/1080p.mp4?deadline=999&sign=new&qn=80", 12345, out _));
+            var (canResume, _) = await BBDownDownloadUtil.CanResumeFromAsync(
+                tmp, "https://cdn.example.com/1080p.mp4?deadline=999&sign=new&qn=80", 12345);
+            Assert.True(canResume);
         }
         finally
         {
@@ -539,7 +542,7 @@ public class DownloadPipelineTests
     /// 不变），也必须拒绝——否则旧 .tmp 被直接采用，产出"长度正确但内容损坏"的文件。
     /// </summary>
     [Fact]
-    public void CanResumeFrom_SameLengthAndIdentity_ButChangedETag_RejectsResume()
+    public async Task CanResumeFrom_SameLengthAndIdentity_ButChangedETag_RejectsResume()
     {
         var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -555,12 +558,16 @@ public class DownloadPipelineTests
             File.WriteAllText(tmp + ".manifest.json",
                 System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
 
-            Assert.False(BBDownDownloadUtil.CanResumeFrom(tmp, "https://cdn.example.com/video.mp4?deadline=2&sign=new", 12345, out var reason,
-                currentETag: "W/new-etag"));
+            var (canResume, reason) = await BBDownDownloadUtil.CanResumeFromAsync(
+                tmp, "https://cdn.example.com/video.mp4?deadline=2&sign=new", 12345,
+                currentETag: "W/new-etag");
+            Assert.False(canResume);
             Assert.Contains("ETag", reason);
             // 校验器一致时仍可续传
-            Assert.True(BBDownDownloadUtil.CanResumeFrom(tmp, "https://cdn.example.com/video.mp4?deadline=2&sign=new", 12345, out _,
-                currentETag: "W/old-etag"));
+            var (sameResource, _) = await BBDownDownloadUtil.CanResumeFromAsync(
+                tmp, "https://cdn.example.com/video.mp4?deadline=2&sign=new", 12345,
+                currentETag: "W/old-etag");
+            Assert.True(sameResource);
         }
         finally
         {
@@ -574,7 +581,7 @@ public class DownloadPipelineTests
     /// 跳过先于身份校验执行，等长跨资源残留被误跳过。
     /// </summary>
     [Fact]
-    public void PrepareAria2cTarget_CrossResourceEqualLengthPartial_DeletesAndRedownloads()
+    public async Task PrepareAria2cTarget_CrossResourceEqualLengthPartial_DeletesAndRedownloads()
     {
         var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -592,7 +599,7 @@ public class DownloadPipelineTests
             File.WriteAllText(path + ".manifest.json",
                 System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
 
-            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+            bool skip = await BBDownDownloadUtil.PrepareAria2cTargetAsync(
                 "https://cdn.example.com/720p.mp4?qn=64", path, fileSize: 10, headers: null, contentHeaders: null);
 
             Assert.False(skip, "等长跨资源残留不得跳过 aria2c");
@@ -607,7 +614,7 @@ public class DownloadPipelineTests
 
     /// <summary>同资源中断（清单身份匹配）：partial 保留供 --continue=true 续传，返回 false。</summary>
     [Fact]
-    public void PrepareAria2cTarget_SameResourceInterruptedPartial_KeptForResume()
+    public async Task PrepareAria2cTarget_SameResourceInterruptedPartial_KeptForResume()
     {
         var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -624,7 +631,7 @@ public class DownloadPipelineTests
                 System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
 
             // 签名刷新后的同一资源（稳定身份一致）→ 保留续传
-            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+            bool skip = await BBDownDownloadUtil.PrepareAria2cTargetAsync(
                 "https://cdn.example.com/1080p.mp4?deadline=999&sign=new&qn=80", path, fileSize: 1000, headers: null, contentHeaders: null);
 
             Assert.False(skip);
@@ -639,14 +646,14 @@ public class DownloadPipelineTests
 
     /// <summary>全新下载（无既有文件）：写入本次身份清单并返回 false（需调 aria2c）。</summary>
     [Fact]
-    public void PrepareAria2cTarget_NoPartial_WritesManifestAndReturnsFalse()
+    public async Task PrepareAria2cTarget_NoPartial_WritesManifestAndReturnsFalse()
     {
         var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
         try
         {
             var path = Path.Combine(dir, "video.mp4");
-            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+            bool skip = await BBDownDownloadUtil.PrepareAria2cTargetAsync(
                 "https://cdn.example.com/1080p.mp4?qn=80", path, fileSize: 1000, headers: null, contentHeaders: null);
             Assert.False(skip);
             Assert.True(File.Exists(path + ".manifest.json"), "首次下载前应写入身份清单");
@@ -659,7 +666,7 @@ public class DownloadPipelineTests
 
     /// <summary>同资源完整文件：返回 true（跳过 aria2c），残留控制文件被清理、身份清单保留。</summary>
     [Fact]
-    public void PrepareAria2cTarget_CompleteSameResource_SkipsAria2c()
+    public async Task PrepareAria2cTarget_CompleteSameResource_SkipsAria2c()
     {
         var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -675,7 +682,7 @@ public class DownloadPipelineTests
             File.WriteAllText(path + ".manifest.json",
                 System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
 
-            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+            bool skip = await BBDownDownloadUtil.PrepareAria2cTargetAsync(
                 "https://cdn.example.com/1080p.mp4?qn=80", path, fileSize: 16, headers: null, contentHeaders: null);
 
             Assert.True(skip, "同资源完整文件应跳过 aria2c");
@@ -695,7 +702,7 @@ public class DownloadPipelineTests
     /// 无法确认其内容属于当前资源。保守删除重下（安全但浪费，与 CanResumeFrom 缺清单一致）。
     /// </summary>
     [Fact]
-    public void PrepareAria2cTarget_CompleteButNoManifest_PurgesAndRedownloads()
+    public async Task PrepareAria2cTarget_CompleteButNoManifest_PurgesAndRedownloads()
     {
         var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -707,7 +714,7 @@ public class DownloadPipelineTests
             File.WriteAllText(control, "ctrl");
             // 不写清单：模拟旧版下载完成/清单丢失
 
-            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+            bool skip = await BBDownDownloadUtil.PrepareAria2cTargetAsync(
                 "https://cdn.example.com/1080p.mp4?qn=80", path, fileSize: 17, headers: null, contentHeaders: null);
 
             Assert.False(skip, "缺清单的完整文件不得跳过（无法确认身份）");
@@ -726,7 +733,7 @@ public class DownloadPipelineTests
     /// 必须删除重下——否则 aria2c --continue 从超出 EOF 的偏移续传可能 416 死循环。
     /// </summary>
     [Fact]
-    public void PrepareAria2cTarget_OversizedTrustedPartial_PurgesAndRedownloads()
+    public async Task PrepareAria2cTarget_OversizedTrustedPartial_PurgesAndRedownloads()
     {
         var dir = Path.Combine(Path.GetTempPath(), "bbdown-" + Guid.NewGuid().ToString("N"));
         Directory.CreateDirectory(dir);
@@ -743,7 +750,7 @@ public class DownloadPipelineTests
             File.WriteAllText(path + ".manifest.json",
                 System.Text.Json.JsonSerializer.Serialize(manifest, DownloadManifestJsonContext.Default.ResumeManifest));
 
-            bool skip = BBDownDownloadUtil.PrepareAria2cTarget(
+            bool skip = await BBDownDownloadUtil.PrepareAria2cTargetAsync(
                 "https://cdn.example.com/1080p.mp4?qn=80", path, fileSize: 10, headers: null, contentHeaders: null);
 
             Assert.False(skip);

@@ -136,7 +136,7 @@ static partial class BBDownMuxer
                 // 固定名 "chapters" 会让并发混流互相覆盖（后写者的章节被先写者读到）；
                 // 用输出文件派生唯一名，并在结束后清理。
                 metaFile = Path.Combine(baseDir, $"chapters-{Path.GetFileNameWithoutExtension(outPath)}");
-                File.WriteAllText(metaFile, meta);
+                await File.WriteAllTextAsync(metaFile, meta, cancellationToken);
                 args.Add("-chap");
                 args.Add(metaFile);
             }
@@ -164,7 +164,7 @@ static partial class BBDownMuxer
             {
                 for (int i = 0; i < subs.Count; i++)
                 {
-                    if (File.Exists(subs[i].path) && File.ReadAllText(subs[i].path!) != "")
+                    if (File.Exists(subs[i].path) && await BBDownUtil.HasTextContentAsync(subs[i].path!, cancellationToken))
                     {
                         nowId++;
                         var (subLangCode, subLangName) = SubUtil.GetSubtitleCode(subs[i].lan);
@@ -289,7 +289,7 @@ static partial class BBDownMuxer
             int subtitleStreamIndex = 0;
             for (int i = 0; i < subs.Count; i++)
             {
-                if (File.Exists(subs[i].path) && File.ReadAllText(subs[i].path!) != "")
+                if (File.Exists(subs[i].path) && await BBDownUtil.HasTextContentAsync(subs[i].path!, cancellationToken))
                 {
                     inputCount++;
                     args.Add("-i");
@@ -322,7 +322,7 @@ static partial class BBDownMuxer
                 baseDir = ".";
             // 与 mp4box 分支一致：避免并发混流用固定名互相覆盖章节文件，用后即删
             metaFile = Path.Combine(baseDir, $"chapters-{Path.GetFileNameWithoutExtension(outPath)}");
-            File.WriteAllText(metaFile, meta);
+            await File.WriteAllTextAsync(metaFile, meta, cancellationToken);
             args.Add("-i");
             args.Add(metaFile);
             // 章节 meta 文件的下标就是递增前的 inputCount（它是加入的最后一个输入）；

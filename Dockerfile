@@ -4,6 +4,7 @@ FROM mcr.microsoft.com/dotnet/sdk:10.0-aot AS builder
 
 WORKDIR /src
 
+COPY Directory.Packages.props ./
 COPY BBDown.Core/ BBDown.Core/
 COPY BBDown/ BBDown/
 

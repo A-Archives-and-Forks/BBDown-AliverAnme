@@ -12,6 +12,7 @@ using BBDown.Core;
 using BBDown.Core.Util;
 using System.Text.Json.Serialization;
 using System.Diagnostics.CodeAnalysis;
+using Microsoft.Extensions.DependencyInjection;
 using BBDown.Core.Entity;
 using BBDown.Core.DRM;
 using System.Diagnostics;
@@ -26,13 +27,15 @@ public record NotifyPayload(string Title, int PageCount, string Message, long Co
 partial class Program
 {
     private static readonly string BACKUP_HOST = "upos-sz-mirrorcoso1.bilivideo.com";
-    public static string SinglePageDefaultSavePath { get; set; } = "<videoTitle>";
-    public static string MultiPageDefaultSavePath { get; set; } = "<videoTitle>/[P<pageNumberWithZero>]<pageTitle>";
+    public const string SinglePageDefaultSavePath = "<videoTitle>";
+    public const string MultiPageDefaultSavePath = "<videoTitle>/[P<pageNumberWithZero>]<pageTitle>";
 
-    /// <summary>当前进程是否运行在 serve 模式。serve 下 <see cref="Options.ChangeWorkingDir"/>
-    /// 不写进程 CWD（并发任务各自的 --work-dir 经 AsyncLocal 配置快照隔离），
-    /// 相对路径由 PathUtil.ResolveWorkPath 基于 Config.Current.WorkDir 解析。</summary>
-    internal static bool IsServeMode;
+    /// <summary>当前异步流是否属于 serve 下载任务；状态存放在 AsyncLocal 配置快照中。</summary>
+    internal static bool IsServeMode
+    {
+        get => Config.Current.IsServeMode;
+        set => Config.ApplyToCurrentAsyncFlow(Config.Current with { IsServeMode = value });
+    }
 
     // 用 AppContext.BaseDirectory 而非 Environment.ProcessPath：
     // 以 `dotnet BBDown.dll` / `dotnet run` 启动时，进程可执行文件是 dotnet 宿主本身，
@@ -124,6 +127,10 @@ partial class Program
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubListCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubRemoveCommand))]
     [DynamicDependency(DynamicallyAccessedMemberTypes.All, typeof(SubCheckCommand))]
+    [UnconditionalSuppressMessage(
+        "Aot",
+        "IL3050",
+        Justification = "Spectre.Console.Cli builds the command model through reflection; BBDown statically roots every registered command and settings type above.")]
     public static async Task<int> Main(params string[] args)
     {
         Console.CancelKeyPress += Console_CancelKeyPress;
@@ -137,7 +144,17 @@ partial class Program
         Console.WriteLine();
 
         var normalizedArgs = NormalizeCliArgs(args);
-        var mergedArgs = BBDownConfigParser.MergeWithConfig(normalizedArgs).ToArray();
+        string[] mergedArgs;
+        try
+        {
+            mergedArgs = (await BBDownConfigParser.MergeWithConfigAsync(normalizedArgs, _rootCts.Token)).ToArray();
+        }
+        catch (OperationCanceledException) when (_rootCts.IsCancellationRequested)
+        {
+            try { Console.ResetColor(); Console.CursorVisible = true; } catch { }
+            Logger.LogWarn("已取消");
+            return 130;
+        }
 
         if (mergedArgs.Contains("--debug"))
         {
@@ -223,8 +240,6 @@ partial class Program
     internal static async Task StartServerAsync(string? listenUrl, int maxConcurrent = 3, string? serveToken = null, string? notifyWebhook = null, CancellationToken cancellationToken = default, bool trustProxy = false)
     {
         var defaultListenUrl = "http://127.0.0.1:23333";
-        // serve 为长驻进程：标记模式，此后各任务的 --work-dir 不再写进程 CWD
-        IsServeMode = true;
         Logger.LogFilePath = Path.Combine(Directory.GetCurrentDirectory(), "bbdown-api.log");
         var server = new BBDownApiServer(maxConcurrent, serveToken, notifyWebhook: notifyWebhook, trustProxy: trustProxy);
         server.SetupServer();
@@ -243,14 +258,14 @@ partial class Program
     {
         cancellationToken.ThrowIfCancellationRequested();
         var (encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
-            input, savePathFormat, lang, aidOri, delay) = SetUpWork(myOption);
+            input, lang, aidOri, delay) = SetUpWork(myOption);
         var (fetchedAid, vInfo, apiType, session) = await GetVideoInfoAsync(myOption, aidOri, input, cancellationToken);
         // GetVideoInfoAsync 在子异步流程中加载的凭据与提取的 wbi 不会自动回流父流程
         // （AsyncLocal 语义），这里在父流程内显式应用，确保后续 DownloadPagesAsync →
         // Parser.WbiSign 用上新密钥与本地凭据。GetVideoInfoAsync 内部已对自身流程应用。
         if (session is not null) Core.Config.Apply(session);
         await DownloadPagesAsync(myOption, vInfo, encodingPriority, dfnPriority, firstEncoding, downloadDanmaku, downloadDanmakuFormats,
-            input, savePathFormat, lang, fetchedAid, delay, apiType, cancellationToken: cancellationToken);
+            input, lang, fetchedAid, delay, apiType, cancellationToken: cancellationToken);
     }
 
 }

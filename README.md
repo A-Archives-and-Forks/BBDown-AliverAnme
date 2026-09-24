@@ -256,6 +256,8 @@ BBDown -a --access-token "******" "https://www.bilibili.com/video/BV1qt4y1X7TW"
 ```
 </details>
 
+若解析错误包含 B 站 API 返回的 `code` / `message`，可先按提示检查登录状态、内容权限或区域限制；若提示风控，稍后重试。
+
 ![配置与 API](assets/readme/section-config-api.svg)
 
 ### 配置文件

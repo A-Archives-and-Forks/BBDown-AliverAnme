@@ -14,7 +14,7 @@ public class ArchiveGranularityTests
     public void MultiPageVideo_IsArchivedOnlyAfterEveryPageSucceeds()
     {
         // 一个 3P 稿件
-        var t = new Program.ArchiveTracker(["100", "100", "100"]);
+        var t = new ArchiveTracker(["100", "100", "100"]);
 
         Assert.False(t.OnProcessed("100", true));   // 第 1 个分P后不能入档
         Assert.Empty(t.Archived);
@@ -29,7 +29,7 @@ public class ArchiveGranularityTests
     [Fact]
     public void MultiPageVideo_IsNotArchivedWhenAnyPageFails()
     {
-        var t = new Program.ArchiveTracker(["100", "100", "100"]);
+        var t = new ArchiveTracker(["100", "100", "100"]);
 
         t.OnProcessed("100", true);
         t.OnProcessed("100", false);         // 中间一个分P失败
@@ -41,7 +41,7 @@ public class ArchiveGranularityTests
     [Fact]
     public void FailureOnLastPage_AlsoPreventsArchiving()
     {
-        var t = new Program.ArchiveTracker(["100", "100"]);
+        var t = new ArchiveTracker(["100", "100"]);
 
         t.OnProcessed("100", true);
         t.OnProcessed("100", false);
@@ -52,7 +52,7 @@ public class ArchiveGranularityTests
     [Fact]
     public void SinglePageVideo_IsArchivedImmediately()
     {
-        var t = new Program.ArchiveTracker(["100"]);
+        var t = new ArchiveTracker(["100"]);
 
         Assert.True(t.OnProcessed("100", true));
 
@@ -63,7 +63,7 @@ public class ArchiveGranularityTests
     public void MixedList_ArchivesOnlyFullySucceededVideos()
     {
         // 投稿列表典型形态：单P + 多P 混合，其中一个多P稿件有分P失败
-        var t = new Program.ArchiveTracker(["a", "b", "b", "c", "c", "c"]);
+        var t = new ArchiveTracker(["a", "b", "b", "c", "c", "c"]);
 
         t.OnProcessed("a", true);
         t.OnProcessed("b", true);
@@ -81,7 +81,7 @@ public class ArchiveGranularityTests
     {
         // 已入档的稿件会被逐个分P跳过；计数必须同步递减，
         // 否则后续同 aid 的判定会错乱
-        var t = new Program.ArchiveTracker(["100", "100"]);
+        var t = new ArchiveTracker(["100", "100"]);
 
         t.OnSkipped("100");
         t.OnSkipped("100");

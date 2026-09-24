@@ -77,39 +77,59 @@ public static class SubscriptionStore
         return Encoding.UTF8.GetString(ms.ToArray());
     }
 
-    // 单进程内的读-改-写串行化：Add/Remove/RecordDownloaded 在 _ioLock 内完成
-    // "读文件→内存修改→整体写回"，避免多写者并发时后写者的快照覆盖先写者的修改（丢失更新）。
-    private static readonly object _ioLock = new();
+    // 单进程内串行化存储访问：Add/Remove/RecordDownloaded 的读-改-写不可交错，
+    // 同时避免读取者持有旧文件句柄时撞上 Windows 原子替换。
+    private static readonly SemaphoreSlim _ioLock = new(1, 1);
 
     /// <summary>原子替换写入（temp + rename）：避免进程被杀/磁盘满留下截断 JSON，
     /// 否则下次 Load 会把损坏文件静默当作"无订阅"。
     /// 临时文件名带唯一后缀：固定 .tmp 名会让并发写者互相踩踏（FileShare.None 抛 IOException）。</summary>
-    private static void AtomicWrite(string path, string content)
+    private static async Task AtomicWriteAsync(string path, string content, CancellationToken cancellationToken)
     {
         var dir = Path.GetDirectoryName(path);
         if (!string.IsNullOrEmpty(dir) && !Directory.Exists(dir))
             Directory.CreateDirectory(dir);
         string tmp = path + "." + Guid.NewGuid().ToString("N") + ".tmp";
-        File.WriteAllText(tmp, content);
-        File.Move(tmp, path, true);
-    }
-
-    private static void WriteSubs(List<Subscription> subs)
-    {
-        // 写入失败必须向上传播：调用方据此返回非零退出码/失败状态。
-        // 此前吞掉异常后调用方仍打印"已添加订阅"，用户以为成功但文件没写入。
-        lock (_ioLock)
+        try
         {
-            AtomicWrite(SubFile, ToJson(subs, SubscriptionJsonContext.Default.ListSubscription));
+            await File.WriteAllTextAsync(tmp, content, cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            File.Move(tmp, path, true);
+        }
+        finally
+        {
+            try { if (File.Exists(tmp)) File.Delete(tmp); }
+            catch (Exception ex) when (ex is IOException or UnauthorizedAccessException) { }
         }
     }
 
-    public static List<Subscription> Load()
+    private static Task WriteSubsAsync(List<Subscription> subs, CancellationToken cancellationToken)
+    {
+        // 写入失败必须向上传播：调用方据此返回非零退出码/失败状态。
+        // 此前吞掉异常后调用方仍打印"已添加订阅"，用户以为成功但文件没写入。
+        return AtomicWriteAsync(SubFile, ToJson(subs, SubscriptionJsonContext.Default.ListSubscription), cancellationToken);
+    }
+
+    public static async Task<List<Subscription>> LoadAsync(CancellationToken cancellationToken = default)
+    {
+        await _ioLock.WaitAsync(cancellationToken);
+        try
+        {
+            return await LoadCoreAsync(cancellationToken);
+        }
+        finally
+        {
+            _ioLock.Release();
+        }
+    }
+
+    private static async Task<List<Subscription>> LoadCoreAsync(CancellationToken cancellationToken)
     {
         try
         {
             if (!File.Exists(SubFile)) return [];
-            return JsonSerializer.Deserialize(File.ReadAllText(SubFile), SubscriptionJsonContext.Default.ListSubscription) ?? [];
+            return JsonSerializer.Deserialize(await File.ReadAllTextAsync(SubFile, cancellationToken),
+                SubscriptionJsonContext.Default.ListSubscription) ?? [];
         }
         catch (Exception ex) when (ex is JsonException or IOException)
         {
@@ -122,11 +142,12 @@ public static class SubscriptionStore
         }
     }
 
-    public static void Add(string target, string? name)
+    public static async Task AddAsync(string target, string? name, CancellationToken cancellationToken = default)
     {
-        lock (_ioLock)
+        await _ioLock.WaitAsync(cancellationToken);
+        try
         {
-            var subs = Load();
+            var subs = await LoadCoreAsync(cancellationToken);
             if (subs.Any(s => s.Target == target))
             {
                 Logger.LogWarn($"已存在订阅: {target}");
@@ -134,19 +155,28 @@ public static class SubscriptionStore
             }
             subs.Add(new Subscription(target, string.IsNullOrWhiteSpace(name) ? target : name!,
                 DateTimeOffset.Now.ToUnixTimeSeconds()));
-            WriteSubs(subs);
+            await WriteSubsAsync(subs, cancellationToken);
             Logger.Log($"已添加订阅: {target}");
+        }
+        finally
+        {
+            _ioLock.Release();
         }
     }
 
-    public static void Remove(string target)
+    public static async Task RemoveAsync(string target, CancellationToken cancellationToken = default)
     {
-        lock (_ioLock)
+        await _ioLock.WaitAsync(cancellationToken);
+        try
         {
-            var subs = Load();
+            var subs = await LoadCoreAsync(cancellationToken);
             var removed = subs.RemoveAll(s => s.Target == target);
-            WriteSubs(subs);
+            await WriteSubsAsync(subs, cancellationToken);
             Logger.Log(removed > 0 ? $"已移除订阅: {target}" : $"未找到订阅: {target}");
+        }
+        finally
+        {
+            _ioLock.Release();
         }
     }
 
@@ -155,56 +185,66 @@ public static class SubscriptionStore
     /// 继续——否则已下载内容会被当作新增重新下载一遍）。严格验证结构：目标字段存在但
     /// 不是数组（如 {"mid:1":"broken"}）、数组元素不是字符串，都按损坏处理并隔离，
     /// 不能静默当空历史。</summary>
-    public static HashSet<string> LoadHistory(string target)
+    public static async Task<HashSet<string>> LoadHistoryAsync(string target, CancellationToken cancellationToken = default)
     {
+        await _ioLock.WaitAsync(cancellationToken);
         try
         {
-            if (!File.Exists(HistoryFile)) return [];
-            using var doc = JsonDocument.Parse(File.ReadAllText(HistoryFile));
-            // 根节点必须是对象：历史文件是 {"target": [avid,...]} 结构
-            if (doc.RootElement.ValueKind != JsonValueKind.Object)
+            try
             {
-                throw new JsonException($"历史文件根节点不是对象（实际 {doc.RootElement.ValueKind}）");
+                if (!File.Exists(HistoryFile)) return [];
+                using var doc = JsonDocument.Parse(await File.ReadAllTextAsync(HistoryFile, cancellationToken));
+                // 根节点必须是对象：历史文件是 {"target": [avid,...]} 结构
+                if (doc.RootElement.ValueKind != JsonValueKind.Object)
+                {
+                    throw new JsonException($"历史文件根节点不是对象（实际 {doc.RootElement.ValueKind}）");
+                }
+                if (!doc.RootElement.TryGetProperty(target, out var arr))
+                    return []; // 该订阅尚无历史（合法：从未下载过）
+                // 目标字段存在但不是数组 → 结构损坏，不能当空历史（否则全部内容会被当新增重下）
+                if (arr.ValueKind != JsonValueKind.Array)
+                {
+                    throw new JsonException($"订阅 {target} 的历史字段不是数组（实际 {arr.ValueKind}）");
+                }
+                var result = new HashSet<string>();
+                foreach (var e in arr.EnumerateArray())
+                {
+                    // 数组元素不是字符串（数字/对象/null）→ 结构损坏
+                    if (e.ValueKind != JsonValueKind.String)
+                        throw new JsonException($"订阅 {target} 的历史数组包含非字符串元素（{e.ValueKind}）");
+                    result.Add(e.GetString()!);
+                }
+                return result;
             }
-            if (!doc.RootElement.TryGetProperty(target, out var arr))
-                return []; // 该订阅尚无历史（合法：从未下载过）
-            // 目标字段存在但不是数组 → 结构损坏，不能当空历史（否则全部内容会被当新增重下）
-            if (arr.ValueKind != JsonValueKind.Array)
+            catch (Exception ex) when (ex is JsonException or IOException)
             {
-                throw new JsonException($"订阅 {target} 的历史字段不是数组（实际 {arr.ValueKind}）");
+                // 损坏历史隔离而非当空历史/静默重置：保留现场供排查，同时以专用异常中止。
+                // 静默当空历史会让已下载内容被当作新增重新下载；静默重置会丢失所有订阅的历史。
+                // 调用方必须捕获 SubscriptionDataCorruptException 终止整个 sub check——
+                // 若按普通订阅失败继续，后续订阅会因历史文件已不存在而把全部内容当新增重新下载。
+                string? corrupt = IsolateCorruptFile(HistoryFile);
+                Logger.LogError($"订阅历史文件损坏（{ex.Message}），已隔离为 {corrupt ?? HistoryFile}，中止当前订阅以避免重复下载");
+                throw new SubscriptionDataCorruptException($"订阅历史文件损坏，已隔离为 {corrupt ?? HistoryFile}，请检查后恢复", ex);
             }
-            var result = new HashSet<string>();
-            foreach (var e in arr.EnumerateArray())
-            {
-                // 数组元素不是字符串（数字/对象/null）→ 结构损坏
-                if (e.ValueKind != JsonValueKind.String)
-                    throw new JsonException($"订阅 {target} 的历史数组包含非字符串元素（{e.ValueKind}）");
-                result.Add(e.GetString()!);
-            }
-            return result;
         }
-        catch (Exception ex) when (ex is JsonException or IOException)
+        finally
         {
-            // 损坏历史隔离而非当空历史/静默重置：保留现场供排查，同时以专用异常中止。
-            // 静默当空历史会让已下载内容被当作新增重新下载；静默重置会丢失所有订阅的历史。
-            // 调用方必须捕获 SubscriptionDataCorruptException 终止整个 sub check——
-            // 若按普通订阅失败继续，后续订阅会因历史文件已不存在而把全部内容当新增重新下载。
-            string? corrupt = IsolateCorruptFile(HistoryFile);
-            Logger.LogError($"订阅历史文件损坏（{ex.Message}），已隔离为 {corrupt ?? HistoryFile}，中止当前订阅以避免重复下载");
-            throw new SubscriptionDataCorruptException($"订阅历史文件损坏，已隔离为 {corrupt ?? HistoryFile}，请检查后恢复", ex);
+            _ioLock.Release();
         }
     }
 
-    public static void RecordDownloaded(string target, string aid)
+    public static async Task RecordDownloadedAsync(string target, string aid, CancellationToken cancellationToken = default)
     {
-        lock (_ioLock)
+        await _ioLock.WaitAsync(cancellationToken);
+        try
         {
             var hist = new Dictionary<string, List<string>>();
             if (File.Exists(HistoryFile))
             {
                 try
                 {
-                    hist = JsonSerializer.Deserialize(File.ReadAllText(HistoryFile), SubscriptionJsonContext.Default.DictionaryStringListString) ?? new();
+                    hist = JsonSerializer.Deserialize(await File.ReadAllTextAsync(HistoryFile, cancellationToken),
+                        SubscriptionJsonContext.Default.DictionaryStringListString) ?? new();
                 }
                 catch (JsonException ex)
                 {
@@ -226,7 +266,11 @@ public static class SubscriptionStore
                 list.RemoveRange(0, list.Count - MaxHistoryPerTarget);
             // 写入失败向上传播：调用方据此让 sub check 返回非零退出码，
             // 否则下次运行会因历史未记录而重复下载已下载内容。
-            AtomicWrite(HistoryFile, ToJson(hist, SubscriptionJsonContext.Default.DictionaryStringListString));
+            await AtomicWriteAsync(HistoryFile, ToJson(hist, SubscriptionJsonContext.Default.DictionaryStringListString), cancellationToken);
+        }
+        finally
+        {
+            _ioLock.Release();
         }
     }
 }

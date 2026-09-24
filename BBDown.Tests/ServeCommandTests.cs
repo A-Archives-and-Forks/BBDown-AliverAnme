@@ -93,13 +93,12 @@ public class ServeCommandTests
     /// 本用例不判别 when 守卫本身——"未取消 OCE → 1"的判别性回归需向
     /// StartServerAsync 注入非根 token 的 OCE，命令层无此注入缝，以代码走查为证。
     /// ServeCommand.ExecuteAsync 为 protected，子类暴露直调。与 ServeApiCollection
-    /// 串行：StartServerAsync 会触碰进程级静态（IsServeMode/Logger.LogFilePath），
+    /// 串行：StartServerAsync 会触碰进程级 Logger.LogFilePath，
     /// try/finally 快照恢复，避免与其它用例并发互扰。
     /// </summary>
     [Fact]
     public async Task ExecuteAsync_UserCanceled_ReturnsZero()
     {
-        var wasServeMode = Program.IsServeMode;
         var originalLogPath = Logger.LogFilePath;
         try
         {
@@ -110,7 +109,6 @@ public class ServeCommandTests
         }
         finally
         {
-            Program.IsServeMode = wasServeMode;
             Logger.LogFilePath = originalLogPath;
         }
     }
