@@ -6,6 +6,7 @@ using System.Threading;
 using BBDown;
 using BBDown.Core;
 using BBDown.Core.Fetcher;
+using BBDown.Core.Util;
 
 namespace BBDown.Commands;
 
@@ -73,6 +74,10 @@ public class SubCheckSettings : SubSettings
     [CommandOption("-w|--work-dir")]
     [Description("设置工作目录(所有相对路径的根目录)")]
     public string WorkDir { get; set; } = "";
+
+    [CommandOption("--per-sub-dir")]
+    [Description("每个订阅下载到 <work-dir>/<订阅名>/ 子目录(订阅名取 sub add --name, 缺省为 target, 经路径净化)")]
+    public bool PerSubDir { get; set; }
 }
 
 [DynamicallyAccessedMembers(DynamicallyAccessedMemberTypes.PublicConstructors)]
@@ -180,10 +185,22 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
     /// </summary>
     private static async Task<int> CheckSubscriptionsAsync(List<Subscription> subs, SubCheckSettings settings, CancellationToken cancellationToken)
     {
+        // -w 必须在首个下载前解析为绝对路径：ChangeWorkingDir（CLI 非 serve）会把进程
+        // CWD 切到上一个订阅的下载目录，相对 -w 到第二个订阅会基于该目录再拼一层，
+        // 产出 <root>/<sub1>/<sub2> 嵌套。空 -w 保持原语义（不写 WorkDir）。
+        if (!string.IsNullOrEmpty(settings.WorkDir))
+            settings.WorkDir = Path.GetFullPath(Environment.ExpandEnvironmentVariables(settings.WorkDir));
+        // --per-sub-dir 的基目录：空 -w 时用检查启动时的 CWD（下载过程中 CWD 会漂移，须先捕获）
+        string baseWorkDir = settings.WorkDir.Length == 0 ? Directory.GetCurrentDirectory() : settings.WorkDir;
+        // 名称槽位每个订阅都占用（与是否有新增无关），冲突序号才能跨 run 稳定
+        var usedSubDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+
         int failedSubs = 0;
         foreach (var sub in subs)
         {
-            Logger.Log($"检查订阅: {sub.Name} ({sub.Target})");
+            string subWorkDir = Path.Combine(baseWorkDir, ResolveSubDirName(sub, usedSubDirs));
+            Logger.Log($"检查订阅: {sub.Name} ({sub.Target})"
+                + (settings.PerSubDir ? $"  输出目录: {subWorkDir}" : ""));
             try
             {
                 string resolved = await UrlResolver.ResolveAsync(sub.Target, cancellationToken);
@@ -208,7 +225,8 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
                 {
                     try
                     {
-                        var opt = BuildOption($"av{aid}", settings);
+                        var opt = BuildOption($"av{aid}", settings,
+                            settings.PerSubDir ? subWorkDir : settings.WorkDir);
                         await Program.DoWorkAsync(opt, cancellationToken);
                         await SubscriptionStore.RecordDownloadedAsync(sub.Target, aid, cancellationToken);
                     }
@@ -268,7 +286,25 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
         return failedSubs;
     }
 
-    private static MyOption BuildOption(string url, SubCheckSettings s) => new()
+    /// <summary>
+    /// --per-sub-dir：把订阅显示名净化为安全的目录段（RF-18 同款净化——剔除路径分隔符/
+    /// 控制字符/保留名/纯点段，超长截断），并与既有槽位去重（OrdinalIgnoreCase 对齐
+    /// Windows 文件系统）：两个订阅净化后同名（如 "a:b"/"a?b" → "a_b"）或显示名重复时
+    /// 追加 -2/-3 序号，避免互相覆盖。槽位在循环内逐订阅占用，序号跨 run 稳定。
+    /// </summary>
+    internal static string ResolveSubDirName(Subscription sub, HashSet<string> usedDirs)
+    {
+        string name = PathUtil.SanitizePathSegment(sub.Name);
+        if (name.Length == 0) name = PathUtil.SanitizePathSegment(sub.Target);
+        if (name.Length == 0) name = "subscription";
+        string candidate = name;
+        int seq = 2;
+        while (!usedDirs.Add(candidate))
+            candidate = $"{name}-{seq++}";
+        return candidate;
+    }
+
+    private static MyOption BuildOption(string url, SubCheckSettings s, string workDir) => new()
     {
         Url = url,
         Cookie = s.Cookie,
@@ -278,6 +314,6 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
         UseAppApi = s.UseAppApi,
         UseTvApi = s.UseTvApi,
         UseIntlApi = s.UseIntlApi,
-        WorkDir = s.WorkDir,
+        WorkDir = workDir,
     };
 }
