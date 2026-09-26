@@ -56,6 +56,18 @@ public class WatchLaterCommand : AsyncCommand<WatchLaterSettings>
     {
         try
         {
+            // -w 必须先绝对化且只解析一次（RF-90）：ChangeWorkingDir（CLI 非 serve）会把进程
+            // CWD 切到上一个视频的下载目录，相对 -w 到第二个视频会基于该目录再拼一层，
+            // 产出 <root>/<av1>/<av2> 嵌套（与 SubCommand 同源缺陷）。
+            // 非法 -w 是整批无效的输入错误：明确报错 + 退出码 1，不让 Path.GetFullPath 的
+            // ArgumentException 逃到命令级异常处理器（那会误报"请尝试升级到最新版本后重试!"）。
+            if (!Program.TryResolveWorkDir(settings.WorkDir, out string resolvedWorkDir, out string workDirError))
+            {
+                Logger.LogError($"工作目录无效: {workDirError}");
+                return 1;
+            }
+            settings.WorkDir = resolvedWorkDir;
+
             // 稍后再看接口需要登录：先加载本地登录凭据（或用户传入的 cookie）。
             // 用统一会话初始化入口：不仅加载凭据，还做登录检查并提取 wbi——
             // 稍后再看列表与后续下载都用 WEB API，空 wbi 的 w_rid 会被 B 站拒绝。

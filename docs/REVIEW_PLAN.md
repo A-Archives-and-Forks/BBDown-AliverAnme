@@ -433,3 +433,25 @@
 | RF-88 (L 测试) | ✅ DRM 测试精确异常类型/改名 |
 
 > 完整详情见 [`docs/REVIEW_FINDINGS.md`](REVIEW_FINDINGS.md) RF-72~RF-88；分析报告见 [`docs/PROJECT_ANALYSIS.md`](PROJECT_ANALYSIS.md)。
+
+---
+
+## 第 17 轮：PR #50 审查 + 消纳（2026-09-26）
+
+> 本轮对象为外部贡献 PR（#50 `feat(sub): sub check 新增 --per-sub-dir 按订阅分目录下载`，作者 Weidows，Closes #49），非全库续审。审查方式：源码精读 + **隔离 worktree 内实构建/实测试** + BCL/行为探针实测 + 变异验证。新发现 **2 Medium + 3 Low**，登记 REVIEW_FINDINGS（RF-89~RF-93），并在**同一 PR 分支内**由维护者提交完成消纳（`maintainerCanModify` 开启）。
+
+| 项 | 结果 |
+|----|------|
+| PR 基线复现 | ✅ `dotnet build` Release 0 警告 0 错误；单测 **728/728 全绿**（PR 声称属实）；`dotnet format --verify-no-changes` exit 0；`sub check --help` 可见 `--per-sub-dir` |
+| PR 修复有效性 | ✅ 实测复现其声称的嵌套缺陷：相对 `-w` 连续两订阅解析为 `first=[out] second=[out\out]`（`ChangeWorkingDir` 在 CLI 下写进程 CWD）——该顺带修复确有价值 |
+| PR 特性有效性 | ✅ 落盘链路核对：`DownloadPageExecution.cs:79/:258` 的 `savePath` 经 `PathUtil.ResolveWorkPath`（基于 `Config.WorkDir`），per-sub 目录确实控制产物位置；净化后目录段不逃出 work-dir（`..\..\..\Windows\System32` → `.._.._.._Windows_System32`） |
+| 根因核对 | ✅ Issue #49 的三条根因均成立：`BuildOption` 只透传 `-w`（默认模板 `SinglePageDefaultSavePath`）、`SubCheckSettings` 无 `-F`、`BBDownConfigParser.cs:106` 对 `sub` 整体跳过配置合并 |
+| RF-89 (M) | ✅ `-w` 规范化移出循环、改为 `TryResolveWorkDir` 双返回值；非法 `-w` 明确报错 + 退出码 1，不再被命令级处理器报成"请尝试升级到最新版本后重试!"并静默放弃其余订阅 |
+| RF-90 (M) | ✅ `watchlater` 同源缺陷一并修复（共用同一入口），根因不再只打在单个命令内 |
+| RF-91 (L) | ✅ `ResolveSubDirName` 回退判据改用净化前的原始值；死代码与假绿测试修正（含死断言、弱不变式、名实不符的占号用例） |
+| RF-92 (L) | ✅ `TryResolveWorkDir` 提为 internal 纯函数，+4 例覆盖 PR 中零覆盖的 `-w` 绝对化改动 |
+| RF-93 (L) | ✅ `sub add` 无 `--name` 时提示；wiki 补命名建议 |
+| 测试 | ✅ 全库 **736/736 全绿**（728 + 8）；新增/修正用例均经**变异验证**（回退判据或 catch 白名单改回缺陷实现则 5 例失败） |
+| 基线（消纳后） | ✅ dotnet build Release 0 警告 0 错误；dotnet format --verify-no-changes exit 0 |
+
+| Info 级观察（不登记 RF） | ① PR #50 提交时 `statusCheckRollup` 为空：fork 首次贡献者的 `pull_request` workflow 处于 `action_required`，需维护者批准后才运行（master 保护要求 `Build & Test`/`Format Check`/`NuGet Vulnerability Scan` 三项）——`mergeStateStatus: BLOCKED` 由此而来而非冲突，合并前必须先批准 workflow。② `ResolveSubDirName` 为测试便利而暴露 `internal` + 外部 `HashSet<string>` 参数；若后续扩展分目录命名逻辑，可考虑封装为独立小类 |

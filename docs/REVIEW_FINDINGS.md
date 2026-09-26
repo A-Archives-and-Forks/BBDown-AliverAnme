@@ -950,6 +950,51 @@
 
 ---
 
+## RF-89：`sub check` 的 `-w` 绝对化抛出点未被捕获——单订阅输入错误升级为整批中止 + 误导性报错
+
+- **位置**：`BBDown/Commands/SubCommand.cs`（PR #50 新增语句，位于 `CheckSubscriptionsAsync` 逐订阅循环之前、**任何 try 之外**）；对照 `BBDown/Application/Options.cs:282`（`ChangeWorkingDir` 在 CLI 非 serve 下写进程 CWD）与 `BBDown/Program.cs:170-198`（Spectre `SetExceptionHandler`）。
+- **发现**：PR 为修复相对 `-w` 的 CWD 漂移嵌套而新增 `settings.WorkDir = Path.GetFullPath(Environment.ExpandEnvironmentVariables(settings.WorkDir))`。BCL 实测（Windows）：`GetFullPath(" ")`、`GetFullPath("a|b")` 抛 `ArgumentException`；`Directory.CreateDirectory` 对"已存在同名文件"抛 `IOException`。旧路径下同类异常被 per-aid 与整订阅的 catch 过滤器（列表**明确含 `ArgumentException`**）吞成"单个订阅失败并继续"，汇总为 `N 个订阅失败`；新路径下异常逃出 `CheckSubscriptionsAsync`——`ExecuteAsync` 只捕获 `OperationCanceledException`——落到命令级处理器，输出误导性的"请尝试升级到最新版本后重试!"并**静默放弃其余全部订阅**。同时与该方法的 XML 文档契约冲突（"用户取消与订阅数据损坏异常原样上抛"）。两次退出码均为 1，故脚本不误判成功，损失是优雅降级与诊断准确性。
+- **结论**：采纳——把 `-w` 规范化移出循环，改为不抛异常的成功/错误双返回值，由命令入口报错并返回 1。
+- **状态**：✅ 已修复（2026-09-26，第 17 轮消纳批）：新增 `Program.TryResolveWorkDir(workDir, out resolved, out error)`（纯函数，catch 白名单含 `ArgumentException`/`NotSupportedException`/`IOException`/`UnauthorizedAccessException`/`SecurityException`）；`SubCheckCommand.ExecuteAsync` 在进入循环前调用一次并报 `工作目录无效: …` + 退出码 1；`CheckSubscriptionsAsync` 内的解析语句删除。+3 回归测试（"已存在同名文件"跨平台用例 + Windows 专用 `ArgumentException` 分支用例 + 空 `-w` 原语义），均经**变异验证**（从 catch 白名单删去 `ArgumentException` 则用例失败）。
+
+---
+
+## RF-90：`watchlater` 存在与 RF-89 同源的相对 `-w` 嵌套缺陷（根因共享，修复只落在 sub check）
+
+- **位置**：`BBDown/Commands/WatchLaterCommand.cs:79-87`（`foreach` → `BuildOption($"av{aid}", settings)` → `DoWorkAsync`）与 `:152-162`（`WorkDir = s.WorkDir` 原样透传）。
+- **发现**：与 `sub check` 完全同形：逐任务透传 `WorkDir`，而 `ChangeWorkingDir` 在 CLI 下写进程 CWD，因此相对 `-w` 到第二个视频起同样产生 `<root>/<av1>/<av2>` 嵌套。PR #50 只在 `SubCommand` 内部打补丁，未打在根因上——根因是"多任务命令必须在循环前把 `-w` 解析一次"这一命令层共有约束。
+- **结论**：采纳——抽出共享的 `TryResolveWorkDir` 并在两个多任务命令的入口各调用一次（而非在各命令内重复写绝对化）。
+- **状态**：✅ 已修复（2026-09-26，第 17 轮消纳批）：`WatchLaterCommand.ExecuteAsync` 入口调用 `Program.TryResolveWorkDir`，非法 `-w` 报错 + 退出码 1；后续新增多任务命令可直接复用该入口。
+
+---
+
+## RF-91：`ResolveSubDirName` 的 target 回退是死代码，且回归测试假绿
+
+- **位置**：`BBDown/Commands/SubCommand.cs`（`ResolveSubDirName`）；`BBDown.Tests/SubCheckDirNameTests.cs`（`EmptyName_FallsBackToTarget`、`WindowsIllegalChars_AreSanitized`、`NameWithPathSeparators_IsSanitized`、`SlotsAreConsumedEvenWithoutNewContent_SoSuffixesStayStable`）。
+- **发现**：原实现 `if (name.Length == 0) name = SanitizePathSegment(sub.Target);` 判断的是**净化后**的值，而 `SanitizePathSegment`（=`GetValidFileName`）对空/纯空白/纯点输入兜底返回 `"_"`、**永不返回空串**（实测 `SanitizePathSegment("")`/`("   ")`/`("...")` 均为 `"_"`）——回退分支不可达，`"subscription"` 兜底同样不可达；PR 描述/CHANGELOG/wiki 声称的"缺省为 target"对空名不成立（实测 `ResolveSubDirName(name:"", target:"mid:163637592")` 返回 `"_"`）。原测试只断言 `NotEqual("", dir)` 与 `DoesNotContain(':', dir)`，`"_"` 同时满足两条 → **测试通过但未证明其名字声称的行为**；辅助方法 `Resolve` 传了 `target` 却从不校验。另有：`WindowsIllegalChars_AreSanitized` 的 `NotEqual(".", dir)`/`NotEqual("..", dir)` 对输入 `"mid:163637592"` 恒真（死断言）；`NameWithPathSeparators_IsSanitized` 只查"不含分隔符"，弱于真正的不变式（拼入 work-dir 后仍在 work-dir 之内）；占号用例的名字声称覆盖调用方侧行为，实际只覆盖方法自身。
+- **结论**：采纳——回退判据改用**净化前**的原始值（与 `SubscriptionStore.AddAsync` 的 `IsNullOrWhiteSpace(name) ? target : name` 一致）；测试改断言真实的 `mid_163637592`，补"净化永不返回空"契约用例与 containment 断言，并给占号用例补真实断言。
+- **状态**：✅ 已修复（2026-09-26，第 17 轮消纳批）：判据改 `string.IsNullOrWhiteSpace(sub.Name) ? sub.Target : sub.Name`；测试 +3（`EmptyishName_FallsBackToTarget` 三态、`DegenerateDotOnlyName_StaysSafeAndNonEmpty`、containment 断言），经**变异验证**（改回净化值判据则 4 个用例失败）。
+
+---
+
+## RF-92：PR 的 `-w` 绝对化改动零测试覆盖（影响面大于被测试的 `ResolveSubDirName`）
+
+- **位置**：`BBDown.Tests/`（PR #50 新增 10 例全部针对 `ResolveSubDirName`）；被改行为位于 `SubCommand.CheckSubscriptionsAsync`。
+- **发现**：`-w` 绝对化改变了**所有** `sub check -w <相对路径>` 调用的行为（即便不开 `--per-sub-dir`），却无任何测试；10 个新测试只覆盖目录名解析，回归保护与改动影响面倒挂。
+- **结论**：采纳——把规范化抽成可直测的纯函数后补测试，锁"解析一次即绝对、CWD 漂移后仍指向同一目录"的不变式。
+- **状态**：✅ 已修复（2026-09-26，第 17 轮消纳批）：`Program.TryResolveWorkDir` 提为 internal 纯函数并新增 4 例（相对路径绝对化 + CWD 漂移对照、不可用路径、Windows 无效字符、空 `-w` 原语义）；同时实测复现 PR 声称的嵌套缺陷（`first=[out] second=[out\out]`）。
+
+---
+
+## RF-93：未指定 `--name` 时 `--per-sub-dir` 的目录名不可辨认（UX）
+
+- **位置**：`BBDown/Commands/SubCommand.cs`（`SubAddCommand`）、`docs/wiki/Subcommands.md`。
+- **发现**：显示名缺省回退 target，净化后形如 `mid_163637592`；target 为 URL 时形如 `https___space_bilibili_com_163637592_video`——多订阅场景下目录名几乎无法辨认，削弱该特性的主要价值。文档已如实声明该行为，但无任何提示引导用户命名。
+- **结论**：采纳——`sub add` 未带 `--name` 时提示一次（不改既有行为）；wiki 补命名建议。
+- **状态**：✅ 已修复（2026-09-26，第 17 轮消纳批）：`SubAddCommand` 加 `LogWarn` 提示；`docs/wiki/Subcommands.md` 补"建议用 `--name`"说明。
+
+---
+
 ## 处置规则说明
 
 - ✅ 已修复：本轮已落地并有测试/验证。

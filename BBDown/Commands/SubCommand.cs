@@ -85,6 +85,11 @@ public class SubAddCommand : AsyncCommand<SubAddSettings>
 {
     protected override async Task<int> ExecuteAsync(CommandContext context, SubAddSettings settings, CancellationToken cancellationToken)
     {
+        // RF-93：显示名同时是 sub check --per-sub-dir 的目录名；缺省回退 target 后净化结果
+        // 形如 mid_163637592 / https___space_bilibili_com_...，多订阅时几乎不可辨认。
+        // 未指定 --name 时提示一次（不改变既有行为）。
+        if (string.IsNullOrWhiteSpace(settings.Name))
+            Logger.LogWarn("未指定 --name，显示名将回退为订阅目标（也是 sub check --per-sub-dir 的目录名，建议用 --name 指定易读名称）");
         await SubscriptionStore.AddAsync(settings.Target, settings.Name, cancellationToken);
         return 0;
     }
@@ -134,6 +139,20 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
                 Logger.LogWarn("当前没有订阅，请先用 BBDown sub add <目标> 添加");
                 return 0;
             }
+
+            // -w 必须先绝对化且只解析一次（RF-89）：ChangeWorkingDir（CLI 非 serve）会把进程
+            // CWD 切到上一个订阅的下载目录，相对 -w 到第二个订阅会基于该目录再拼一层，
+            // 产出 <root>/<sub1>/<sub2> 嵌套。
+            // 非法 -w 是整批无效的输入错误：明确报错 + 退出码 1。此前解析发生在
+            // CheckSubscriptionsAsync 的逐订阅循环之前且不在任何 try 内，抛出的
+            // ArgumentException 会逃到 Spectre 命令级处理器，被报成误导性的
+            // "请尝试升级到最新版本后重试!" 并静默放弃其余全部订阅。
+            if (!Program.TryResolveWorkDir(settings.WorkDir, out string resolvedWorkDir, out string workDirError))
+            {
+                Logger.LogError($"工作目录无效: {workDirError}");
+                return 1;
+            }
+            settings.WorkDir = resolvedWorkDir;
 
             // 订阅解析与拉取（VIP/登录态内容）需要凭据：
             // LoadCredentials 会优先应用命令行 --cookie/--access-token，否则加载本地 BBDown.data。
@@ -185,12 +204,11 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
     /// </summary>
     private static async Task<int> CheckSubscriptionsAsync(List<Subscription> subs, SubCheckSettings settings, CancellationToken cancellationToken)
     {
-        // -w 必须在首个下载前解析为绝对路径：ChangeWorkingDir（CLI 非 serve）会把进程
-        // CWD 切到上一个订阅的下载目录，相对 -w 到第二个订阅会基于该目录再拼一层，
-        // 产出 <root>/<sub1>/<sub2> 嵌套。空 -w 保持原语义（不写 WorkDir）。
-        if (!string.IsNullOrEmpty(settings.WorkDir))
-            settings.WorkDir = Path.GetFullPath(Environment.ExpandEnvironmentVariables(settings.WorkDir));
-        // --per-sub-dir 的基目录：空 -w 时用检查启动时的 CWD（下载过程中 CWD 会漂移，须先捕获）
+        // -w 已由 ExecuteAsync 经 TryResolveWorkDir 绝对化且只解析一次（RF-89）：本方法内不得
+        // 再解析——循环前的解析点不在任何 try 内，抛出的 ArgumentException 会逃出命令级
+        // 异常过滤器（ExecuteAsync 只捕获 OperationCanceledException）。
+        // --per-sub-dir 的基目录：空 -w 时用检查启动时的 CWD（下载过程中 ChangeWorkingDir
+        // 会写进程 CWD，相对路径到第二个订阅会漂移，须先捕获）。
         string baseWorkDir = settings.WorkDir.Length == 0 ? Directory.GetCurrentDirectory() : settings.WorkDir;
         // 名称槽位每个订阅都占用（与是否有新增无关），冲突序号才能跨 run 稳定
         var usedSubDirs = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
@@ -294,9 +312,12 @@ public class SubCheckCommand : AsyncCommand<SubCheckSettings>
     /// </summary>
     internal static string ResolveSubDirName(Subscription sub, HashSet<string> usedDirs)
     {
-        string name = PathUtil.SanitizePathSegment(sub.Name);
-        if (name.Length == 0) name = PathUtil.SanitizePathSegment(sub.Target);
-        if (name.Length == 0) name = "subscription";
+        // 显示名为空/空白时回退 target：判据必须用**净化前**的原始值——SanitizePathSegment
+        // 对空/纯空白/纯点输入兜底为 "_"、永不返回空串（GetValidFileName 契约），拿净化结果
+        // 判断会让回退永远走不到，文档与 PR 声称的"缺省为 target"形同虚设（RF-91）。
+        // 判据与 SubscriptionStore.AddAsync 的 "IsNullOrWhiteSpace(name) ? target : name" 一致。
+        string raw = string.IsNullOrWhiteSpace(sub.Name) ? sub.Target : sub.Name;
+        string name = PathUtil.SanitizePathSegment(raw);
         string candidate = name;
         int seq = 2;
         while (!usedDirs.Add(candidate))

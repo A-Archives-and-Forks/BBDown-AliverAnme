@@ -174,4 +174,82 @@ public class WorkDirResolutionTests
             try { Directory.Delete(dir, true); } catch (IOException) { }
         }
     }
+
+    // ── RF-89/RF-90：多任务命令的 -w 只解析一次（防相对 -w 在 CWD 漂移后嵌套）──
+
+    [Fact]
+    public void TryResolveWorkDir_Relative_ReturnsAbsolutePath_SoReuseIsCwdStable()
+    {
+        // 多任务命令（sub check / watchlater）在逐任务循环前只解析一次 -w。绝对化是
+        // "只解析一次"的前提：ChangeWorkingDir 会写进程 CWD，若把相对 -w 留给每个任务
+        // 各自解析，第二个任务会基于上一个任务的下载目录再拼一层（<root>/<task1>/<task2>）。
+        var originalCwd = Environment.CurrentDirectory;
+        var root = Path.Combine(Path.GetTempPath(), "bbdown-wd-" + Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(root);
+        try
+        {
+            Environment.CurrentDirectory = root;
+            Assert.True(Program.TryResolveWorkDir("out", out var resolved, out var error));
+            Assert.Equal("", error);
+            Assert.True(Path.IsPathFullyQualified(resolved), "-w 必须解析为绝对路径，否则无法跨任务复用");
+            Assert.Equal(Path.Combine(root, "out"), resolved);
+
+            // 缺陷复现（旧行为）：CWD 漂移后继续用相对 -w 解析会再拼一层
+            Environment.CurrentDirectory = resolved; // 等价于 ChangeWorkingDir 的副作用
+            Assert.Equal(Path.Combine(resolved, "out"), Path.GetFullPath("out"));
+
+            // 新行为：绝对化后的值在 CWD 漂移后重新解析仍指向同一目录，不会嵌套
+            Assert.Equal(resolved, Path.GetFullPath(resolved));
+        }
+        finally
+        {
+            Environment.CurrentDirectory = originalCwd;
+            try { Directory.Delete(root, true); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void TryResolveWorkDir_UnusablePath_ReturnsErrorWithoutThrowing()
+    {
+        // RF-89：不可用的 -w 必须经 error 返回，不能抛到命令级异常处理器
+        // （那会被报成"请尝试升级到最新版本后重试!"并静默放弃其余全部任务）。
+        // 用例取"已存在同名文件"——跨平台可靠且是真实可能发生的用户输入错误
+        // （-w 指向文件而非目录）：Path.GetFullPath 通过，Directory.CreateDirectory 抛 IOException。
+        var file = Path.Combine(Path.GetTempPath(), "bbdown-notdir-" + Guid.NewGuid().ToString("N"));
+        File.WriteAllText(file, "");
+        try
+        {
+            Assert.False(Program.TryResolveWorkDir(file, out var resolved, out var error));
+            Assert.Equal("", resolved);
+            Assert.NotEqual("", error);
+
+            // 子目录形态（-w 指向该文件下的子目录）同样失败
+            Assert.False(Program.TryResolveWorkDir(Path.Combine(file, "sub"), out _, out _));
+        }
+        finally
+        {
+            try { File.Delete(file); } catch (IOException) { }
+        }
+    }
+
+    [Fact]
+    public void TryResolveWorkDir_WindowsInvalidPathChars_ReturnsErrorWithoutThrowing()
+    {
+        // 与上一个用例互补：'|' 与纯空白是 Windows 下 Path.GetFullPath 直接拒绝的路径
+        // （ArgumentException 分支），走的是 catch 白名单的另一条分支。
+        // Linux 允许这类名称，故仅在 Windows 断言，避免跨平台误报。
+        if (!OperatingSystem.IsWindows()) return;
+        Assert.False(Program.TryResolveWorkDir("a|b", out _, out var error));
+        Assert.NotEqual("", error);
+        Assert.False(Program.TryResolveWorkDir("   ", out _, out _));
+    }
+
+    [Fact]
+    public void TryResolveWorkDir_Empty_KeepsExistingSemantics()
+    {
+        // 空 -w 保持原语义：解析成功且为空串（不写 WorkDir），由调用方回落到进程 CWD
+        Assert.True(Program.TryResolveWorkDir("", out var resolved, out var error));
+        Assert.Equal("", resolved);
+        Assert.Equal("", error);
+    }
 }

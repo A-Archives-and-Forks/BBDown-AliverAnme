@@ -1,4 +1,5 @@
 using BBDown.Commands;
+using BBDown.Core.Util;
 
 namespace BBDown.Tests;
 
@@ -23,28 +24,58 @@ public class SubCheckDirNameTests
     [Fact]
     public void NameWithPathSeparators_IsSanitized()
     {
-        // 订阅名可含 '/' '\'（用户 --name 或 target 回退为 URL），必须是单一目录段
+        // 订阅名可含 '/' '\'（用户 --name 或 target 回退为 URL），必须是单一目录段。
+        // 断言真正的不变式（RF-91）：净化后拼进 work-dir 仍落在 work-dir 之内——
+        // 只查"不含分隔符"弱于该不变式（`..` + 分隔符才构成逃逸）。
         var dir = Resolve("a/b\\c", "mid:1");
         Assert.DoesNotContain('/', dir);
         Assert.DoesNotContain('\\', dir);
+        var baseDir = Path.Combine(Path.GetTempPath(), "bbdown-base");
+        Assert.StartsWith(Path.GetFullPath(baseDir) + Path.DirectorySeparatorChar,
+            Path.GetFullPath(Path.Combine(baseDir, dir)));
     }
 
     [Fact]
     public void WindowsIllegalChars_AreSanitized()
     {
-        // 'mid:163637592' 作订阅名（未指定 --name 时 target 回退）：':' 在 Windows 非法
+        // 'mid:163637592' 作订阅名：':' 在 Windows 非法
         var dir = Resolve("mid:163637592", "mid:163637592");
         Assert.DoesNotContain(':', dir);
-        Assert.NotEqual(".", dir);
-        Assert.NotEqual("..", dir);
+        Assert.Equal("mid_163637592", dir);
     }
 
     [Fact]
     public void EmptyName_FallsBackToTarget()
     {
-        var dir = Resolve("", "mid:163637592");
+        // RF-91：必须断言等于净化后的 target。原断言（非空 + 不含 ':'）对 "_" 同样成立——
+        // 而 SanitizePathSegment 对空输入的兜底正是 "_"，因此原测试在"回退失效"时假绿。
+        Assert.Equal("mid_163637592", Resolve("", "mid:163637592"));
+    }
+
+    [Theory]
+    [InlineData("")]
+    [InlineData("   ")]
+    [InlineData(null)]
+    public void EmptyishName_FallsBackToTarget(string? name)
+    {
+        // 前提契约：SanitizePathSegment 对空/纯空白输入兜底返回 "_"，永不返回空串，
+        // 因此"是否回退"只能用净化前的原始值判断（RF-91）。该契约一旦变化本测试失败，
+        // 提醒复核 ResolveSubDirName 的回退判据。
+        Assert.NotEqual("", PathUtil.SanitizePathSegment(name));
+        Assert.Equal("mid_163637592", Resolve(name!, "mid:163637592"));
+    }
+
+    [Fact]
+    public void DegenerateDotOnlyName_StaysSafeAndNonEmpty()
+    {
+        // 纯点名不是空白，不触发回退（判据与 SubscriptionStore.AddAsync 一致），
+        // 但净化后必须是安全非空段：不能变成 "."/".."（Windows 非法、且会改变目录层级）。
+        var dir = Resolve("...", "mid:1");
+        Assert.NotEqual(".", dir);
+        Assert.NotEqual("..", dir);
         Assert.NotEqual("", dir);
-        Assert.DoesNotContain(':', dir);
+        Assert.DoesNotContain('/', dir);
+        Assert.DoesNotContain('\\', dir);
     }
 
     [Theory]
@@ -77,13 +108,16 @@ public class SubCheckDirNameTests
     }
 
     [Fact]
-    public void SlotsAreConsumedEvenWithoutNewContent_SoSuffixesStayStable()
+    public void EachCallOccupiesASlot_SoSuffixesStayStableAcrossRuns()
     {
-        // 调用方对每个订阅（无论有无新增）都占槽：这里锁住"占槽即占号"的契约
+        // ResolveSubDirName 每次调用都占用一个槽位；调用方（CheckSubscriptionsAsync）
+        // 对每个订阅——无论有无新增内容——都在循环开头（continue 之前）解析一次，
+        // 因此序号跨 run 稳定。这里锁住"每次调用即占号"的契约。
         var slots = NewSlots();
         Resolve("同名", "mid:1", slots);
         Resolve("同名", "mid:2", slots);
         Assert.Equal(2, slots.Count);
+        Assert.Equal("同名-3", Resolve("同名", "mid:3", slots));
     }
 
     [Fact]
