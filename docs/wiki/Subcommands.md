@@ -84,6 +84,11 @@ BBDown 支持对指定的 UP 主、番剧或合集进行订阅追踪，通过增
 | `BBDown sub list` | 查看当前所有订阅列表 | `BBDown sub list` |
 | `BBDown sub remove <target>` | 删除指定订阅源 | `BBDown sub remove "mid:163637592"` |
 | `BBDown sub check [选项]` | 增量拉取所有订阅的新视频 | `BBDown sub check -q "1080P 高码率"` |
+| `BBDown sub check --per-sub-dir` | 每个订阅下载到独立子目录 | `BBDown sub check -w "E:\\Download\\bbdown" --per-sub-dir` |
+
+> **多订阅分目录**：添加了多个订阅时，默认所有新视频都会平铺在 `-w` 指定的根目录里。加 `--per-sub-dir` 后每个订阅下载到 `<work-dir>/<订阅名>/` 子目录——订阅名取 `sub add --name` 的显示名（未指定则用 target），经路径净化（非法字符替换、保留名/纯点段处理），净化后同名的订阅自动追加 `-2`/`-3` 序号。该选项默认关闭，不加时保持原有平铺行为。
+
+> **建议显式命名**：未指定 `--name` 时目录名回退为订阅目标，净化后形如 `mid_163637592`（target 为 URL 时更长），多订阅场景下不易辨认。建议用 `BBDown sub add "mid:163637592" --name "某UP主"` 显式命名；`sub add` 在未指定 `--name` 时也会给出提示。
 
 ### 4.2 支持的订阅源标识格式
 - **UP 主 UID**：`mid:163637592`

@@ -301,6 +301,37 @@ internal partial class Program
     }
 
     /// <summary>
+    /// 多任务命令（sub check / watchlater）的 <c>-w/--work-dir</c> 规范化入口：把相对路径
+    /// 解析为绝对路径并**只解析一次**，供逐任务循环复用（RF-89/RF-90）。
+    /// 多任务命令必须先绝对化：<see cref="ChangeWorkingDir"/> 在 CLI（非 serve）下会写进程
+    /// CWD，把相对 -w 留给每个任务各自解析时，第二个任务会基于上一个任务的下载目录再拼一层，
+    /// 产出 &lt;root&gt;/&lt;task1&gt;/&lt;task2&gt; 嵌套。
+    /// 本方法不抛异常：非法路径（<see cref="Path.GetFullPath(string)"/> 拒绝的纯空白/残留通配符
+    /// 等，或目录不可创建）经 <paramref name="error"/> 返回，由调用方报错并决定退出码——路径解析
+    /// 属"整批输入无效"，不能让 ArgumentException 逃出命令级异常处理器被报成
+    /// "请尝试升级到最新版本后重试!"。空 -w 返回成功且 <paramref name="resolved"/> 为空串
+    /// （保持既有语义：不写 WorkDir）。
+    /// </summary>
+    internal static bool TryResolveWorkDir(string? workDir, out string resolved, out string error)
+    {
+        resolved = "";
+        error = "";
+        if (string.IsNullOrEmpty(workDir)) return true;
+        try
+        {
+            resolved = ResolveWorkDir(workDir);
+            return true;
+        }
+        catch (Exception ex) when (ex is ArgumentException or NotSupportedException
+                                    or IOException or UnauthorizedAccessException
+                                    or System.Security.SecurityException)
+        {
+            error = ex.Message;
+            return false;
+        }
+    }
+
+    /// <summary>
     /// 计算用户最终应使用的凭据（cookie/token）：显式传入优先，否则本地凭据文件。
     /// 纯函数：不写 Config（AsyncLocal 语义下写入不回流父流程），由调用方拿返回值应用。
     /// </summary>
